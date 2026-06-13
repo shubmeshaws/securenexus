@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.home
+.cache
+.env
+.env.*
+!.env.example
+*.md
+!README.md
+.DS_Store
+coverage
+.cursor
+terminals
+assets
+npm-debug.log*

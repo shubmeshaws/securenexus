@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Schedule {
+  id              String    @id @default(cuid())
+  name            String
+  cluster         String
+  namespace       String
+  scope           String    @default("workload") // workload | namespace
+  appName         String    // workload name, or "*" for entire namespace
+  workloadKind    String    @default("Deployment") // Deployment | StatefulSet | DaemonSet | Namespace
+  excludedWorkloads String[] @default([]) // workload keys: Kind::name
+  savedWorkloadReplicas Json? // per-workload replica counts for namespace scope
+  shutdownTime    String    // 24h format HH:mm (daily) or derived display for one-time
+  startupTime     String    // 24h format HH:mm (daily) or derived display for one-time
+  recurrence      String    @default("daily") // daily | onetime
+  oneTimeShutdownAt DateTime?
+  oneTimeStartupAt  DateTime?
+  oneTimeCompleted  Boolean   @default(false)
+  timezone        String    @default("UTC")
+  daysOfWeek      Int[]     // 1=Mon, 7=Sun
+  syncPolicy      String    @default("automated") // "automated" | "none"
+  argocdInstanceId String?
+  targetReplicas  Int       @default(1)
+  enabled         Boolean   @default(true)
+  liveActive      Boolean   @default(false) // visible on Live Schedules (stopped window)
+  liveStartupAt   DateTime? // fixed startup target for live countdown (set on shutdown)
+  savedReplicas   Int?      // replicas before shutdown, restored on startup
+  lastRun         DateTime?
+  nextRun         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([enabled])
+  @@index([liveActive])
+  @@index([cluster, namespace, appName])
+}
+
+model ActivityLog {
+  id           String   @id @default(cuid())
+  timestamp    DateTime @default(now())
+  action       String
+  cluster      String
+  namespace    String
+  appName      String
+  triggeredBy  String
+  status       String
+  message      String?
+  userId       String?
+  userName     String?
+  userEmail    String?
+  userRole     String?
+  ipAddress    String?
+  resourceType String?
+  details      String?
+
+  @@index([timestamp(sort: Desc)])
+  @@index([cluster, namespace, appName])
+  @@index([userEmail])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  displayName  String
+  passwordHash String
+  role         String    @default("viewer") // admin | analyst | viewer
+  active       Boolean   @default(true)
+  permissions  Json?
+  lastLogin    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Cluster {
+  id             String    @id @default(cuid())
+  name           String    @unique
+  provider       String    // kubeconfig | aws
+  region         String?
+  status         String    @default("connected") // connected | disconnected | error
+  contextName    String?
+  serverUrl      String?
+  kubeconfigB64  String?
+  kubeconfigPath String?
+  awsAccessKeyId String?
+  awsSecretKey   String?
+  awsClusterName String?
+  addedBy        String?
+  addedByName    String?
+  lastSyncAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([provider])
+  @@index([status])
+}
+
+model EnvironmentMetrics {
+  id             String   @id @default("global")
+  state          String   @default("running") // running | stopped
+  stateSince     DateTime @default(now())
+  totalRunningMs BigInt   @default(0)
+  totalStoppedMs BigInt   @default(0)
+  updatedAt      DateTime @updatedAt
+}
+
+model ArgoCDInstance {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  serverUrl    String
+  tokenEnc     String
+  insecureTls  Boolean  @default(false)
+  enabled      Boolean  @default(true)
+  clusterNames String[] @default([])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([enabled])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String   @default("")
+  isSecret  Boolean  @default(false)
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
