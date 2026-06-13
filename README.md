@@ -1,22 +1,23 @@
-<p align="center">
-  <img src="docs/assets/securenexus-brand.png" alt="SECURENEXUS" width="480" />
-</p>
+<div align="center">
 
-<p align="center">
-  <strong>Pod Schedule Manager for Kubernetes &amp; ArgoCD</strong><br />
-  Automate workload shutdown and startup windows, cut non-production costs, and keep full audit visibility across your EKS clusters.
-</p>
+<img src="github-image.png" alt="SECURENEXUS" width="520" />
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
-  <a href="https://nextjs.org/"><img src="https://img.shields.io/badge/Next.js-14-black?logo=next.js&logoColor=white" alt="Next.js" /></a>
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white" alt="TypeScript" /></a>
-  <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/PostgreSQL-16+-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL" /></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white" alt="Node.js" /></a>
-  <a href="https://hub.docker.com/r/securenexusapp/securenexus"><img src="https://img.shields.io/badge/Docker-Hub-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
-  <a href="#ec2-deployment-step-by-step"><img src="https://img.shields.io/badge/docs-setup-blue" alt="Docs" /></a>
-  <a href="https://pm2.keymetrics.io/"><img src="https://img.shields.io/badge/PM2-production-2B037A?logo=pm2&logoColor=white" alt="PM2" /></a>
-</p>
+<br />
+
+### Pod Schedule Manager for Kubernetes & ArgoCD
+
+Automate workload shutdown and startup windows, cut non-production costs, and keep full audit visibility across your EKS clusters.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Hub-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/securenexusapp/securenexus)
+[![Docs](https://img.shields.io/badge/docs-setup-blue)](https://github.com/securenexus/SecureNexus#ec2-deployment-step-by-step)
+[![PM2](https://img.shields.io/badge/PM2-production-2B037A?logo=pm2&logoColor=white)](https://pm2.keymetrics.io/)
+
+</div>
 
 ---
 
@@ -422,6 +423,10 @@ If you like or are using this project, please **give it a star**. Thanks!
 
 <div align="center">
 
-**SECURENEXUS** — Stop wasting cloud spend. Start scheduling smarter.
+<img src="github-image.png" alt="SECURENEXUS" width="360" />
+
+<br />
+
+**Stop wasting cloud spend. Start scheduling smarter.**
 
 </div>
