@@ -1,6 +1,13 @@
 <div align="center">
 
-# **SECURE**NEXUS
+<img src="public/brand/shield-logo.png" alt="SecureNexus shield" width="80" height="80" />
+
+<br /><br />
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/securenexus-wordmark-dark.svg">
+  <img src="docs/assets/securenexus-wordmark.svg" alt="SecureNexus" width="460" />
+</picture>
 
 ### Pod Schedule Manager for Kubernetes & ArgoCD
 
