@@ -71,6 +71,7 @@ export interface Schedule {
   argocdInstanceId: string | null;
   targetReplicas: number;
   enabled: boolean;
+  teamsAlertEnabled: boolean;
   liveActive: boolean;
   savedReplicas: number | null;
   lastRun: string | null;

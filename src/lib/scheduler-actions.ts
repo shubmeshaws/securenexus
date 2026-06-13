@@ -17,6 +17,10 @@ import {
 } from './workload-utils';
 import { Prisma, type Schedule } from '@prisma/client';
 
+function scheduleTeamsAlertFlag(schedule: Schedule) {
+  return { teamsAlertEnabled: schedule.teamsAlertEnabled };
+}
+
 interface WorkloadTarget {
   name: string;
   kind: WorkloadKind;
@@ -288,6 +292,7 @@ export async function executeShutdown(
       message,
       details: activityDetails,
       startTime: formatScheduleStartupLabel(schedule),
+      ...scheduleTeamsAlertFlag(schedule),
     });
   } catch (err) {
     await logActivity({
@@ -305,6 +310,7 @@ export async function executeShutdown(
             count: targets.length,
           })
         : undefined,
+      ...scheduleTeamsAlertFlag(schedule),
     });
     throw err;
   }
@@ -376,6 +382,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       status: 'success',
       message,
       details: startupDetails,
+      ...scheduleTeamsAlertFlag(schedule),
     });
   } catch (err) {
     await logActivity({
@@ -393,6 +400,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
             count: targets.length,
           })
         : undefined,
+      ...scheduleTeamsAlertFlag(schedule),
     });
     throw err;
   }

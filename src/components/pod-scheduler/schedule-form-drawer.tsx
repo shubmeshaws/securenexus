@@ -80,6 +80,7 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       argocdInstanceId: null as string | null,
       targetReplicas: 2,
       enabled: true,
+      teamsAlertEnabled: true,
     };
   }
 
@@ -106,6 +107,7 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
     argocdInstanceId: schedule.argocdInstanceId ?? null,
     targetReplicas: schedule.targetReplicas ?? 2,
     enabled: schedule.enabled ?? true,
+    teamsAlertEnabled: schedule.teamsAlertEnabled ?? true,
   };
 }
 
@@ -142,6 +144,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [syncPolicy, setSyncPolicy] = useState<'automated' | 'none'>(initial.syncPolicy);
   const [argocdInstanceId, setArgoCDInstanceId] = useState<string | null>(initial.argocdInstanceId);
   const [enabled, setEnabled] = useState(initial.enabled);
+  const [teamsAlertEnabled, setTeamsAlertEnabled] = useState(initial.teamsAlertEnabled);
 
   const { data: argocdInstancesData } = useQuery({
     queryKey: ['argocd-instances-picker'],
@@ -234,6 +237,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         argocdInstanceId,
         targetReplicas: schedule?.targetReplicas ?? 2,
         enabled,
+        teamsAlertEnabled,
         recurrence,
       };
 
@@ -584,6 +588,16 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           checked={syncPolicy === 'automated'}
           onCheckedChange={(c) => setSyncPolicy(c ? 'automated' : 'none')}
         />
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl border border-border p-3">
+        <div>
+          <Label>Send Teams alert</Label>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Notify Microsoft Teams on shutdown and startup for this schedule
+          </p>
+        </div>
+        <Switch checked={teamsAlertEnabled} onCheckedChange={setTeamsAlertEnabled} />
       </div>
 
       <div className="flex items-center justify-between">

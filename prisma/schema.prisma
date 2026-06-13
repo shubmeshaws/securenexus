@@ -29,6 +29,7 @@ model Schedule {
   argocdInstanceId String?
   targetReplicas  Int       @default(1)
   enabled         Boolean   @default(true)
+  teamsAlertEnabled Boolean @default(true) // send Teams alerts for this schedule's shutdown/startup
   liveActive      Boolean   @default(false) // visible on Live Schedules (stopped window)
   liveStartupAt   DateTime? // fixed startup target for live countdown (set on shutdown)
   savedReplicas   Int?      // replicas before shutdown, restored on startup

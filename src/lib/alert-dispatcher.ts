@@ -72,7 +72,7 @@ export async function dispatchAlerts(input: AlertDispatchInput): Promise<void> {
     const payload = buildPayload(input);
     const tasks: Promise<unknown>[] = [];
 
-    if (config.teamsEnabled) {
+    if (config.teamsEnabled && input.teamsAlertEnabled !== false) {
       const webhookUrl = await getTeamsWebhookUrl();
       if (webhookUrl) {
         tasks.push(sendTeamsWebhook(webhookUrl, payload));

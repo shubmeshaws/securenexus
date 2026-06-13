@@ -26,6 +26,8 @@ export interface LogActivityParams {
   details?: string;
   /** Next scheduled startup (shown on shutdown/stopped alerts). */
   startTime?: string;
+  /** When false, skip Teams webhook for this activity (schedule-level opt-out). */
+  teamsAlertEnabled?: boolean;
   userId?: string;
   userName?: string;
   userEmail?: string;

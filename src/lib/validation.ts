@@ -34,6 +34,7 @@ const scheduleIdentitySchema = z.object({
   argocdInstanceId: z.union([z.string().min(1), z.null()]).optional(),
   targetReplicas: z.number().int().min(0).max(100),
   enabled: z.boolean().optional().default(true),
+  teamsAlertEnabled: z.boolean().optional().default(true),
 });
 
 const dailyTimingSchema = z.object({
@@ -151,6 +152,7 @@ export const updateScheduleBodySchema = z
     argocdInstanceId: z.union([z.string().min(1), z.null()]).optional(),
     targetReplicas: z.number().int().min(0).max(100).optional(),
     enabled: z.boolean().optional(),
+    teamsAlertEnabled: z.boolean().optional(),
     recurrence: z.enum(['daily', 'onetime']).optional(),
     shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
@@ -180,6 +182,7 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
       patch.argocdInstanceId !== undefined ? patch.argocdInstanceId : existing.argocdInstanceId,
     targetReplicas: patch.targetReplicas ?? existing.targetReplicas,
     enabled: patch.enabled ?? existing.enabled,
+    teamsAlertEnabled: patch.teamsAlertEnabled ?? existing.teamsAlertEnabled,
   };
 
   if (recurrence === 'onetime') {
