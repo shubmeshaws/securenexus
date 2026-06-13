@@ -15,6 +15,7 @@ export interface EmailAlertPayload {
   triggeredBy: string;
   status: 'success' | 'failed';
   userName?: string;
+  startTime?: string;
 }
 
 const ACTION_COLORS: Record<string, { bg: string; accent: string; emoji: string }> = {
@@ -53,6 +54,7 @@ function buildHtmlEmail(payload: EmailAlertPayload): string {
       <p style="margin:0 0 16px;font-size:15px;color:#18181b;line-height:1.5;">${payload.message}</p>
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <tr><td style="padding:8px 0;color:#71717a;width:120px;">Status</td><td style="padding:8px 0;font-weight:600;color:${statusColor};">${statusLabel}</td></tr>
+        ${payload.startTime ? `<tr><td style="padding:8px 0;color:#71717a;">Start Time</td><td style="padding:8px 0;color:#18181b;">${payload.startTime}</td></tr>` : ''}
         <tr><td style="padding:8px 0;color:#71717a;">Cluster</td><td style="padding:8px 0;color:#18181b;font-family:monospace;">${clusterName}</td></tr>
         <tr><td style="padding:8px 0;color:#71717a;">Namespace</td><td style="padding:8px 0;color:#18181b;font-family:monospace;">${payload.namespace}</td></tr>
         <tr><td style="padding:8px 0;color:#71717a;">Target</td><td style="padding:8px 0;color:#18181b;font-family:monospace;">${target}</td></tr>

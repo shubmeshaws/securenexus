@@ -1,6 +1,6 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { addDays, setHours, setMinutes, getDay, isBefore } from 'date-fns';
-import { isOvernightSchedule as isOvernightScheduleTimes } from './utils';
+import { isOvernightSchedule as isOvernightScheduleTimes, formatNextRunAt } from './utils';
 import {
   isDailySchedule,
   isOnetimeSchedule,
@@ -332,6 +332,12 @@ export function isOvernightSchedule(schedule: Schedule): boolean {
     return startupAt > shutdownAt && startupAt.getTime() - shutdownAt.getTime() > 12 * 60 * 60 * 1000;
   }
   return isOvernightScheduleTimes(schedule.shutdownTime, schedule.startupTime);
+}
+
+export function formatScheduleStartupLabel(schedule: Schedule, now = new Date()): string | undefined {
+  const startupAt = computeCurrentLiveStartupAt(schedule, now);
+  if (!startupAt) return undefined;
+  return formatNextRunAt(startupAt, schedule.timezone);
 }
 
 export async function reloadSchedule(scheduleId: string) {

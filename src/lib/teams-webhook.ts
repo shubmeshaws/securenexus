@@ -12,6 +12,7 @@ export interface TeamsAlertPayload {
   triggeredBy: string;
   status: 'success' | 'failed';
   userName?: string;
+  startTime?: string;
 }
 
 const ACTION_META: Record<
@@ -52,6 +53,18 @@ export function buildTeamsAdaptiveCard(payload: TeamsAlertPayload) {
     userName: payload.userName,
     action: payload.action,
   });
+
+  const facts: { title: string; value: string }[] = [
+    { title: 'Status', value: statusLabel },
+    { title: 'Cluster', value: clusterName },
+    { title: 'Namespace', value: payload.namespace },
+    { title: 'Target', value: target },
+    { title: 'Triggered by', value: actor },
+  ];
+
+  if (payload.startTime) {
+    facts.splice(1, 0, { title: 'Start Time', value: payload.startTime });
+  }
 
   return {
     type: 'message' as const,
@@ -136,13 +149,7 @@ export function buildTeamsAdaptiveCard(payload: TeamsAlertPayload) {
             {
               type: 'FactSet',
               spacing: 'Medium',
-              facts: [
-                { title: 'Status', value: statusLabel },
-                { title: 'Cluster', value: clusterName },
-                { title: 'Namespace', value: payload.namespace },
-                { title: 'Target', value: target },
-                { title: 'Triggered by', value: actor },
-              ],
+              facts,
             },
             {
               type: 'TextBlock',

@@ -39,6 +39,7 @@ function buildPayload(input: AlertDispatchInput) {
     triggeredBy: input.triggeredBy,
     status: input.status,
     userName: input.userName,
+    startTime: input.startTime,
   };
 }
 

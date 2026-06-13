@@ -24,6 +24,8 @@ export interface LogActivityParams {
   status: 'success' | 'failed';
   message?: string;
   details?: string;
+  /** Next scheduled startup (shown on shutdown/stopped alerts). */
+  startTime?: string;
   userId?: string;
   userName?: string;
   userEmail?: string;

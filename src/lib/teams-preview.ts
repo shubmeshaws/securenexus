@@ -30,13 +30,14 @@ export function getTeamsPreviewMeta(action: string, title?: string) {
 
 export function sampleTeamsPreviewPayload(): TeamsAlertPayload {
   return {
-    title: 'Scheduled Startup',
-    message: 'Restored 6 workload(s) in sms',
-    action: 'schedule-startup',
+    title: 'Scheduled Shutdown',
+    message: 'Scaled 6 workload(s) to 0 in sms',
+    action: 'schedule-shutdown',
     cluster: '789382029892/dr-eks-cluster',
     namespace: 'sms',
     appName: '*',
     triggeredBy: AUTOMATIC_CRON_TRIGGER,
     status: 'success',
+    startTime: 'Sat, Jun 14, 2026, 4:45 PM',
   };
 }

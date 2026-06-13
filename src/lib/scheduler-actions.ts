@@ -9,7 +9,7 @@ import {
 } from './k8s-client';
 import { logActivity } from './activity';
 import prisma from './prisma';
-import { computeCurrentLiveStartupAt, computeNextRun } from './scheduler-utils';
+import { computeCurrentLiveStartupAt, computeNextRun, formatScheduleStartupLabel } from './scheduler-utils';
 import {
   isNamespaceSchedule,
   NAMESPACE_SCOPE_MARKER,
@@ -287,6 +287,7 @@ export async function executeShutdown(
       status: 'success',
       message,
       details: activityDetails,
+      startTime: formatScheduleStartupLabel(schedule),
     });
   } catch (err) {
     await logActivity({

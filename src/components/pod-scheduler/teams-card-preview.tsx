@@ -40,6 +40,9 @@ export function TeamsCardPreview({ payload }: { payload?: TeamsAlertPayload }) {
         <p className="text-sm text-foreground leading-relaxed">{data.message}</p>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
           <PreviewFact label="Status" value={statusLabel} valueClass={STATUS_STYLE[data.status]} />
+          {data.startTime ? (
+            <PreviewFact label="Start Time" value={data.startTime} className="col-span-2" />
+          ) : null}
           <PreviewFact label="Cluster" value={clusterName} mono />
           <PreviewFact label="Namespace" value={data.namespace} mono />
           <PreviewFact label="Target" value={target} mono />
