@@ -1,5 +1,6 @@
 import type { ResourceAuditType } from './resource-audit-types';
 import { RESOURCE_TYPE_LABELS } from './resource-audit-types';
+import { isBillableResourceType } from './resource-audit-diff';
 import { formatUsd } from './utils';
 import { auditRowGroupKey, resourceWorkloadLabelFromRow } from './helm-values-path';
 
@@ -101,7 +102,7 @@ export function groupResourceAuditRows<T extends ResourceAuditRowBase>(rows: T[]
       });
       group.estimatedCostImpactPerDay = sumCosts([
         group.estimatedCostImpactPerDay,
-        row.estimatedCostImpactPerDay,
+        isBillableResourceType(row.resourceType) ? row.estimatedCostImpactPerDay : null,
       ]);
     }
   }
@@ -116,8 +117,10 @@ export function groupResourceAuditRows<T extends ResourceAuditRowBase>(rows: T[]
         changes,
         resourceType: changes?.length ? changes[0].resourceType : row.resourceType,
         estimatedCostImpactPerDay: changes?.length
-          ? sumCosts(changes.map((c) => c.estimatedCostImpactPerDay))
-          : row.estimatedCostImpactPerDay,
+          ? sumCosts(changes.map(billableChangeCost))
+          : isBillableResourceType(row.resourceType)
+            ? row.estimatedCostImpactPerDay
+            : null,
       };
     });
 }
@@ -133,10 +136,21 @@ function sumCosts(values: (number | null | undefined)[]): number | null {
   return has ? total : null;
 }
 
+function billableChangeCost(change: ResourceChangeDetail): number | null {
+  if (!isBillableResourceType(change.resourceType)) return null;
+  return change.estimatedCostImpactPerDay != null ? Number(change.estimatedCostImpactPerDay) : null;
+}
+
 export function sumGroupedRowsCostImpact(rows: ResourceAuditRowBase[]): number {
   let total = 0;
   for (const row of rows) {
     if (row.resourceType === 'GIT_SYNC') continue;
+    if (row.changes?.length) {
+      const grouped = sumCosts(row.changes.map(billableChangeCost));
+      if (grouped != null && Number.isFinite(grouped)) total += grouped;
+      continue;
+    }
+    if (!isBillableResourceType(row.resourceType)) continue;
     const cost =
       row.estimatedCostImpactPerDay != null ? Number(row.estimatedCostImpactPerDay) : null;
     if (cost != null && Number.isFinite(cost)) {
@@ -230,8 +244,8 @@ export function formatGroupedCostCategories(row: ResourceAuditRowBase): string {
   const changes = row.changes?.length ? row.changes : [];
   const cats = new Set<string>();
   for (const c of changes) {
-    if (c.resourceType.startsWith('CPU')) cats.add('CPU');
-    if (c.resourceType.startsWith('MEMORY')) cats.add('Memory');
+    if (c.resourceType === 'CPU_REQUEST') cats.add('CPU req');
+    if (c.resourceType === 'MEMORY_REQUEST') cats.add('Mem req');
     if (c.resourceType === 'REPLICAS') cats.add('Pods');
   }
   return Array.from(cats).join(' & ');

@@ -11,6 +11,7 @@ import {
   isGoogleAuthConfigured,
   validateEmailDomain,
 } from '@/lib/google-auth';
+import { FULL_PERMISSIONS } from '@/lib/user-permissions';
 
 function getOAuthState(req: NextApiRequest): string | null {
   const cookie = req.headers.cookie;
@@ -69,7 +70,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           displayName: profile.name || profile.email,
           passwordHash,
           role: isFirstUser ? 'admin' : 'viewer',
-          active: isFirstUser,
+          active: true,
+          permissions: isFirstUser ? undefined : { ...FULL_PERMISSIONS },
         },
       });
     } else if (user.displayName !== (profile.name || profile.email)) {

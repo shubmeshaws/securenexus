@@ -1,6 +1,8 @@
-export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet';
+export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet' | 'EC2';
 
 export type ScheduleScope = 'workload' | 'namespace';
+
+export type PlatformType = 'eks' | 'non_eks';
 
 export const NAMESPACE_SCOPE_MARKER = '*';
 
@@ -15,6 +17,12 @@ export function parseWorkloadKey(value: string): { kind: WorkloadKind; name: str
   const name = value.slice(sep + 2);
   if (!name || !['Deployment', 'StatefulSet', 'DaemonSet'].includes(kind)) return null;
   return { kind, name };
+}
+
+export function isNonEksSchedule(schedule: {
+  platformType?: string | null;
+}): boolean {
+  return schedule.platformType === 'non_eks';
 }
 
 export function isNamespaceSchedule(schedule: {

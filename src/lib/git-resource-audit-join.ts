@@ -1,6 +1,6 @@
 import prisma from './prisma';
 import { processNewCommitsForRepo, changedFilesForCommit, processCommitsForRepo, listCommitsSince } from './git-resource-diff';
-import { persistResourceChanges, estimateCostDelta } from './resource-audit-diff';
+import { persistResourceChanges, estimateCostDelta, parseReplicaCountValue } from './resource-audit-diff';
 import type { ResourceChangeInput } from './resource-audit-types';
 import { REPLICAS_CONTAINER_MARKER } from './resource-audit-types';
 import { findAppSourcesForGitFile } from './git-app-source-match';
@@ -12,6 +12,7 @@ import {
 import { resolveAuditClusterName } from './resource-audit-cluster';
 import { fetchLivePodCount } from './resource-audit-kubectl';
 import { getClusterResourceRates } from './resource-audit-rates';
+import { recomputeResourceAuditCostEstimates } from './resource-audit-maintenance';
 import type { ClusterResourceRates } from './instance-pricing';
 
 function isEmptyResourceValue(value: string): boolean {
@@ -29,9 +30,51 @@ function replicaCountFromChange(change: {
   oldValue: string;
 }): number {
   if (change.resourceType === 'REPLICAS') {
-    const n = parseInt(change.newValue, 10) || parseInt(change.oldValue, 10);
-    return n > 0 ? n : 1;
+    return parseReplicaCountValue(change.newValue) ?? parseReplicaCountValue(change.oldValue) ?? 1;
   }
+  return 1;
+}
+
+function buildReplicaCountMap(
+  rows: Array<{ commitSha: string; filePath: string; resourceType: string; newValue: string; oldValue: string }>
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (row.resourceType !== 'REPLICAS') continue;
+    const count =
+      parseReplicaCountValue(row.newValue) ?? parseReplicaCountValue(row.oldValue);
+    if (count) map.set(`${row.commitSha}::${row.filePath}`, count);
+  }
+  return map;
+}
+
+async function loadReplicaCountMapForCommits(
+  gitRepositoryId: string,
+  commitShas: string[]
+): Promise<Map<string, number>> {
+  if (!commitShas.length) return new Map();
+  const rows = await prisma.gitResourceChange.findMany({
+    where: {
+      gitRepositoryId,
+      commitSha: { in: commitShas },
+      resourceType: 'REPLICAS',
+    },
+    select: { commitSha: true, filePath: true, resourceType: true, newValue: true, oldValue: true },
+  });
+  return buildReplicaCountMap(rows);
+}
+
+function resolveReplicaCountForCost(input: {
+  change: { commitSha: string; filePath: string; resourceType: string; newValue: string; oldValue: string };
+  replicaMap: Map<string, number>;
+  livePodCount: number | null;
+}): number {
+  if (input.change.resourceType === 'REPLICAS') {
+    return replicaCountFromChange(input.change);
+  }
+  const fromGit = input.replicaMap.get(`${input.change.commitSha}::${input.change.filePath}`);
+  if (fromGit) return fromGit;
+  if (input.livePodCount != null && input.livePodCount > 0) return input.livePodCount;
   return 1;
 }
 
@@ -71,6 +114,7 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
   if (!changes.length) return 0;
 
   const ratesCache = new Map<string, ClusterResourceRates>();
+  const replicaMaps = new Map<string, Map<string, number>>();
 
   const toPersist: ResourceChangeInput[] = [];
   const linkedIds: string[] = [];
@@ -120,10 +164,25 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
     }
 
     const rates = await getClusterResourceRates(cluster, ratesCache);
-    const replicaCount = replicaCountFromChange(change);
+
+    let replicaMap = replicaMaps.get(change.gitRepositoryId);
+    if (!replicaMap) {
+      replicaMap = await loadReplicaCountMapForCommits(
+        change.gitRepositoryId,
+        Array.from(
+          new Set(
+            changes
+              .filter((c) => c.gitRepositoryId === change.gitRepositoryId)
+              .map((c) => c.commitSha)
+          )
+        )
+      );
+      replicaMaps.set(change.gitRepositoryId, replicaMap);
+    }
+
     let podCount: number | null = null;
     if (change.resourceType === 'REPLICAS' && change.containerName === REPLICAS_CONTAINER_MARKER) {
-      podCount = replicaCount;
+      podCount = replicaCountFromChange(change);
     } else {
       podCount = await fetchLivePodCount(
         cluster,
@@ -132,6 +191,12 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
         inferred.legacyDeploymentName
       );
     }
+
+    const replicaCount = resolveReplicaCountForCost({
+      change,
+      replicaMap,
+      livePodCount: podCount,
+    });
 
     toPersist.push({
       argocdApp: inferred.argocdApp,
@@ -424,6 +489,7 @@ export async function refreshGitResourceAuditRows(): Promise<{
 
   const linked = await linkGitChangesToResourceAudit();
   const gitSyncRemoved = await cleanupGitSyncForAnalyzedCommits(shaList);
+  await recomputeResourceAuditCostEstimates();
 
   return { deleted: deleted.count, linked, gitSyncRemoved };
 }

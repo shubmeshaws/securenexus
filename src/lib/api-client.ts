@@ -57,12 +57,17 @@ export async function apiFetch<T>(
 export interface Schedule {
   id: string;
   name: string;
+  platformType: 'eks' | 'non_eks';
   cluster: string;
   namespace: string;
   scope: 'workload' | 'namespace';
   appName: string;
   workloadKind: string;
   excludedWorkloads: string[];
+  awsCredentialId: string | null;
+  ec2InstanceId: string | null;
+  ec2Region: string | null;
+  awsAccountId?: string | null;
   shutdownTime: string;
   startupTime: string;
   recurrence: 'daily' | 'onetime';

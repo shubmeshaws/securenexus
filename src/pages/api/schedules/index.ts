@@ -4,11 +4,13 @@ import { requirePermission } from '@/lib/permission-auth';
 import prisma from '@/lib/prisma';
 import { createScheduleSchema } from '@/lib/validation';
 import { computeNextRun, ensureSchedulerRunning } from '@/lib/scheduler';
+import { enrichSchedulesWithAccountId } from '@/lib/schedule-display';
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   ensureSchedulerRunning();
   const schedules = await prisma.schedule.findMany({ orderBy: { name: 'asc' } });
-  return res.status(200).json({ schedules });
+  const enriched = await enrichSchedulesWithAccountId(schedules);
+  return res.status(200).json({ schedules: enriched });
 }
 
 async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {

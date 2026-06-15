@@ -1,6 +1,8 @@
 import prisma from './prisma';
 import type { ArgoCDInstanceConfig } from './argocd-instances';
 import { instanceMatchesCluster } from './argocd-instances';
+import { normalizedValuesPathFromRow } from './helm-values-path';
+import { resolveAuditClusterName } from './resource-audit-cluster';
 
 type RegisteredCluster = {
   name: string;
@@ -131,17 +133,49 @@ export async function buildArgoAppClusterMap(): Promise<Map<string, string>> {
 }
 
 export async function reconcileResourceAuditClusterNames(): Promise<number> {
-  const appClusters = await buildArgoAppClusterMap();
-  if (!appClusters.size) return 0;
-
   let updated = 0;
+
+  // Git-sourced rows: cluster comes from values/{env}/ in the file path, not ArgoCD instance.
+  const resourceRows = await prisma.resourceChangeAudit.findMany({
+    where: { resourceType: { not: 'GIT_SYNC' } },
+    select: {
+      id: true,
+      workload: true,
+      namespace: true,
+      argocdApp: true,
+      branchName: true,
+      cluster: true,
+    },
+  });
+
+  for (const row of resourceRows) {
+    const path = normalizedValuesPathFromRow(row);
+    if (!path) continue;
+    const correctCluster = await resolveAuditClusterName({
+      filePath: path,
+      branch: row.branchName,
+    });
+    if (correctCluster !== row.cluster) {
+      await prisma.resourceChangeAudit.update({
+        where: { id: row.id },
+        data: { cluster: correctCluster },
+      });
+      updated += 1;
+    }
+  }
+
+  const appClusters = await buildArgoAppClusterMap();
+  if (!appClusters.size) return updated;
+
+  // Argo sync rows only — do not overwrite git path–derived clusters above.
   for (const [argocdApp, cluster] of Array.from(appClusters.entries())) {
     const result = await prisma.resourceChangeAudit.updateMany({
-      where: { argocdApp, NOT: { cluster } },
+      where: { argocdApp, resourceType: 'GIT_SYNC', NOT: { cluster } },
       data: { cluster },
     });
     updated += result.count;
   }
+
   return updated;
 }
 

@@ -31,6 +31,7 @@ import {
   NAMESPACE_SCOPE_MARKER,
   parseWorkloadKey,
   workloadKey,
+  type PlatformType,
   type ScheduleScope,
   type WorkloadKind,
 } from '@/lib/workload-utils';
@@ -49,6 +50,34 @@ const TIMEZONES = [
 const NATIVE_SELECT_CLASS =
   'flex h-10 w-full appearance-none rounded-xl border border-border bg-background px-4 py-2 text-sm text-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/30 disabled:cursor-not-allowed disabled:opacity-50';
 
+interface AwsCredentialOption {
+  id: string;
+  name: string;
+  defaultRegion: string;
+  awsAccountId: string | null;
+  iamRoleName: string | null;
+}
+
+interface Ec2InstanceOption {
+  instanceId: string;
+  name: string;
+  region: string;
+  state: string;
+  instanceType: string;
+}
+
+const EC2_SELECT_SEP = '§';
+
+function ec2SelectValue(instanceId: string, region: string): string {
+  return `${instanceId}${EC2_SELECT_SEP}${region}`;
+}
+
+function parseEc2SelectValue(value: string): { instanceId: string; region: string } | null {
+  const sep = value.indexOf(EC2_SELECT_SEP);
+  if (sep <= 0) return null;
+  return { instanceId: value.slice(0, sep), region: value.slice(sep + 1) };
+}
+
 interface WorkloadOption {
   name: string;
   kind: WorkloadKind;
@@ -59,16 +88,21 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
   const timezone = schedule?.timezone ?? 'Asia/Kolkata';
   const recurrence = (schedule?.recurrence ?? 'daily') as ScheduleRecurrence;
   const defaultShutdown = defaultOnetimeShutdownInput(timezone);
+  const platformType = (schedule?.platformType ?? 'eks') as PlatformType;
 
   if (!schedule) {
     return {
       name: '',
+      platformType: 'eks' as PlatformType,
       cluster: '',
       namespace: '',
       scope: 'workload' as ScheduleScope,
       appName: '',
       workloadKind: 'Deployment' as WorkloadKind,
       excludedWorkloads: [] as string[],
+      awsCredentialId: '',
+      ec2InstanceId: '',
+      ec2Region: '',
       recurrence: 'daily' as ScheduleRecurrence,
       shutdownTime: '20:30',
       startupTime: '08:30',
@@ -86,12 +120,16 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
 
   return {
     name: schedule.name ?? '',
+    platformType,
     cluster: schedule.cluster ?? '',
     namespace: schedule.namespace ?? '',
     scope: (namespaceScope ? 'namespace' : 'workload') as ScheduleScope,
     appName: namespaceScope ? '' : (schedule.appName ?? ''),
     workloadKind: (schedule.workloadKind ?? 'Deployment') as WorkloadKind,
     excludedWorkloads: schedule.excludedWorkloads ?? [],
+    awsCredentialId: schedule.awsCredentialId ?? '',
+    ec2InstanceId: schedule.ec2InstanceId ?? '',
+    ec2Region: schedule.ec2Region ?? '',
     recurrence,
     shutdownTime: schedule.shutdownTime ?? '20:30',
     startupTime: schedule.startupTime ?? '08:30',
@@ -128,12 +166,16 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const initial = scheduleToForm(schedule);
 
   const [name, setName] = useState(initial.name);
+  const [platformType, setPlatformType] = useState<PlatformType>(initial.platformType);
   const [cluster, setCluster] = useState(initial.cluster);
   const [namespace, setNamespace] = useState(initial.namespace);
   const [scope, setScope] = useState<ScheduleScope>(initial.scope);
   const [appName, setAppName] = useState(initial.appName);
   const [workloadKind, setWorkloadKind] = useState<WorkloadKind>(initial.workloadKind);
   const [excludedWorkloads, setExcludedWorkloads] = useState<string[]>(initial.excludedWorkloads);
+  const [awsCredentialId, setAwsCredentialId] = useState(initial.awsCredentialId);
+  const [ec2InstanceId, setEc2InstanceId] = useState(initial.ec2InstanceId);
+  const [ec2Region, setEc2Region] = useState(initial.ec2Region);
   const [recurrence, setRecurrence] = useState<ScheduleRecurrence>(initial.recurrence);
   const [shutdownTime, setShutdownTime] = useState(initial.shutdownTime);
   const [startupTime, setStartupTime] = useState(initial.startupTime);
@@ -157,9 +199,35 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
 
   const argocdOptions = argocdInstancesData?.instances ?? [];
 
+  const { data: awsCredsData } = useQuery({
+    queryKey: ['aws-credentials-picker'],
+    queryFn: () =>
+      apiFetch<{ credentials: AwsCredentialOption[] }>('/api/aws-credentials'),
+    staleTime: 60_000,
+  });
+
+  const awsCredentialOptions = awsCredsData?.credentials ?? [];
+  const hasAwsCredentials = awsCredentialOptions.length > 0;
+  const selectedAwsCred = awsCredentialOptions.find((c) => c.id === awsCredentialId);
+
+  const { data: ec2Data, isLoading: ec2Loading } = useQuery({
+    queryKey: ['ec2-instances', awsCredentialId],
+    queryFn: () =>
+      apiFetch<{ instances: Ec2InstanceOption[] }>(
+        `/api/aws-credentials/${encodeURIComponent(awsCredentialId)}/instances`
+      ),
+    enabled: platformType === 'non_eks' && Boolean(awsCredentialId),
+    staleTime: 60_000,
+  });
+
+  const ec2Options = ec2Data?.instances ?? [];
+  const ec2SelectValueCurrent =
+    ec2InstanceId && ec2Region ? ec2SelectValue(ec2InstanceId, ec2Region) : '';
+
   const { data: clustersData } = useQuery({
     queryKey: ['clusters'],
     queryFn: () => apiFetch<{ clusters: { name: string }[] }>('/api/k8s/clusters'),
+    enabled: platformType === 'eks',
     staleTime: 60_000,
   });
 
@@ -169,7 +237,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
       apiFetch<{ namespaces: string[] }>(
         `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces`
       ),
-    enabled: Boolean(cluster),
+    enabled: platformType === 'eks' && Boolean(cluster),
     staleTime: 60_000,
   });
 
@@ -179,7 +247,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
       apiFetch<{ workloads: WorkloadOption[] }>(
         `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces/${encodeURIComponent(namespace)}/workloads`
       ),
-    enabled: Boolean(cluster) && Boolean(namespace),
+    enabled: platformType === 'eks' && Boolean(cluster) && Boolean(namespace),
     staleTime: 60_000,
   });
 
@@ -224,17 +292,24 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
 
   const mutation = useMutation({
     mutationFn: async () => {
+      const isNonEks = platformType === 'non_eks';
+      const credName = selectedAwsCred?.name ?? cluster;
+
       const shared = {
         name,
-        cluster,
-        namespace,
-        scope,
-        appName: scope === 'namespace' ? NAMESPACE_SCOPE_MARKER : appName,
-        workloadKind: scope === 'namespace' ? 'Namespace' : workloadKind,
-        excludedWorkloads: scope === 'namespace' ? excludedWorkloads : [],
+        platformType,
+        cluster: isNonEks ? credName : cluster,
+        namespace: isNonEks ? ec2Region : namespace,
+        scope: isNonEks ? ('workload' as const) : scope,
+        appName: isNonEks ? appName : scope === 'namespace' ? NAMESPACE_SCOPE_MARKER : appName,
+        workloadKind: isNonEks ? 'EC2' : scope === 'namespace' ? 'Namespace' : workloadKind,
+        excludedWorkloads: isNonEks ? [] : scope === 'namespace' ? excludedWorkloads : [],
+        awsCredentialId: isNonEks ? awsCredentialId : null,
+        ec2InstanceId: isNonEks ? ec2InstanceId : null,
+        ec2Region: isNonEks ? ec2Region : null,
         timezone,
-        syncPolicy,
-        argocdInstanceId,
+        syncPolicy: isNonEks ? ('none' as const) : syncPolicy,
+        argocdInstanceId: isNonEks ? null : argocdInstanceId,
         targetReplicas: schedule?.targetReplicas ?? 2,
         enabled,
         teamsAlertEnabled,
@@ -317,6 +392,121 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </div>
       </div>
 
+      {hasAwsCredentials && (
+        <div className="space-y-2">
+          <Label>Platform</Label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['eks', 'non_eks'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => {
+                  setPlatformType(mode);
+                  if (mode === 'non_eks') {
+                    setScope('workload');
+                    setExcludedWorkloads([]);
+                  }
+                }}
+                className={cn(
+                  'rounded-xl border px-3 py-2.5 text-left text-xs transition-colors',
+                  platformType === mode
+                    ? 'border-blue-500/40 bg-blue-500/10 text-foreground'
+                    : 'border-border bg-background text-muted-foreground hover:border-border/80'
+                )}
+              >
+                <span className="block font-medium">{mode === 'eks' ? 'EKS' : 'Non EKS'}</span>
+                <span className="mt-0.5 block text-[10px] opacity-80">
+                  {mode === 'eks'
+                    ? 'Scale Kubernetes workloads on a cluster'
+                    : 'Stop and start EC2 instances via AWS'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {platformType === 'non_eks' ? (
+        <>
+          <div className="space-y-2">
+            <Label>AWS account</Label>
+            <select
+              className={NATIVE_SELECT_CLASS}
+              value={awsCredentialId}
+              onChange={(e) => {
+                setAwsCredentialId(e.target.value);
+                setEc2InstanceId('');
+                setEc2Region('');
+                setAppName('');
+              }}
+              required
+            >
+              <option value="" disabled>
+                Select AWS account
+              </option>
+              {awsCredentialOptions.map((cred) => (
+                <option key={cred.id} value={cred.id}>
+                  {cred.name}
+                  {cred.awsAccountId ? ` (${cred.awsAccountId})` : ''}
+                </option>
+              ))}
+            </select>
+            {selectedAwsCred && (
+              <p className="text-[10px] text-muted-foreground">
+                AWS account ID:{' '}
+                <span className="font-mono text-foreground">
+                  {selectedAwsCred.awsAccountId ?? 'Save and test this account in Settings to capture'}
+                </span>
+                {selectedAwsCred.iamRoleName ? (
+                  <>
+                    {' '}
+                    · Role:{' '}
+                    <span className="font-mono text-foreground">{selectedAwsCred.iamRoleName}</span>
+                  </>
+                ) : null}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label>Instance name</Label>
+            <select
+              className={NATIVE_SELECT_CLASS}
+              value={ec2SelectValueCurrent}
+              disabled={!awsCredentialId || ec2Loading}
+              onChange={(e) => {
+                const parsed = parseEc2SelectValue(e.target.value);
+                if (!parsed) return;
+                const match = ec2Options.find(
+                  (i) => i.instanceId === parsed.instanceId && i.region === parsed.region
+                );
+                setEc2InstanceId(parsed.instanceId);
+                setEc2Region(parsed.region);
+                setAppName(match?.name ?? parsed.instanceId);
+              }}
+              required
+            >
+              <option value="" disabled>
+                {ec2Loading ? 'Loading instances…' : 'Select EC2 instance'}
+              </option>
+              {ec2Options.map((instance) => (
+                <option
+                  key={ec2SelectValue(instance.instanceId, instance.region)}
+                  value={ec2SelectValue(instance.instanceId, instance.region)}
+                >
+                  {instance.name} · {instance.region} · {instance.state} ({instance.instanceType})
+                </option>
+              ))}
+            </select>
+            {awsCredentialId && !ec2Loading && ec2Options.length === 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                No EC2 instances found across accessible regions for this account.
+              </p>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
       <div className="space-y-2">
         <Label>Cluster</Label>
         <select
@@ -460,6 +650,9 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </div>
       )}
 
+        </>
+      )}
+
       <div className="space-y-2">
         <Label>Timezone</Label>
         <Select
@@ -555,6 +748,8 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </>
       )}
 
+      {platformType === 'eks' && (
+        <>
       <div className="space-y-2">
         <Label>ArgoCD instance</Label>
         <Select
@@ -590,6 +785,8 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           onCheckedChange={(c) => setSyncPolicy(c ? 'automated' : 'none')}
         />
       </div>
+        </>
+      )}
 
       <div className="flex items-center justify-between rounded-xl border border-border p-3">
         <div>

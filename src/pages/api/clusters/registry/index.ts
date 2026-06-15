@@ -4,6 +4,7 @@ import { KubeconfigFileError, readKubeconfigFromPath } from '@/lib/kubeconfig-fi
 import prisma from '@/lib/prisma';
 import { invalidateKubeConfigCache } from '@/lib/k8s-client';
 import { invalidateWorkloadCache } from '@/lib/workload-scan';
+import { getAwsCredentials } from '@/lib/aws-settings';
 import { z } from 'zod';
 
 const addClusterSchema = z
@@ -18,8 +19,8 @@ const addClusterSchema = z
   z.object({
     name: z.string().min(1).max(100),
     provider: z.literal('aws'),
-    awsAccessKeyId: z.string().min(1),
-    awsSecretKey: z.string().min(1),
+    awsAccessKeyId: z.string().optional(),
+    awsSecretKey: z.string().optional(),
     awsRegion: z.string().min(1),
     awsClusterName: z.string().min(1),
   }),
@@ -57,7 +58,6 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
 
   let kubeconfigB64: string | undefined;
   let kubeconfigPath: string | undefined;
-
   let serverUrl: string | undefined;
 
   if (data.provider === 'kubeconfig') {
@@ -94,6 +94,22 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
     }
   }
 
+  let awsAccessKeyId: string | undefined;
+  let awsSecretKey: string | undefined;
+
+  if (data.provider === 'aws') {
+    const globalCreds = await getAwsCredentials();
+    awsAccessKeyId = data.awsAccessKeyId?.trim() || globalCreds?.accessKeyId;
+    awsSecretKey = data.awsSecretKey?.trim() || globalCreds?.secretAccessKey;
+
+    if (!awsAccessKeyId || !awsSecretKey) {
+      return res.status(400).json({
+        error:
+          'AWS credentials are required. Configure them in Admin → Settings or provide keys when adding the cluster.',
+      });
+    }
+  }
+
   const cluster = await prisma.cluster.create({
     data: {
       name: data.name,
@@ -110,8 +126,8 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
             serverUrl: serverUrl ?? 'configured',
           }
         : {
-            awsAccessKeyId: data.awsAccessKeyId,
-            awsSecretKey: data.awsSecretKey,
+            awsAccessKeyId,
+            awsSecretKey,
             region: data.awsRegion,
             awsClusterName: data.awsClusterName,
           }),

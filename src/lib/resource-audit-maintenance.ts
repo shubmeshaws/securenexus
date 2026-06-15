@@ -1,9 +1,15 @@
 import prisma from './prisma';
 import { valuesFilePathFromRow } from './helm-values-path';
-import { estimateRunningCostFromSnapshots } from './resource-audit-diff';
-import type { ResourceFieldSnapshot } from './resource-audit-types';
+import {
+  estimateCostDelta,
+  estimateRunningCostFromSnapshots,
+  isBillableResourceType,
+  parseReplicaCountValue,
+} from './resource-audit-diff';
+import type { ResourceFieldSnapshot, ResourceAuditType } from './resource-audit-types';
 import { clusterResourceRates, type ClusterResourceRates } from './instance-pricing';
 import { listClusterInstanceTypes } from './k8s-client';
+import { getClusterResourceRates } from './resource-audit-rates';
 
 async function getClusterRates(
   cluster: string,
@@ -205,5 +211,95 @@ export async function recomputeAppUpRunningCosts(): Promise<number> {
     });
     updated += 1;
   }
+  return updated;
+}
+
+async function resolveReplicaCountForAuditRow(row: {
+  revisionSha: string;
+  workload: string;
+  podCount: number | null;
+  resourceType: string;
+  oldValue: string;
+  newValue: string;
+}): Promise<number> {
+  if (row.resourceType === 'REPLICAS') {
+    return parseReplicaCountValue(row.newValue) ?? parseReplicaCountValue(row.oldValue) ?? 1;
+  }
+
+  const filePath = valuesFilePathFromRow(row);
+  if (filePath) {
+    const replicaRow = await prisma.gitResourceChange.findFirst({
+      where: {
+        commitSha: row.revisionSha,
+        filePath,
+        resourceType: 'REPLICAS',
+      },
+      select: { newValue: true, oldValue: true },
+      orderBy: { pulledAt: 'desc' },
+    });
+    if (replicaRow) {
+      const fromGit =
+        parseReplicaCountValue(replicaRow.newValue) ??
+        parseReplicaCountValue(replicaRow.oldValue);
+      if (fromGit) return fromGit;
+    }
+  }
+
+  if (row.podCount != null && row.podCount > 0) return row.podCount;
+  return 1;
+}
+
+/** Recompute stored cost using request-only billing and helm replica counts. */
+export async function recomputeResourceAuditCostEstimates(): Promise<number> {
+  const rows = await prisma.resourceChangeAudit.findMany({
+    where: { resourceType: { not: 'GIT_SYNC' } },
+    select: {
+      id: true,
+      cluster: true,
+      resourceType: true,
+      oldValue: true,
+      newValue: true,
+      revisionSha: true,
+      workload: true,
+      podCount: true,
+      estimatedCostImpactPerDay: true,
+    },
+  });
+
+  const ratesCache = new Map<string, ClusterResourceRates>();
+  let updated = 0;
+
+  for (const row of rows) {
+    const resourceType = row.resourceType as ResourceAuditType;
+    const rates = await getClusterResourceRates(row.cluster, ratesCache);
+    let nextCost: number | null = null;
+
+    if (isBillableResourceType(resourceType)) {
+      const replicas = await resolveReplicaCountForAuditRow(row);
+      nextCost = estimateCostDelta(
+        resourceType,
+        row.oldValue,
+        row.newValue,
+        replicas,
+        rates
+      );
+    }
+
+    const prev =
+      row.estimatedCostImpactPerDay != null ? Number(row.estimatedCostImpactPerDay) : null;
+    const changed =
+      (prev == null && nextCost != null) ||
+      (prev != null && nextCost == null) ||
+      (prev != null && nextCost != null && Math.abs(prev - nextCost) > 0.0001);
+
+    if (!changed) continue;
+
+    await prisma.resourceChangeAudit.update({
+      where: { id: row.id },
+      data: { estimatedCostImpactPerDay: nextCost },
+    });
+    updated += 1;
+  }
+
   return updated;
 }

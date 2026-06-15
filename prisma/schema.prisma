@@ -10,13 +10,17 @@ datasource db {
 model Schedule {
   id              String    @id @default(cuid())
   name            String
+  platformType    String    @default("eks") // eks | non_eks
   cluster         String
   namespace       String
   scope           String    @default("workload") // workload | namespace
-  appName         String    // workload name, or "*" for entire namespace
-  workloadKind    String    @default("Deployment") // Deployment | StatefulSet | DaemonSet | Namespace
+  appName         String    // workload name, EC2 instance name, or "*" for entire namespace
+  workloadKind    String    @default("Deployment") // Deployment | StatefulSet | DaemonSet | Namespace | EC2
   excludedWorkloads String[] @default([]) // workload keys: Kind::name
   savedWorkloadReplicas Json? // per-workload replica counts for namespace scope
+  awsCredentialId String?
+  ec2InstanceId  String?
+  ec2Region       String?
   shutdownTime    String    // 24h format HH:mm (daily) or derived display for one-time
   startupTime     String    // 24h format HH:mm (daily) or derived display for one-time
   recurrence      String    @default("daily") // daily | onetime
@@ -41,6 +45,24 @@ model Schedule {
   @@index([enabled])
   @@index([liveActive])
   @@index([cluster, namespace, appName])
+  @@index([platformType])
+  @@index([awsCredentialId])
+}
+
+model AwsCredential {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  accessKeyId     String
+  secretAccessKey String
+  defaultRegion   String   @default("ap-south-1")
+  awsAccountId    String?
+  iamUsername     String?
+  iamRoleName     String?
+  updatedBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([name])
 }
 
 model ActivityLog {

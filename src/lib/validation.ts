@@ -20,15 +20,19 @@ const workloadKeySchema = z
 
 const scheduleIdentitySchema = z.object({
   name: z.string().min(1).max(100),
+  platformType: z.enum(['eks', 'non_eks']).optional().default('eks'),
   cluster: z.string().min(1),
   namespace: z.string().min(1),
   scope: z.enum(['workload', 'namespace']).optional().default('workload'),
   appName: z.string().optional(),
   workloadKind: z
-    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace'])
+    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace', 'EC2'])
     .optional()
     .default('Deployment'),
   excludedWorkloads: z.array(workloadKeySchema).optional().default([]),
+  awsCredentialId: z.string().optional().nullable(),
+  ec2InstanceId: z.string().optional().nullable(),
+  ec2Region: z.string().optional().nullable(),
   timezone: z.string().min(1),
   syncPolicy: z.enum(['automated', 'none']),
   argocdInstanceId: z.union([z.string().min(1), z.null()]).optional(),
@@ -63,6 +67,19 @@ const scheduleBaseSchema = z.discriminatedUnion('recurrence', [
 type ScheduleInput = z.infer<typeof scheduleBaseSchema>;
 
 function normalizeScope<T extends ScheduleInput>(data: T) {
+  if (data.platformType === 'non_eks') {
+    return {
+      ...data,
+      scope: 'workload' as const,
+      appName: data.appName ?? '',
+      workloadKind: 'EC2' as const,
+      excludedWorkloads: [] as string[],
+      syncPolicy: 'none' as const,
+      argocdInstanceId: null,
+      namespace: data.ec2Region ?? data.namespace,
+    };
+  }
+
   if (data.scope === 'namespace') {
     return {
       ...data,
@@ -131,22 +148,44 @@ function wrapNormalize(data: ScheduleInput) {
 export const createScheduleSchema = z
   .preprocess((val) => ({ recurrence: 'daily', ...(val as object) }), scheduleBaseSchema)
   .transform(wrapNormalize)
-  .refine((data) => data.scope !== 'workload' || data.appName.length > 0, {
-    message: 'Workload is required for single-workload schedules',
-    path: ['appName'],
-  });
+  .refine(
+    (data) =>
+      data.platformType === 'non_eks' ||
+      data.scope !== 'workload' ||
+      (data.appName?.length ?? 0) > 0,
+    {
+      message: 'Workload is required for single-workload schedules',
+      path: ['appName'],
+    }
+  )
+  .refine(
+    (data) =>
+      data.platformType !== 'non_eks' ||
+      ((data.appName?.length ?? 0) > 0 &&
+        Boolean(data.awsCredentialId) &&
+        Boolean(data.ec2InstanceId) &&
+        Boolean(data.ec2Region)),
+    {
+      message: 'AWS account and EC2 instance are required for Non-EKS schedules',
+      path: ['ec2InstanceId'],
+    }
+  );
 
 export const updateScheduleBodySchema = z
   .object({
     name: z.string().min(1).max(100).optional(),
+    platformType: z.enum(['eks', 'non_eks']).optional(),
     cluster: z.string().min(1).optional(),
     namespace: z.string().min(1).optional(),
     scope: z.enum(['workload', 'namespace']).optional(),
     appName: z.string().optional(),
     workloadKind: z
-      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace'])
+      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace', 'EC2'])
       .optional(),
     excludedWorkloads: z.array(workloadKeySchema).optional(),
+    awsCredentialId: z.union([z.string().min(1), z.null()]).optional(),
+    ec2InstanceId: z.union([z.string().min(1), z.null()]).optional(),
+    ec2Region: z.union([z.string().min(1), z.null()]).optional(),
     timezone: z.string().min(1).optional(),
     syncPolicy: z.enum(['automated', 'none']).optional(),
     argocdInstanceId: z.union([z.string().min(1), z.null()]).optional(),
@@ -170,12 +209,17 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
 
   const base = {
     name: patch.name ?? existing.name,
+    platformType: (patch.platformType ?? existing.platformType ?? 'eks') as 'eks' | 'non_eks',
     cluster: patch.cluster ?? existing.cluster,
     namespace: patch.namespace ?? existing.namespace,
     scope: (patch.scope ?? existing.scope) as 'workload' | 'namespace',
     appName: patch.appName ?? existing.appName,
     workloadKind: patch.workloadKind ?? existing.workloadKind,
     excludedWorkloads: patch.excludedWorkloads ?? existing.excludedWorkloads,
+    awsCredentialId:
+      patch.awsCredentialId !== undefined ? patch.awsCredentialId : existing.awsCredentialId,
+    ec2InstanceId: patch.ec2InstanceId !== undefined ? patch.ec2InstanceId : existing.ec2InstanceId,
+    ec2Region: patch.ec2Region !== undefined ? patch.ec2Region : existing.ec2Region,
     timezone,
     syncPolicy: (patch.syncPolicy ?? existing.syncPolicy) as 'automated' | 'none',
     argocdInstanceId:

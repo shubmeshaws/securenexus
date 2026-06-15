@@ -511,8 +511,8 @@ export function BitbucketIntegrationPanel() {
             className={cn(
               'flex items-start gap-2 rounded-lg border px-3 py-2 text-xs',
               testResult.ok
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                : 'border-red-500/30 bg-red-500/10 text-red-300'
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                : 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
             )}
           >
             <AppIcon icon={testResult.ok ? BadgeCheck : CircleX} size="sm" className="mt-0.5 shrink-0" />

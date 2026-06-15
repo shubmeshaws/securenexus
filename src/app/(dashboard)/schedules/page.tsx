@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarRange,
@@ -9,17 +9,20 @@ import {
   Icons,
   Loader2,
   PenLine,
+  ScanSearch,
   Trash2,
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
 import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
+import { filterSchedulesByQuery } from '@/lib/schedule-search';
 import { cn } from '@/lib/utils';
 import { ScheduleFormDrawer } from '@/components/pod-scheduler/schedule-form-drawer';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
-import { PageHeader, GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
+import { PageHeader, GlassPanel } from '@/components/pod-scheduler/ui-primitives';
 import { usePermissions } from '@/components/auth/session-context';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -47,6 +50,7 @@ export default function SchedulesPage() {
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
   const [runSchedule, setRunSchedule] = useState<{ id: string; mode: 'shutdown' | 'startup' } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['schedules'],
@@ -80,6 +84,25 @@ export default function SchedulesPage() {
   });
 
   const schedules = data?.schedules ?? [];
+  const filteredSchedules = useMemo(
+    () => filterSchedulesByQuery(schedules, searchQuery),
+    [schedules, searchQuery]
+  );
+
+  function scheduleRowClass(schedule: Schedule) {
+    const isManual = schedule.platformType === 'non_eks';
+    return cn(
+      'border-b border-border transition-colors',
+      schedule.liveActive &&
+        'bg-red-500/[0.04] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]',
+      !schedule.liveActive &&
+        isManual &&
+        'bg-sky-500/[0.07] hover:bg-sky-500/[0.1] dark:bg-sky-500/10 dark:hover:bg-sky-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(14,165,233)]',
+      !schedule.liveActive &&
+        !isManual &&
+        'bg-amber-500/[0.07] hover:bg-amber-500/[0.1] dark:bg-amber-500/10 dark:hover:bg-amber-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(245,158,11)]'
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -108,7 +131,36 @@ export default function SchedulesPage() {
         </div>
       ) : (
         <GlassPanel>
-          <PanelHeader title="All Schedules" icon={CalendarRange} />
+          <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <AppIcon icon={CalendarRange} size="sm" className="text-blue-500" />
+              <h2 className="text-sm font-semibold text-foreground">All Schedules</h2>
+            </div>
+            <div className="relative w-full sm:max-w-xs">
+              <AppIcon
+                icon={ScanSearch}
+                size="sm"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search schedules…"
+                className="pl-9"
+                aria-label="Search schedules"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 px-5 pb-3 text-[10px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-sm bg-sky-500/30" />
+              Manual (Non-EKS / EC2)
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-sm bg-amber-500/30" />
+              EKS
+            </span>
+          </div>
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full text-sm table-modern">
               <thead>
@@ -136,20 +188,21 @@ export default function SchedulesPage() {
                     </td>
                   </tr>
                 )}
-                {schedules.map((s) => (
-                  <tr
-                    key={s.id}
-                    className={cn(
-                      'border-b border-border',
-                      s.liveActive && 'bg-red-500/[0.04] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]'
-                    )}
-                  >
+                {schedules.length > 0 && filteredSchedules.length === 0 && (
+                  <tr>
+                    <td colSpan={13} className="p-8 text-center text-muted-foreground">
+                      No schedules match &ldquo;{searchQuery}&rdquo;
+                    </td>
+                  </tr>
+                )}
+                {filteredSchedules.map((s) => (
+                  <tr key={s.id} className={scheduleRowClass(s)}>
                     <td className="px-5 py-3.5 font-medium text-foreground">{s.name}</td>
                     <td className="px-5 py-3.5">
                       <ScheduleClusterCell cluster={s.cluster} />
                     </td>
                     <td className="px-5 py-3.5">
-                      <ScheduleAccountIdCell cluster={s.cluster} />
+                      <ScheduleAccountIdCell cluster={s.cluster} awsAccountId={s.awsAccountId} />
                     </td>
                     <td className="px-5 py-3.5">
                       <ScheduleEnvironmentCell cluster={s.cluster} namespace={s.namespace} />

@@ -12,6 +12,19 @@ import {
 import { parseCpuToCores, parseMemoryToGiB } from './resource-quantity';
 import type { ClusterResourceRates } from './instance-pricing';
 
+/** Only requests affect schedulable capacity and our cost model. */
+export function isBillableResourceType(resourceType: ResourceAuditType): boolean {
+  return resourceType === 'CPU_REQUEST' || resourceType === 'MEMORY_REQUEST';
+}
+
+export function parseReplicaCountValue(value: string | null | undefined): number | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === '—' || trimmed.toLowerCase() === '(none)') return null;
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function snapshotMap(rows: ResourceFieldSnapshot[]): Map<string, ResourceFieldSnapshot> {
   const map = new Map<string, ResourceFieldSnapshot>();
   for (const row of rows) {
@@ -30,12 +43,14 @@ export function estimateCostDelta(
   replicaCount: number,
   rates: ClusterResourceRates
 ): number | null {
+  if (!isBillableResourceType(resourceType)) return null;
+
   const replicas = Math.max(1, replicaCount);
-  if (resourceType === 'CPU_REQUEST' || resourceType === 'CPU_LIMIT') {
+  if (resourceType === 'CPU_REQUEST') {
     const delta = parseCpuToCores(newValue) - parseCpuToCores(oldValue);
     return delta * replicas * rates.cpuHourlyPerCore * 24;
   }
-  if (resourceType === 'MEMORY_REQUEST' || resourceType === 'MEMORY_LIMIT') {
+  if (resourceType === 'MEMORY_REQUEST') {
     const delta = parseMemoryToGiB(newValue) - parseMemoryToGiB(oldValue);
     return delta * replicas * rates.memHourlyPerGb * 24;
   }

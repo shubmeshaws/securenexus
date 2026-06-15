@@ -16,6 +16,7 @@ import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch } from '@/lib/api-client';
 import { TECH_ICONS } from '@/lib/tech-icons';
 import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instances-panel';
+import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-panel';
 import { BitbucketIntegrationPanel } from '@/components/pod-scheduler/bitbucket-integration-panel';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
@@ -79,6 +80,7 @@ export function AdminSettingsPanel() {
     'weeks' | 'months' | 'years'
   >('months');
   const [resourceAuditDataStartDate, setResourceAuditDataStartDate] = useState('2026-06-01');
+  const [saveFeedback, setSaveFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -118,7 +120,9 @@ export function AdminSettingsPanel() {
         body: JSON.stringify(payload),
       });
     },
+    onMutate: () => setSaveFeedback(null),
     onSuccess: () => {
+      setSaveFeedback({ ok: true, message: 'Changes saved' });
       queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
       queryClient.invalidateQueries({ queryKey: ['public-settings'] });
       queryClient.invalidateQueries({ queryKey: ['overview'] });
@@ -127,6 +131,12 @@ export function AdminSettingsPanel() {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
       queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
       queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
+    },
+    onError: (err: Error) => {
+      setSaveFeedback({
+        ok: false,
+        message: err.message || 'Failed to save settings',
+      });
     },
   });
 
@@ -146,6 +156,10 @@ export function AdminSettingsPanel() {
 
       <GlassPanel className="p-5">
         <BitbucketIntegrationPanel />
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
+        <AwsCredentialsPanel />
       </GlassPanel>
 
       <GlassPanel className="p-5">
@@ -322,7 +336,17 @@ export function AdminSettingsPanel() {
         </div>
       </GlassPanel>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {saveFeedback && (
+          <p
+            className={cn(
+              'text-xs',
+              saveFeedback.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'
+            )}
+          >
+            {saveFeedback.message}
+          </p>
+        )}
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? (
             <Loader2 className="h-4 w-4 animate-spin" />

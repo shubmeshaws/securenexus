@@ -25,8 +25,14 @@ export function ScheduleClusterCell({ cluster }: { cluster: string }) {
   return <span className="font-mono text-xs text-foreground">{clusterName}</span>;
 }
 
-export function ScheduleAccountIdCell({ cluster }: { cluster: string }) {
-  const { accountId } = parseClusterDisplay(cluster);
+export function ScheduleAccountIdCell({
+  cluster,
+  awsAccountId,
+}: {
+  cluster: string;
+  awsAccountId?: string | null;
+}) {
+  const accountId = awsAccountId ?? parseClusterDisplay(cluster).accountId;
   return (
     <span className="font-mono text-xs text-muted-foreground">
       {accountId ?? '—'}

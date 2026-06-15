@@ -23,6 +23,7 @@ import {
 import {
   dedupeAppUpWithResourceChanges,
   recomputeAppUpRunningCosts,
+  recomputeResourceAuditCostEstimates,
   resetAppUpRowsForRebackfill,
   needsAppUpV2Migration,
   resetInvalidResourceDiffRows,
@@ -387,6 +388,11 @@ export function initResourceAuditJob() {
       const clusterFixed = await reconcileResourceAuditClusterNames();
       if (clusterFixed > 0) {
         console.log(`[ResourceAudit] Updated cluster name on ${clusterFixed} rows`);
+      }
+
+      const costsFixed = await recomputeResourceAuditCostEstimates();
+      if (costsFixed > 0) {
+        console.log(`[ResourceAudit] Recomputed cost on ${costsFixed} rows`);
       }
 
       const summary = await runResourceAuditJob();

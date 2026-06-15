@@ -17,20 +17,29 @@ const SIZES = {
   lg: { box: 'h-12 w-12 rounded-2xl', icon: 26 },
 } as const;
 
+/** White surface for wordmark logos (AWS) — readable in light and dark mode. */
+const SURFACE: Record<'default' | 'light', string> = {
+  default: '',
+  light: 'bg-white ring-zinc-200/90 dark:bg-white dark:ring-zinc-300/50',
+};
+
 export function BrandIcon({
   src,
   alt,
   accent = 'blue',
   size = 'sm',
+  surface = 'default',
   className,
 }: {
   src: string;
   alt: string;
   accent?: IconAccent;
   size?: keyof typeof SIZES;
+  surface?: keyof typeof SURFACE;
   className?: string;
 }) {
-  const dim = SIZES[size];
+  const dim = SIZES[surface === 'light' && size === 'sm' ? 'md' : size];
+  const iconPx = surface === 'light' && size === 'sm' ? 24 : dim.icon;
 
   return (
     <div
@@ -39,7 +48,7 @@ export function BrandIcon({
       className={cn(
         'relative flex shrink-0 items-center justify-center ring-1 ring-inset',
         dim.box,
-        ACCENT_BOX[accent],
+        surface === 'light' ? SURFACE.light : ACCENT_BOX[accent],
         className
       )}
     >
@@ -47,8 +56,8 @@ export function BrandIcon({
         src={src}
         alt=""
         aria-hidden
-        width={dim.icon}
-        height={dim.icon}
+        width={iconPx}
+        height={iconPx}
         className="object-contain"
         draggable={false}
       />

@@ -12,10 +12,12 @@ import prisma from './prisma';
 import { computeCurrentLiveStartupAt, computeNextRun, formatScheduleStartupLabel } from './scheduler-utils';
 import {
   isNamespaceSchedule,
+  isNonEksSchedule,
   NAMESPACE_SCOPE_MARKER,
   workloadKey,
 } from './workload-utils';
 import { Prisma, type Schedule } from '@prisma/client';
+import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
 
 function scheduleTeamsAlertFlag(schedule: Schedule) {
   return { teamsAlertEnabled: schedule.teamsAlertEnabled };
@@ -167,6 +169,108 @@ function resolveShutdownReplicaSave(
   return fallback;
 }
 
+async function executeEc2Shutdown(
+  schedule: Schedule,
+  triggeredBy: string,
+  options?: ShutdownOptions
+): Promise<void> {
+  const credentialId = schedule.awsCredentialId;
+  const instanceId = schedule.ec2InstanceId;
+  const region = schedule.ec2Region;
+  if (!credentialId || !instanceId || !region) {
+    throw new Error('EC2 schedule is missing AWS account or instance');
+  }
+
+  const liveUpdate = options?.clearLive
+    ? { liveActive: false, liveStartupAt: null }
+    : options?.markLive
+      ? {
+          liveActive: true,
+          liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
+        }
+      : {};
+
+  try {
+    await stopEc2Instance(credentialId, instanceId, region);
+
+    if (Object.keys(liveUpdate).length > 0) {
+      await prisma.schedule.update({
+        where: { id: schedule.id },
+        data: liveUpdate,
+      });
+    }
+
+    await logActivity({
+      action: 'schedule-shutdown',
+      cluster: schedule.cluster,
+      namespace: schedule.namespace,
+      appName: schedule.appName,
+      triggeredBy,
+      status: 'success',
+      message: `EC2 instance ${schedule.appName} (${instanceId}) stop requested in ${region}`,
+      details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
+      startTime: formatScheduleStartupLabel(schedule),
+      ...scheduleTeamsAlertFlag(schedule),
+    });
+  } catch (err) {
+    await logActivity({
+      action: 'schedule-shutdown',
+      cluster: schedule.cluster,
+      namespace: schedule.namespace,
+      appName: schedule.appName,
+      triggeredBy,
+      status: 'failed',
+      message: err instanceof Error ? err.message : 'EC2 shutdown failed',
+      details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
+      ...scheduleTeamsAlertFlag(schedule),
+    });
+    throw err;
+  }
+}
+
+async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promise<void> {
+  const credentialId = schedule.awsCredentialId;
+  const instanceId = schedule.ec2InstanceId;
+  const region = schedule.ec2Region;
+  if (!credentialId || !instanceId || !region) {
+    throw new Error('EC2 schedule is missing AWS account or instance');
+  }
+
+  try {
+    await startEc2Instance(credentialId, instanceId, region);
+
+    await prisma.schedule.update({
+      where: { id: schedule.id },
+      data: { liveActive: false, liveStartupAt: null },
+    });
+
+    await logActivity({
+      action: 'schedule-startup',
+      cluster: schedule.cluster,
+      namespace: schedule.namespace,
+      appName: schedule.appName,
+      triggeredBy,
+      status: 'success',
+      message: `EC2 instance ${schedule.appName} (${instanceId}) start requested in ${region}`,
+      details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
+      ...scheduleTeamsAlertFlag(schedule),
+    });
+  } catch (err) {
+    await logActivity({
+      action: 'schedule-startup',
+      cluster: schedule.cluster,
+      namespace: schedule.namespace,
+      appName: schedule.appName,
+      triggeredBy,
+      status: 'failed',
+      message: err instanceof Error ? err.message : 'EC2 startup failed',
+      details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
+      ...scheduleTeamsAlertFlag(schedule),
+    });
+    throw err;
+  }
+}
+
 export interface ShutdownOptions {
   markLive?: boolean;
   clearLive?: boolean;
@@ -177,6 +281,10 @@ export async function executeShutdown(
   triggeredBy: string,
   options?: ShutdownOptions
 ): Promise<void> {
+  if (isNonEksSchedule(schedule)) {
+    return executeEc2Shutdown(schedule, triggeredBy, options);
+  }
+
   const targets = await getScheduleTargets(schedule);
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
@@ -317,6 +425,10 @@ export async function executeShutdown(
 }
 
 export async function executeStartup(schedule: Schedule, triggeredBy: string): Promise<void> {
+  if (isNonEksSchedule(schedule)) {
+    return executeEc2Startup(schedule, triggeredBy);
+  }
+
   const targets = await getScheduleTargets(schedule);
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;

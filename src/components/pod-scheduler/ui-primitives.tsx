@@ -96,6 +96,7 @@ export function PanelHeader({
   icon: Icon,
   brandIconSrc,
   brandIconAlt,
+  brandIconSurface,
   action,
   accent = 'blue',
 }: {
@@ -103,6 +104,7 @@ export function PanelHeader({
   icon?: LucideIcon;
   brandIconSrc?: string;
   brandIconAlt?: string;
+  brandIconSurface?: 'default' | 'light';
   action?: React.ReactNode;
   accent?: IconAccent;
 }) {
@@ -110,7 +112,13 @@ export function PanelHeader({
     <div className="modern-card-header">
       <div className="flex items-center gap-3">
         {brandIconSrc ? (
-          <BrandIcon src={brandIconSrc} alt={brandIconAlt ?? title} accent={accent} size="sm" />
+          <BrandIcon
+            src={brandIconSrc}
+            alt={brandIconAlt ?? title}
+            accent={accent}
+            size="sm"
+            surface={brandIconSurface}
+          />
         ) : (
           Icon && <ModernIcon icon={Icon} accent={accent} size="sm" />
         )}

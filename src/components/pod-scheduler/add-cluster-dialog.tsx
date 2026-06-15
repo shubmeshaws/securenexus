@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BadgeCheck, CloudCog, FileUp, FolderOpen, Loader2 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import {
@@ -26,6 +26,8 @@ import { apiFetch } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 
 type Provider = 'kubeconfig' | 'aws';
+
+const SECRET_PLACEHOLDER = '••••••••';
 
 interface KubeconfigContextOption {
   name: string;
@@ -111,8 +113,36 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
   const [pathError, setPathError] = useState('');
   const [awsAccessKeyId, setAwsAccessKeyId] = useState('');
   const [awsSecretKey, setAwsSecretKey] = useState('');
-  const [awsRegion, setAwsRegion] = useState('us-east-1');
+  const [awsRegion, setAwsRegion] = useState('ap-south-1');
   const [awsClusterName, setAwsClusterName] = useState('');
+
+  const { data: awsSettingsData } = useQuery({
+    queryKey: ['aws-credentials'],
+    queryFn: () =>
+      apiFetch<{
+        credentials: {
+          id: string;
+          name: string;
+          accessKeyId: string;
+          secretAccessKeySet: boolean;
+          defaultRegion: string;
+        }[];
+      }>('/api/admin/aws-credentials'),
+    enabled: open && provider === 'aws',
+    retry: false,
+  });
+
+  const globalAwsConfigured = Boolean(awsSettingsData?.credentials?.length);
+
+  useEffect(() => {
+    if (!open || provider !== 'aws' || !awsSettingsData?.credentials?.length) return;
+    const settings = awsSettingsData.credentials[0];
+    setAwsAccessKeyId((current) => current || settings.accessKeyId);
+    setAwsRegion(settings.defaultRegion || 'ap-south-1');
+    if (settings.secretAccessKeySet) {
+      setAwsSecretKey((current) => current || SECRET_PLACEHOLDER);
+    }
+  }, [open, provider, awsSettingsData]);
 
   const contexts = pathPreview?.contexts ?? [];
   const selectedOption = contexts.find((ctx) => ctx.name === selectedContext) ?? null;
@@ -164,10 +194,12 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
           : {
               name,
               provider,
-              awsAccessKeyId,
-              awsSecretKey,
               awsRegion,
               awsClusterName,
+              ...(awsAccessKeyId.trim() ? { awsAccessKeyId: awsAccessKeyId.trim() } : {}),
+              ...(awsSecretKey.trim() && awsSecretKey !== SECRET_PLACEHOLDER
+                ? { awsSecretKey: awsSecretKey.trim() }
+                : {}),
             };
       return apiFetch('/api/clusters/registry', {
         method: 'POST',
@@ -199,7 +231,7 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
     setPathError('');
     setAwsAccessKeyId('');
     setAwsSecretKey('');
-    setAwsRegion('us-east-1');
+    setAwsRegion('ap-south-1');
     setAwsClusterName('');
   }
 
@@ -458,7 +490,7 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
                 <Select value={awsRegion} onValueChange={setAwsRegion}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {['us-east-1', 'us-west-2', 'eu-west-1', 'ap-south-1', 'ap-southeast-1'].map((r) => (
+                    {['ap-south-1', 'us-east-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1'].map((r) => (
                       <SelectItem key={r} value={r}>{r}</SelectItem>
                     ))}
                   </SelectContent>
@@ -469,7 +501,7 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
                 <Input
                   value={awsAccessKeyId}
                   onChange={(e) => setAwsAccessKeyId(e.target.value)}
-                  placeholder="AKIA..."
+                  placeholder={globalAwsConfigured ? 'Uses Admin → Settings credentials if empty' : 'AKIA...'}
                   autoComplete="off"
                 />
               </div>
@@ -479,10 +511,19 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
                   type="password"
                   value={awsSecretKey}
                   onChange={(e) => setAwsSecretKey(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder={
+                    globalAwsConfigured
+                      ? 'Uses saved credentials from Settings if unchanged'
+                      : 'Paste secret access key'
+                  }
                   autoComplete="new-password"
                 />
               </div>
+              {globalAwsConfigured && (
+                <p className="text-[11px] text-muted-foreground">
+                  Global AWS credentials from Admin → Settings will be used when fields are left empty.
+                </p>
+              )}
             </>
           )}
         </div>
@@ -504,7 +545,9 @@ export function AddClusterDialog({ open, onClose }: AddClusterDialogProps) {
                 ? kubeconfigFile
                   ? !name
                   : !pathFlowReady || !name || selectedAlreadyAdded
-                : !name || !awsAccessKeyId || !awsSecretKey || !awsClusterName)
+                : !name ||
+                  !awsClusterName ||
+                  (!globalAwsConfigured && (!awsAccessKeyId || !awsSecretKey)))
             }
           >
             {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Add Cluster'}

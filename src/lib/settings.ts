@@ -22,6 +22,13 @@ export const SETTING_KEYS = {
   RESOURCE_AUDIT_RETENTION_AMOUNT: 'resource_audit_retention_amount',
   RESOURCE_AUDIT_RETENTION_UNIT: 'resource_audit_retention_unit',
   RESOURCE_AUDIT_DATA_START_DATE: 'resource_audit_data_start_date',
+  AWS_ACCESS_KEY_ID: 'aws_access_key_id',
+  AWS_SECRET_ACCESS_KEY: 'aws_secret_access_key',
+  AWS_DEFAULT_REGION: 'aws_default_region',
+  AWS_LAST_TEST_AT: 'aws_last_test_at',
+  AWS_LAST_TEST_OK: 'aws_last_test_ok',
+  AWS_LAST_TEST_MESSAGE: 'aws_last_test_message',
+  AWS_IAM_USERNAME: 'aws_iam_username',
 } as const;
 
 type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
@@ -29,6 +36,7 @@ type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
 const SECRET_KEYS = new Set<SettingKey>([
   SETTING_KEYS.ARGOCD_TOKEN,
   SETTING_KEYS.KUBECONFIG_BASE64,
+  SETTING_KEYS.AWS_SECRET_ACCESS_KEY,
 ]);
 
 const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
@@ -49,6 +57,13 @@ const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT]: () => '3',
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT]: () => 'months',
   [SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE]: () => '2026-06-01',
+  [SETTING_KEYS.AWS_ACCESS_KEY_ID]: () => process.env.AWS_ACCESS_KEY_ID,
+  [SETTING_KEYS.AWS_SECRET_ACCESS_KEY]: () => process.env.AWS_SECRET_ACCESS_KEY,
+  [SETTING_KEYS.AWS_DEFAULT_REGION]: () => process.env.AWS_DEFAULT_REGION ?? 'ap-south-1',
+  [SETTING_KEYS.AWS_LAST_TEST_AT]: () => undefined,
+  [SETTING_KEYS.AWS_LAST_TEST_OK]: () => undefined,
+  [SETTING_KEYS.AWS_LAST_TEST_MESSAGE]: () => undefined,
+  [SETTING_KEYS.AWS_IAM_USERNAME]: () => undefined,
 };
 
 export function normalizeArgoCDServer(url: string): string {
@@ -66,6 +81,10 @@ const CACHE_TTL_MS = 15_000;
 function invalidateCache() {
   cache = null;
   cacheAt = 0;
+}
+
+export function invalidateSettingsCache() {
+  invalidateCache();
 }
 
 async function loadAllSettings(): Promise<Map<string, string>> {
