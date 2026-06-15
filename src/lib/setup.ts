@@ -72,8 +72,12 @@ export async function checkDatabaseConnection(): Promise<{ ok: boolean; message:
     return { ok: true, message: 'Database connection successful.' };
   } catch (err) {
     let message = err instanceof Error ? err.message : 'Database connection failed';
-    if (message.includes('denied access') || message.includes('does not exist')) {
-      message += '. Check DATABASE_URL in .env — on macOS Homebrew Postgres the role is usually your username, not "postgres".';
+    if (message.includes('denied access') && message.includes('.public')) {
+      message +=
+        ' On Ubuntu PostgreSQL 15+, grant schema access: sudo -u postgres psql -d securenexus -c "ALTER SCHEMA public OWNER TO securenexus; GRANT ALL ON SCHEMA public TO securenexus;"';
+    } else if (message.includes('denied access') || message.includes('does not exist')) {
+      message +=
+        ' Check DATABASE_URL in .env — on macOS Homebrew Postgres the role is usually your username, not "postgres".';
     }
     return { ok: false, message };
   }

@@ -56,6 +56,8 @@ Built with **Next.js 14**, **PostgreSQL**, **Prisma**, **Kubernetes client**, an
 - [Database Schema (Prisma)](#database-schema-prisma)
 - [Upgrading an Existing Install](#upgrading-an-existing-install)
 - [Security Group Ports](#security-group-ports)
+- [Expose with nginx (HTTP & HTTPS)](#expose-with-nginx-http--https)
+- [Google OAuth setup](#google-oauth-setup)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [License](#license)
@@ -101,12 +103,276 @@ The EC2 instance must reach:
 | Port | Protocol | Source | Purpose |
 |------|----------|--------|---------|
 | **22** | TCP | Your IP / bastion | SSH access |
-| **3005** | TCP | Your IP or ALB | SecureNexus web UI & API |
-| **80** | TCP | `0.0.0.0/0` | Optional — HTTP (nginx reverse proxy) |
-| **443** | TCP | `0.0.0.0/0` | Optional — HTTPS (nginx + TLS) |
+| **3005** | TCP | Private subnet / same host only | SecureNexus app (PM2) — **do not expose publicly** when using nginx |
+| **80** | TCP | `0.0.0.0/0` | HTTP — nginx reverse proxy (public access) |
+| **443** | TCP | `0.0.0.0/0` | HTTPS — nginx + TLS |
 | **5432** | TCP | **Do not expose publicly** | PostgreSQL (localhost / private subnet only) |
 
-> **Tip:** In production, put **nginx** or an **ALB** in front of the app on ports 80/443 instead of exposing 3005 publicly.
+> **Tip:** Do **not** expose port **3005** to the internet. Run SecureNexus on a private IP (or localhost) and put **nginx** on the public IP for HTTP/HTTPS. See [Expose with nginx (HTTP & HTTPS)](#expose-with-nginx-http--https).
+
+---
+
+## Expose with nginx (HTTP & HTTPS)
+
+Browsers reach SecureNexus through **nginx** on ports **80** / **443**. The Next.js app stays on **port 3005** (PM2) and is not opened to the public internet.
+
+### Architecture (recommended)
+
+```text
+Browser  →  http://13.201.60.211        (public IP, nginx :80)
+         →  http://10.1.14.230:3005   (private IP, SecureNexus / PM2)
+```
+
+| Server | Role | Example IP | Port |
+|--------|------|------------|------|
+| Nginx host | Public reverse proxy | `13.201.60.211` | 80, 443 |
+| App host | SecureNexus (PM2) | `10.1.14.230` | 3005 |
+
+**Security groups**
+
+- **Nginx host:** inbound **80**, **443** (and **22** for SSH)
+- **App host:** inbound **3005** only from nginx host private IP / VPC (not `0.0.0.0/0`)
+
+---
+
+### HTTP (public IP, no domain)
+
+Use `scripts/nginx-securenexus-http.conf` on the **nginx server** (public IP `13.201.60.211`):
+
+```nginx
+server {
+    listen 80;
+    server_name 13.201.60.211;
+
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass http://10.1.14.230:3005;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+**Install on nginx server:**
+
+```bash
+sudo apt install -y nginx
+sudo cp scripts/nginx-securenexus-http.conf /etc/nginx/sites-available/securenexus
+sudo sed -i 's/PUBLIC_IP/13.201.60.211/g; s/APP_PRIVATE_IP/10.1.14.230/g' \
+  /etc/nginx/sites-available/securenexus
+sudo ln -sf /etc/nginx/sites-available/securenexus /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**On the app server** (`10.1.14.230`), set `.env`:
+
+```env
+NEXT_PUBLIC_APP_URL=http://13.201.60.211
+```
+
+```bash
+npm run build
+pm2 restart securenexus
+```
+
+Open in browser: **`http://13.201.60.211/getting-started`** (no `:3005`).
+
+---
+
+### HTTPS (domain name required)
+
+Let's Encrypt needs a **domain** (not a bare IP). Point DNS **A record** → `13.201.60.211`, then use `scripts/nginx-securenexus-https.conf`.
+
+**1. HTTP config first** (for certbot challenge):
+
+```bash
+sudo sed -i 's/PUBLIC_IP/securenexus.example.com/g; s/APP_PRIVATE_IP/10.1.14.230/g' \
+  /etc/nginx/sites-available/securenexus
+# Use YOUR_DOMAIN in server_name instead of IP for HTTPS path
+```
+
+**2. Obtain certificate:**
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d securenexus.example.com
+```
+
+Certbot installs SSL and can merge settings from `scripts/nginx-securenexus-https.conf`. Manual template:
+
+```nginx
+server {
+    listen 80;
+    server_name securenexus.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name securenexus.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/securenexus.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/securenexus.example.com/privkey.pem;
+
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass http://10.1.14.230:3005;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+**App server `.env`:**
+
+```env
+NEXT_PUBLIC_APP_URL=https://securenexus.example.com
+```
+
+```bash
+npm run build
+pm2 restart securenexus
+```
+
+Open: **`https://securenexus.example.com/getting-started`**
+
+**Renewal:** `sudo certbot renew` (add to cron; certbot installs a systemd timer on Ubuntu).
+
+---
+
+### Same server (nginx + app on one EC2)
+
+If PM2 and nginx run on the **same** machine, use `scripts/nginx-securenexus.conf` (`proxy_pass http://127.0.0.1:3005`).
+
+---
+
+### Verify
+
+**On nginx server:**
+
+```bash
+curl -s http://13.201.60.211/api/setup/status
+```
+
+**From your laptop:**
+
+```bash
+curl -s http://13.201.60.211/api/setup/status
+```
+
+Both should return JSON. If nginx works locally but not from laptop → open **TCP 80** (and **443** for HTTPS) on the **nginx host** Security Group.
+
+---
+
+## Security Group checklist (browser not loading)
+
+| Check | Command / action |
+|-------|------------------|
+| App listening | `ss -tlnp \| grep 3005` → should show `*:3005` |
+| Works locally | `curl http://127.0.0.1:3005/api/setup/status` |
+| Ubuntu firewall | `sudo ufw allow 80/tcp` and/or `sudo ufw allow 443/tcp` on nginx host |
+| **AWS inbound rule** | Nginx host SG → Custom TCP **80** and **443**; app host SG → **3005** from nginx private IP only |
+| Correct SG attached | Same security group shown on the instance you SSH into |
+| Public IP | Nginx instance has **Public IPv4** `13.201.60.211` (or Elastic IP) |
+| URL | `http://PUBLIC_IP` or `https://YOUR_DOMAIN` via nginx — not `:3005` publicly |
+
+Test from your laptop:
+
+```bash
+curl -v --connect-timeout 5 http://13.201.60.211/api/setup/status
+```
+
+If this **times out** but curl on the server works → **Security Group** (or subnet NACL) is blocking inbound **80/443** on the nginx host. The app on `:3005` should stay private behind nginx.
+
+---
+
+## Google OAuth setup
+
+SecureNexus uses Google SSO. You must create a **dedicated OAuth client** for SecureNexus — do **not** reuse credentials from another app (Grafana, etc.). If Google shows *"Prismforce - Grafana"* or another app name on the error screen, your `GOOGLE_CLIENT_ID` belongs to the wrong project.
+
+### 1. Create credentials (Google Cloud Console)
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → **Credentials**.
+2. **Create project** (or pick an existing one for SecureNexus).
+3. **OAuth consent screen** → configure:
+   - User type: **Internal** (Google Workspace only) or **External** (any Google account)
+   - App name: e.g. **SecureNexus**
+   - Support email: your email
+   - Scopes: add `openid`, `email`, `profile` (or leave defaults)
+   - If **Testing**: add your Google account under **Test users**
+4. **Credentials** → **Create credentials** → **OAuth client ID**:
+   - Application type: **Web application**
+   - Name: `SecureNexus`
+   - **Authorized JavaScript origins** (optional for server-side flow):
+     - `http://13.201.60.211` (your public IP)
+     - or `https://securenexus.example.com` if using HTTPS
+   - **Authorized redirect URIs** — must match **exactly** (character-for-character):
+
+```text
+http://13.201.60.211/api/auth/google/callback
+```
+
+For HTTPS with a domain:
+
+```text
+https://securenexus.example.com/api/auth/google/callback
+```
+
+5. Copy **Client ID** and **Client secret** into the app server `.env`.
+
+### 2. Match `NEXT_PUBLIC_APP_URL`
+
+The redirect URI is built as:
+
+```text
+{NEXT_PUBLIC_APP_URL}/api/auth/google/callback
+```
+
+| How users access the app | `NEXT_PUBLIC_APP_URL` | Redirect URI to register in Google |
+|--------------------------|----------------------|-------------------------------------|
+| nginx HTTP (public IP) | `http://13.201.60.211` | `http://13.201.60.211/api/auth/google/callback` |
+| nginx HTTPS (domain) | `https://securenexus.example.com` | `https://securenexus.example.com/api/auth/google/callback` |
+| Local dev | `http://localhost:3005` | `http://localhost:3005/api/auth/google/callback` |
+
+**Common mistakes**
+
+- `NEXT_PUBLIC_APP_URL` still has `:3005` while users open `http://IP` (nginx) → redirect mismatch
+- Trailing slash on URL (`http://IP/`) → wrong redirect URI
+- Reusing another app's Client ID (Grafana, etc.) → **Error 400: invalid_request** / OAuth policy error
+- Consent screen in **Testing** but your account is not listed as a **Test user**
+
+### 3. Apply on the server
+
+```bash
+nano .env
+# GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+# GOOGLE_CLIENT_SECRET=GOCSPX-...
+# NEXT_PUBLIC_APP_URL=http://13.201.60.211
+
+npm run build
+pm2 restart securenexus
+```
+
+### 4. Verify
+
+Open login → **Sign in with Google**. The Google screen should show your app name (**SecureNexus**), not another product.
+
+If it still fails, click **error details** on Google's page — `redirect_uri_mismatch` means the URI in the request is not listed in the OAuth client. Compare the `redirect_uri` in the error with your Google Console entry and `.env`.
 
 ---
 
@@ -146,15 +412,55 @@ sudo systemctl enable postgresql
 sudo systemctl start postgresql
 ```
 
-Create database and user:
+Create database and user (**required on PostgreSQL 15+** — schema `public` permissions must be granted explicitly).
+
+Use an **alphanumeric-only** password (no `@`, `:`, `#`, `%`) so `DATABASE_URL` in `.env` stays simple.
 
 ```bash
 sudo -u postgres psql <<'EOF'
 CREATE USER securenexus WITH PASSWORD 'your_strong_db_password';
 CREATE DATABASE securenexus OWNER securenexus;
-GRANT ALL PRIVILEGES ON DATABASE securenexus TO securenexus;
+\c securenexus
+ALTER SCHEMA public OWNER TO securenexus;
+GRANT ALL ON SCHEMA public TO securenexus;
+GRANT CREATE ON SCHEMA public TO securenexus;
+GRANT USAGE ON SCHEMA public TO securenexus;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO securenexus;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO securenexus;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO securenexus;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO securenexus;
 EOF
 ```
+
+Or use the bundled script (edit the password inside first):
+
+```bash
+nano scripts/init-postgres.sql   # set your password
+sudo -u postgres psql -f scripts/init-postgres.sql
+```
+
+**If the database already exists** but `npm run db:push` fails with `denied access on securenexus.public` (Prisma **P1010**), run this fix as `postgres`:
+
+```bash
+sudo -u postgres psql -d securenexus <<'EOF'
+ALTER SCHEMA public OWNER TO securenexus;
+GRANT ALL ON SCHEMA public TO securenexus;
+GRANT CREATE ON SCHEMA public TO securenexus;
+GRANT USAGE ON SCHEMA public TO securenexus;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO securenexus;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO securenexus;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO securenexus;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO securenexus;
+EOF
+```
+
+Remote Postgres (replace host and use the `postgres` superuser password when prompted):
+
+```bash
+psql -h 10.1.14.230 -U postgres -d securenexus -f scripts/fix-postgres-public-schema.sql
+```
+
+Then run `npm run db:push` again.
 
 ### Step 5 — Clone the repository
 
@@ -179,12 +485,19 @@ Minimum `.env` for EC2:
 
 ```env
 DATABASE_URL=postgresql://securenexus:your_strong_db_password@localhost:5432/securenexus?schema=public
+```
+
+Use the **same password** as in Step 4. Prefer letters and numbers only (no `@`, `:`, `#`) to avoid Prisma **P1013** URL errors. For remote Postgres, set the host to your DB IP (e.g. `10.1.14.230`).
+
+```env
 JWT_SECRET=generate-a-long-random-secret-here
-NEXT_PUBLIC_APP_URL=http://<EC2_PUBLIC_IP>:3005
+NEXT_PUBLIC_APP_URL=http://<EC2_PUBLIC_IP>
 
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
 GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 ```
+
+> Use the **public URL users open in the browser** (nginx on port 80 → no `:3005`). See [Google OAuth setup](#google-oauth-setup).
 
 > ArgoCD, kubeconfig, and most integrations are configured later in **Admin → Settings** (stored in the database).
 
@@ -206,13 +519,29 @@ Start the app once to complete onboarding:
 npm run start
 ```
 
-Visit `http://<EC2_PUBLIC_IP>:3005/getting-started` and complete:
+Visit `http://<EC2_PUBLIC_IP>/getting-started` if nginx is in front (recommended), or `http://<EC2_PUBLIC_IP>:3005/getting-started` for direct access during setup. Complete:
 
 1. Database connection check
 2. Schema initialization
 3. Admin user creation
 
 Stop the temporary process with `Ctrl+C`, then continue to PM2 for production.
+
+> **Website not loading?** Run these on the **app server** before opening the browser:
+>
+> ```bash
+> # 1. App must be running (not stopped after Ctrl+C)
+> ss -tlnp | grep 3005
+> curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3005/api/setup/status
+>
+> # 2. If using nginx on a public host, verify proxy (see Expose with nginx section)
+> curl -s http://<PUBLIC_IP>/api/setup/status
+>
+> # 3. Open AWS Security Group on nginx host: TCP 80 (and 443 for HTTPS)
+> #    Do not expose 3005 to 0.0.0.0/0 — only nginx → app on private network
+> ```
+>
+> Set `NEXT_PUBLIC_APP_URL` in `.env` to the public URL users open in the browser (e.g. `http://<PUBLIC_IP>` or `https://your-domain.com`), not `localhost` or `:3005` when behind nginx.
 
 ---
 
@@ -263,6 +592,16 @@ pm2 startup
 # Run the command PM2 prints, then:
 pm2 save
 ```
+
+Confirm the app is listening on all interfaces:
+
+```bash
+pm2 logs securenexus --lines 30
+curl -s http://127.0.0.1:3005/api/setup/status
+ss -tlnp | grep 3005
+```
+
+You should see `0.0.0.0:3005` (or `*:3005`) in `ss` output. Then open `http://<EC2_PUBLIC_IP>:3005` in your browser.
 
 ### Useful PM2 commands
 
@@ -376,7 +715,7 @@ Most settings (ArgoCD instances, clusters, **AWS accounts**, alerts, retention) 
 2. Navigate to `/getting-started`.
 3. Verify PostgreSQL connectivity.
 4. **Initialize / sync database schema** — runs `prisma db push` (creates all tables on a fresh DB, or adds new columns/tables on upgrade).
-5. Sign in with Google — new users are created with **Access enabled** by default (admins can change this under **Admin → Users**).
+5. Sign in with Google — new users are created as **viewer** with **Access enabled**, limited to **Dashboard**, **Schedules** (view only), and **Live Schedules** (stop access). Admins can expand access under **Admin → Users**.
 6. Configure integrations in **Admin → Settings** (AWS accounts, ArgoCD, clusters, alerts).
 
 ---
@@ -420,6 +759,30 @@ pm2 restart securenexus   # or npm run start
 Alternatively, open `/getting-started` and run the schema step — it now **syncs** the latest schema even when tables already exist.
 
 Configure **Admin → Settings → AWS Integration** for EC2 (Non-EKS) scheduling: add named AWS accounts, test connection, optionally set an IAM role to assume.
+
+---
+
+## Database connection troubleshooting
+
+| Prisma error | Cause | Fix |
+|--------------|-------|-----|
+| **P1013** invalid port in URL | Password contains `@`, `:`, `#`, `%`, etc. without URL encoding | Encode password (see below) or use alphanumeric-only password |
+| **P1000** authentication failed | Wrong user/password in `.env` | `ALTER USER securenexus WITH PASSWORD '...'` then match `.env` |
+| **P1010** denied access on `securenexus.public` | PostgreSQL 15+ `public` schema permissions | Run the `sudo -u postgres psql -d securenexus` grant block in [Step 4](#step-4--install-postgresql) or `scripts/fix-postgres-public-schema.sql` |
+
+**URL-encode a password for `DATABASE_URL`:**
+
+```bash
+node -e "console.log(encodeURIComponent('your@actual#password'))"
+```
+
+Use the output in place of the raw password:
+
+```env
+DATABASE_URL=postgresql://securenexus:ENCODED_OUTPUT@10.1.14.230:5432/securenexus?schema=public
+```
+
+**Why `@` breaks URLs:** `postgresql://user:pass@word@host:5432/db` is parsed as host `word` and an invalid port — always encode `@` as `%40` in the password.
 
 ---
 

@@ -19,6 +19,14 @@ export const FULL_PERMISSIONS: UserPermissions = {
   liveScheduleStop: true,
 };
 
+/** Default permissions for new Google SSO users (viewer role). */
+export const DEFAULT_NEW_USER_PERMISSIONS: UserPermissions = {
+  scheduleEdit: false,
+  scheduleStart: false,
+  scheduleStop: false,
+  liveScheduleStop: true,
+};
+
 export const PERMISSION_LABELS: Record<keyof UserPermissions, string> = {
   scheduleEdit: 'Schedule — Edit',
   scheduleStart: 'Schedule — Start',

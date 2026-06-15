@@ -2,6 +2,8 @@ export type AppRole = 'admin' | 'analyst' | 'viewer';
 
 export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin'] as const;
 
+export const VIEWER_ROUTES = ['/dashboard', '/schedules', '/active-schedules'] as const;
+
 export const ROLE_LABELS: Record<AppRole, string> = {
   admin: 'Admin',
   analyst: 'Analyst',
@@ -18,6 +20,13 @@ export type { UserPermissions } from '@/lib/user-permissions';
 
 export function canAccessRoute(role: string, pathname: string): boolean {
   if (isAdminRole(role)) return true;
+
+  if (role === 'viewer') {
+    return VIEWER_ROUTES.some(
+      (route) => pathname === route || pathname.startsWith(`${route}/`)
+    );
+  }
+
   return !ADMIN_ONLY_ROUTES.some(
     (route) => pathname === route || pathname.startsWith(`${route}/`)
   );

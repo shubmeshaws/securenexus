@@ -11,7 +11,7 @@ import {
   isGoogleAuthConfigured,
   validateEmailDomain,
 } from '@/lib/google-auth';
-import { FULL_PERMISSIONS } from '@/lib/user-permissions';
+import { DEFAULT_NEW_USER_PERMISSIONS } from '@/lib/user-permissions';
 
 function getOAuthState(req: NextApiRequest): string | null {
   const cookie = req.headers.cookie;
@@ -71,7 +71,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           passwordHash,
           role: isFirstUser ? 'admin' : 'viewer',
           active: true,
-          permissions: isFirstUser ? undefined : { ...FULL_PERMISSIONS },
+          permissions: isFirstUser ? undefined : { ...DEFAULT_NEW_USER_PERMISSIONS },
         },
       });
     } else if (user.displayName !== (profile.name || profile.email)) {
