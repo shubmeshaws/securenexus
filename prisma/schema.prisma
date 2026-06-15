@@ -1,3 +1,6 @@
+// SecureNexus PostgreSQL schema — apply with: npm run db:push
+// Key models: User, Schedule (eks | non_eks), AwsCredential, Cluster, ArgoCDInstance, SystemSetting
+
 generator client {
   provider = "prisma-client-js"
 }

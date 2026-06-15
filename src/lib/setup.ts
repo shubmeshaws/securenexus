@@ -84,26 +84,37 @@ export async function ensureDatabaseSchema(): Promise<{
   created: boolean;
   message: string;
 }> {
-  const exists = await doesSchemaExist();
-  if (exists) {
-    return { ok: true, created: false, message: 'Database schema already exists.' };
-  }
+  const hadSchema = await doesSchemaExist();
 
   try {
     const root = process.cwd();
-    await execFileAsync('npx', ['prisma', 'db', 'push', '--skip-generate'], {
+    await execFileAsync('npx', ['prisma', 'db', 'push'], {
       cwd: root,
       env: { ...process.env, HOME: process.env.HOME ?? path.join(root, '.home') },
       timeout: 120_000,
     });
-    const created = await doesSchemaExist();
-    if (!created) {
-      return { ok: false, created: false, message: 'Schema creation finished but tables were not detected.' };
+
+    const schemaReady = await doesSchemaExist();
+    if (!schemaReady) {
+      return {
+        ok: false,
+        created: false,
+        message: 'Schema sync finished but core tables were not detected.',
+      };
     }
-    return { ok: true, created: true, message: 'Database schema created successfully.' };
+
+    return {
+      ok: true,
+      created: !hadSchema,
+      message: hadSchema
+        ? 'Database schema synced with the latest Prisma models.'
+        : 'Database schema created successfully.',
+    };
   } catch (err) {
-    const stderr = err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr: string }).stderr) : '';
-    const message = err instanceof Error ? `${err.message}${stderr ? `\n${stderr}` : ''}` : 'Schema creation failed';
+    const stderr =
+      err && typeof err === 'object' && 'stderr' in err ? String((err as { stderr: string }).stderr) : '';
+    const message =
+      err instanceof Error ? `${err.message}${stderr ? `\n${stderr}` : ''}` : 'Schema sync failed';
     return { ok: false, created: false, message };
   }
 }

@@ -12,7 +12,7 @@ type StepDirection = 'forward' | 'back';
 const STEP_META: Record<Step, { subtitle: string; icon: typeof Rocket }> = {
   1: { subtitle: 'Welcome — let\'s prepare your SecureNexus workspace', icon: Rocket },
   2: { subtitle: 'Verify your PostgreSQL database connection', icon: Database },
-  3: { subtitle: 'Initialize the application database schema', icon: Layers },
+  3: { subtitle: 'Create or sync the application database schema', icon: Layers },
 };
 
 export function GettingStartedPage() {
@@ -167,21 +167,22 @@ export function GettingStartedPage() {
             <p className="mb-6 text-center text-sm leading-relaxed text-zinc-600">
               {schemaExists
                 ? 'Your database schema is ready. Continue to the login page.'
-                : 'Create SecureNexus tables (users, schedules, clusters, settings) in your database.'}
+                : 'Apply the Prisma schema to PostgreSQL (creates tables on a fresh database, or adds new models on upgrade).'}
             </p>
             {schemaExists && (
               <div className="mb-4 flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
                 <AppIcon icon={BadgeCheck} className="mt-0.5 shrink-0" />
                 <span>
-                  {schemaCreated
-                    ? 'Database schema created successfully.'
-                    : 'Database schema already exists.'}
+                  {message ??
+                    (schemaCreated
+                      ? 'Database schema created successfully.'
+                      : 'Database schema synced with the latest models.')}
                 </span>
               </div>
             )}
             {!schemaExists ? (
               <OnboardingActionButton onClick={handleCreateSchema} loading={loading}>
-                Create database schema
+                Create / sync database schema
               </OnboardingActionButton>
             ) : (
               <OnboardingActionButton onClick={handleFinish} loading={loading}>

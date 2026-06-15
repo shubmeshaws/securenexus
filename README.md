@@ -4,9 +4,9 @@
 
 <br />
 
-### Pod Schedule Manager for Kubernetes & ArgoCD
+### Pod Schedule Manager for Kubernetes, EC2 & ArgoCD
 
-Automate workload shutdown and startup windows, cut non-production costs, and keep full audit visibility across your EKS clusters.
+Automate workload shutdown and startup windows for **EKS** and **EC2**, cut non-production costs, and keep full audit visibility across your clusters.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -26,7 +26,9 @@ Automate workload shutdown and startup windows, cut non-production costs, and ke
 **SecureNexus** is an open-source **Pod Schedule Manager** for teams running **Amazon EKS** with **ArgoCD**. It lets you:
 
 - **Schedule automated shutdown & startup** for Deployments and StatefulSets (daily or one-time windows)
+- **Schedule EC2 stop/start** (Non-EKS / manual instances) using named AWS accounts from Admin → Settings
 - **Scale entire namespaces** with optional workload exclusions
+- **Manage multiple named AWS credentials** (optional IAM role assumption for least-privilege keys)
 - **Pause & restore ArgoCD sync** during stop/start windows
 - **Track live schedules** with countdown timers and manual override actions
 - **Manage multiple ArgoCD instances** from a single admin panel
@@ -51,6 +53,8 @@ Built with **Next.js 14**, **PostgreSQL**, **Prisma**, **Kubernetes client**, an
 - [Docker Hub Image](#docker-hub-image)
 - [Environment Variables](#environment-variables)
 - [First-Time Setup Wizard](#first-time-setup-wizard)
+- [Database Schema (Prisma)](#database-schema-prisma)
+- [Upgrading an Existing Install](#upgrading-an-existing-install)
 - [Security Group Ports](#security-group-ports)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
@@ -87,6 +91,7 @@ The EC2 instance must reach:
 - Your **EKS API endpoints** (via kubeconfig)
 - Your **ArgoCD server** URL(s)
 - **Google OAuth** endpoints (if using Google SSO)
+- **AWS APIs** (EC2/EKS/STS) when using Admin → AWS Integration or Non-EKS schedules
 - **SMTP / Teams webhook** (if using alerts)
 
 ---
@@ -187,9 +192,11 @@ GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 
 ```bash
 npm install
-npx prisma db push
+npm run db:push    # creates / syncs all tables from prisma/schema.prisma
 npm run build
 ```
+
+> **Important:** Always run `npm run db:push` after pulling a new version. This applies new Prisma models (for example `AwsCredential`, schedule `platformType` fields) without manual SQL migrations.
 
 ### Step 8 — Open the setup wizard
 
@@ -223,8 +230,8 @@ npm install
 cp .env.example .env
 # Edit DATABASE_URL, JWT_SECRET, Google OAuth credentials
 
-# 4. Database
-npx prisma db push
+# 4. Database — sync Prisma schema to PostgreSQL
+npm run db:push
 
 # 5. Run dev server (hot reload on port 3005)
 npm run dev
@@ -316,7 +323,7 @@ docker run -d \
 Initialize schema (first run):
 
 ```bash
-docker exec -it securenexus npx prisma db push
+docker compose exec app npm run db:push
 ```
 
 ---
@@ -359,7 +366,7 @@ Replace `YOUR_DOCKERHUB_USERNAME` with your Docker Hub account name.
 
 \* Required for Google SSO login.
 
-Most settings (ArgoCD instances, clusters, alerts, retention) are managed in **Admin → Settings** after first login.
+Most settings (ArgoCD instances, clusters, **AWS accounts**, alerts, retention) are configured in **Admin → Settings** after first login — AWS access keys are **not** stored in `.env`.
 
 ---
 
@@ -368,8 +375,51 @@ Most settings (ArgoCD instances, clusters, alerts, retention) are managed in **A
 1. Start the application (`npm run dev`, `npm start`, PM2, or Docker).
 2. Navigate to `/getting-started`.
 3. Verify PostgreSQL connectivity.
-4. Create database tables (`prisma db push`).
-5. Sign in with Google and configure integrations in **Admin → Settings**.
+4. **Initialize / sync database schema** — runs `prisma db push` (creates all tables on a fresh DB, or adds new columns/tables on upgrade).
+5. Sign in with Google — new users are created with **Access enabled** by default (admins can change this under **Admin → Users**).
+6. Configure integrations in **Admin → Settings** (AWS accounts, ArgoCD, clusters, alerts).
+
+---
+
+## Database Schema (Prisma)
+
+Schema lives in `prisma/schema.prisma`. SecureNexus uses **`prisma db push`** (not checked-in SQL migrations) to keep PostgreSQL in sync with the Prisma models.
+
+| Model / area | Purpose |
+|--------------|---------|
+| `User` | Google SSO users, roles, page permissions, access enabled flag |
+| `Schedule` | EKS and Non-EKS (EC2) schedules — includes `platformType`, `awsCredentialId`, `ec2InstanceId`, `ec2Region` |
+| `AwsCredential` | Named AWS accounts (encrypted keys, optional `iamRoleName`, cached `awsAccountId`) |
+| `Cluster` | Registered kubeconfig or AWS EKS clusters |
+| `ArgoCDInstance` | Multiple ArgoCD servers |
+| `SystemSetting` | Encrypted app settings (legacy single AWS keys may migrate into `AwsCredential`) |
+| `ActivityLog` | Schedule run audit trail |
+
+**Fresh install commands:**
+
+```bash
+npm install          # runs prisma generate via postinstall
+npm run db:push      # apply schema to empty PostgreSQL
+npm run build
+```
+
+**After `git pull` on an existing server**, run `npm run db:push` before restarting the app so new tables/columns exist — otherwise API routes that touch new models (e.g. AWS Integration) will fail.
+
+---
+
+## Upgrading an Existing Install
+
+```bash
+git pull
+npm install
+npm run db:push      # sync new Prisma fields / tables
+npm run build
+pm2 restart securenexus   # or npm run start
+```
+
+Alternatively, open `/getting-started` and run the schema step — it now **syncs** the latest schema even when tables already exist.
+
+Configure **Admin → Settings → AWS Integration** for EC2 (Non-EKS) scheduling: add named AWS accounts, test connection, optionally set an IAM role to assume.
 
 ---
 
@@ -381,7 +431,7 @@ Most settings (ArgoCD instances, clusters, alerts, retention) are managed in **A
 | State | TanStack Query, Zustand |
 | Backend | Next.js API Routes, node-cron |
 | Database | PostgreSQL + Prisma ORM |
-| Integrations | Kubernetes client, ArgoCD REST API |
+| Integrations | Kubernetes client, ArgoCD REST API, AWS SDK (EKS, EC2, STS) |
 | Auth | JWT + Google OAuth |
 | Alerts | Nodemailer, Teams webhooks, in-app notifications |
 
@@ -391,7 +441,7 @@ Most settings (ArgoCD instances, clusters, alerts, retention) are managed in **A
 
 ```
 SecureNexus/
-├── prisma/schema.prisma       # Database models
+├── prisma/schema.prisma       # Database models (User, Schedule, AwsCredential, …)
 ├── src/
 │   ├── app/                   # Next.js App Router pages
 │   ├── components/            # UI & feature components
