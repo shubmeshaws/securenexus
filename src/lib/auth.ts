@@ -1,5 +1,6 @@
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { NextApiRequest, NextApiResponse } from 'next';
+import prisma from '@/lib/prisma';
 
 export const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-change-in-production';
 
@@ -37,6 +38,28 @@ export function getTokenFromRequest(req: NextApiRequest): string | null {
   return null;
 }
 
+/** Resolve the current user from DB so role/active changes apply without re-login. */
+export async function resolveAuthUserFromToken(
+  token: string
+): Promise<(AuthUser & { active: boolean }) | null> {
+  try {
+    const claims = verifyToken(token);
+    const dbUser = await prisma.user.findUnique({
+      where: { id: claims.id },
+      select: { id: true, email: true, role: true, active: true },
+    });
+    if (!dbUser) return null;
+    return {
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      active: dbUser.active,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function requireAuth(
   handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<void> | void
 ) {
@@ -45,12 +68,18 @@ export function requireAuth(
     if (!token) {
       return res.status(401).json({ error: 'Authorization token required' });
     }
-    try {
-      req.user = verifyToken(token);
-      return handler(req, res);
-    } catch {
+
+    const user = await resolveAuthUserFromToken(token);
+    if (!user) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
+
+    if (!user.active) {
+      return res.status(403).json({ error: 'Access denied. Account is not enabled.' });
+    }
+
+    req.user = { id: user.id, email: user.email, role: user.role };
+    return handler(req, res);
   };
 }
 

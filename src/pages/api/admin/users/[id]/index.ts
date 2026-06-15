@@ -38,8 +38,14 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
     const existing = await prisma.user.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'User not found' });
 
-    const { permissions, ...rest } = parsed.data;
+    const { permissions, role, ...rest } = parsed.data;
     const data: Record<string, unknown> = { ...rest };
+    if (role !== undefined) {
+      data.role = role;
+      if (role === 'admin') {
+        data.permissions = null;
+      }
+    }
     if (permissions !== undefined) {
       data.permissions = permissions;
     }

@@ -44,15 +44,10 @@ export async function enforcePermission(
 
   const user = await prisma.user.findUnique({
     where: { id: req.user.id },
-    select: { active: true, permissions: true },
+    select: { permissions: true },
   });
 
-  if (!user?.active) {
-    res.status(403).json({ error: 'Access denied. Account is not enabled.' });
-    return false;
-  }
-
-  if (!hasPermission(req.user.role, user.permissions, permission)) {
+  if (!hasPermission(req.user.role, user?.permissions, permission)) {
     res.status(403).json({ error: 'You do not have permission for this action.' });
     return false;
   }
