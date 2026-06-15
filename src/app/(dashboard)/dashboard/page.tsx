@@ -19,7 +19,7 @@ import { AppIcon } from '@/components/ui/app-icon';
 import { ModernIcon } from '@/components/ui/modern-icon';
 import { Badge } from '@/components/ui/badge';
 import { apiFetch, type OverviewData } from '@/lib/api-client';
-import { POLL_INTERVAL } from '@/components/providers/query-provider';
+import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
 import { DegradedBanner } from '@/components/pod-scheduler/degraded-banner';
 import {
   PageHeader,
@@ -43,6 +43,7 @@ import {
   ScheduleNextRunCell,
   ScheduleShutdownAtCell,
   ScheduleStartupAtCell,
+  ScheduleStatusCell,
 } from '@/components/pod-scheduler/schedule-table-cells';
 import { formatHoursDisplay, formatRelativeTime, formatUsd, parseClusterDisplay } from '@/lib/utils';
 
@@ -64,10 +65,8 @@ export default function PodSchedulerOverviewPage() {
   const { data, isLoading, isError, error, refetch, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ['overview'],
     queryFn: () => apiFetch<OverviewData>('/api/schedules/overview'),
-    refetchInterval: POLL_INTERVAL,
-    refetchOnWindowFocus: true,
+    ...scheduleLiveQueryOptions,
     retry: 1,
-    staleTime: 0,
   });
 
   const bulkMutation = useMutation({
@@ -446,13 +445,7 @@ export default function PodSchedulerOverviewPage() {
                       <tr key={s.id} className="border-b border-border">
                         <td className="px-5 py-3.5 font-medium text-foreground">{s.name}</td>
                         <td className="px-5 py-3.5">
-                          {s.liveActive ? (
-                            <span className="live-pill">Live</span>
-                          ) : (
-                            <Badge variant="secondary" className="rounded-full text-[10px] font-medium">
-                              Scheduled
-                            </Badge>
-                          )}
+                          <ScheduleStatusCell schedule={s} />
                         </td>
                         <td className="px-5 py-3.5">
                           <ScheduleClusterCell cluster={s.cluster} />

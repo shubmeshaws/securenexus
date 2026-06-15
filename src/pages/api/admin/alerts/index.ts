@@ -18,6 +18,7 @@ const activityActionSchema = z.enum([
   'schedule-startup',
   'infra-shutdown',
   'infra-startup',
+  'resource-change',
   'alert-broadcast',
 ]);
 
@@ -34,6 +35,7 @@ const updateSchema = z.object({
   teamsWebhookUrl: z.string().optional(),
   smtpPassword: z.string().optional(),
   events: z.array(activityActionSchema).optional(),
+  resourceChangeThresholdUsd: z.number().min(0).max(10000).optional(),
 });
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
@@ -52,6 +54,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
       {
         ...parsed.data,
         events: parsed.data.events as ActivityAction[] | undefined,
+        resourceChangeThresholdUsd: parsed.data.resourceChangeThresholdUsd,
       },
       req.user?.email
     );

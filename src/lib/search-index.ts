@@ -26,6 +26,7 @@ export const PAGE_SEARCH_ITEMS: SearchResult[] = [
   { id: 'page-clusters', title: 'Clusters', subtitle: 'Manage cluster registry', href: '/clusters', category: 'page', icon: PAGE_META['/clusters'].icon, keywords: 'clusters kubeconfig aws eks registry' },
   { id: 'page-schedules', title: 'Schedules', subtitle: 'Auto start/stop windows', href: '/schedules', category: 'page', icon: PAGE_META['/schedules'].icon, keywords: 'schedules cron shutdown startup' },
   { id: 'page-live-schedules', title: 'Live Schedules', subtitle: 'Executing & active now', href: '/active-schedules', category: 'page', icon: PAGE_META['/active-schedules'].icon, keywords: 'live active executing running schedule window' },
+  { id: 'page-resource-audit', title: 'Resource changes', subtitle: 'CPU memory replica changes', href: '/resource-audit', category: 'page', icon: PAGE_META['/resource-audit'].icon, keywords: 'resource audit cpu memory replicas argocd author commit' },
   { id: 'page-activity', title: 'Activity Logs', subtitle: 'Audit trail', href: '/activity', category: 'page', icon: PAGE_META['/activity'].icon, keywords: 'activity logs audit history' },
   { id: 'page-alerts', title: 'Alerts', subtitle: 'Email, Teams & in-app notifications', href: '/alerts', category: 'page', icon: PAGE_META['/alerts'].icon, keywords: 'alerts notifications email teams webhook' },
   { id: 'page-admin', title: 'Admin Panel', subtitle: 'Users & roles', href: '/admin', category: 'page', icon: PAGE_META['/admin'].icon, keywords: 'admin users roles permissions' },

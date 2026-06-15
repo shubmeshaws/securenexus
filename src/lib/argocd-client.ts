@@ -35,7 +35,31 @@ export interface ArgoCDAppSummary {
 
 export interface ArgoCDAppDetail extends ArgoCDAppSummary {
   revision: string | null;
+  branchName: string | null;
   conditions: { type: string; message: string }[];
+}
+
+export interface ArgoCDRevisionMetadata {
+  author: string;
+  date: string;
+  message: string;
+  tags?: string[];
+}
+
+export interface ArgoCDHistoryEntry {
+  revision: string;
+  deployedAt: Date;
+  appNamespace: string;
+  branchName: string | null;
+}
+
+export interface ArgoCDManagedResourceItem {
+  group: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  liveState: string;
+  targetState?: string;
 }
 
 export interface ArgoCDConnectionConfig {
@@ -229,6 +253,7 @@ class InstanceArgoCDClient {
     const res = await argoFetch(`${this.baseUrl}/applications`, {
       headers: this.headers,
       insecureTls: this.instance.insecureTls,
+      timeoutMs: 120_000,
     });
     if (!res.ok) {
       const text = await res.text();
@@ -249,12 +274,26 @@ class InstanceArgoCDClient {
     }
     const raw = (await res.json()) as Record<string, unknown>;
     const summary = mapApp(raw, this.instance);
+    const spec = raw.spec as Record<string, unknown> | undefined;
+    const source = spec?.source as Record<string, string> | undefined;
     const status = raw.status as Record<string, unknown> | undefined;
     const sync = status?.sync as Record<string, unknown> | undefined;
+    const operationState = status?.operationState as Record<string, unknown> | undefined;
     const conditions = (status?.conditions as { type: string; message: string }[]) ?? [];
+    const revision =
+      (sync?.revision as string) ??
+      (operationState?.syncResult as Record<string, string> | undefined)?.revision ??
+      null;
+    const lastSyncedAt =
+      summary.lastSyncedAt ??
+      (operationState?.finishedAt as string) ??
+      (sync?.syncedAt as string) ??
+      null;
     return {
       ...summary,
-      revision: (sync?.revision as string) ?? null,
+      lastSyncedAt,
+      revision,
+      branchName: source?.targetRevision ?? null,
       conditions,
     };
   }
@@ -293,7 +332,7 @@ class InstanceArgoCDClient {
     }
   }
 
-  private async getApplicationRaw(appName: string): Promise<Record<string, unknown>> {
+  async getApplicationRaw(appName: string): Promise<Record<string, unknown>> {
     const res = await argoFetch(`${this.baseUrl}/applications/${encodeURIComponent(appName)}`, {
       headers: this.headers,
       insecureTls: this.instance.insecureTls,
@@ -303,6 +342,105 @@ class InstanceArgoCDClient {
       throw new Error(`Failed to get ArgoCD app: ${res.status} ${text}`);
     }
     return res.json() as Promise<Record<string, unknown>>;
+  }
+
+  async getManagedResources(appName: string): Promise<ArgoCDManagedResourceItem[]> {
+    const res = await argoFetch(
+      `${this.baseUrl}/applications/${encodeURIComponent(appName)}/managed-resources`,
+      {
+        headers: this.headers,
+        insecureTls: this.instance.insecureTls,
+        timeoutMs: 30_000,
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to list managed resources for ${appName}: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as { items?: Record<string, unknown>[] };
+    return (data.items ?? []).map((item) => ({
+      group: String(item.group ?? ''),
+      kind: String(item.kind ?? ''),
+      namespace: String(item.namespace ?? ''),
+      name: String(item.name ?? ''),
+      liveState: String(item.liveState ?? ''),
+      targetState: item.targetState ? String(item.targetState) : undefined,
+    }));
+  }
+
+  async getRevisionMetadata(
+    appName: string,
+    revisionSha: string
+  ): Promise<ArgoCDRevisionMetadata | null> {
+    if (!revisionSha) return null;
+    const res = await argoFetch(
+      `${this.baseUrl}/applications/${encodeURIComponent(appName)}/revisions/${encodeURIComponent(revisionSha)}/metadata`,
+      {
+        headers: this.headers,
+        insecureTls: this.instance.insecureTls,
+        timeoutMs: 20_000,
+      }
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to get revision metadata: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    return {
+      author: String(data.author ?? 'Unknown'),
+      date: String(data.date ?? ''),
+      message: String(data.message ?? ''),
+      tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
+    };
+  }
+
+  async getApplicationHistory(appName: string): Promise<ArgoCDHistoryEntry[]> {
+    const raw = await this.getApplicationRaw(appName);
+    const metadata = raw.metadata as Record<string, string> | undefined;
+    const status = raw.status as Record<string, unknown> | undefined;
+    const history =
+      (status?.history as {
+        revision?: string;
+        deployedAt?: string;
+        source?: { targetRevision?: string };
+      }[]) ?? [];
+    const appNamespace = metadata?.namespace ?? 'argocd';
+
+    return history
+      .filter((h) => h.revision && h.deployedAt)
+      .map((h) => ({
+        revision: h.revision as string,
+        deployedAt: new Date(h.deployedAt as string),
+        appNamespace,
+        branchName: h.source?.targetRevision ?? null,
+      }))
+      .filter((h) => !Number.isNaN(h.deployedAt.getTime()));
+  }
+
+  async getManifestsAtRevision(
+    appName: string,
+    revision: string,
+    appNamespace: string
+  ): Promise<string[]> {
+    const params = new URLSearchParams({
+      revision,
+      appNamespace,
+    });
+    const res = await argoFetch(
+      `${this.baseUrl}/applications/${encodeURIComponent(appName)}/manifests?${params.toString()}`,
+      {
+        headers: this.headers,
+        insecureTls: this.instance.insecureTls,
+        timeoutMs: 45_000,
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to get manifests for ${appName}@${revision}: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as { manifests?: string[] };
+    return data.manifests ?? [];
   }
 }
 
@@ -327,8 +465,17 @@ async function resolveInstances(): Promise<ArgoCDInstanceConfig[]> {
   return [];
 }
 
+export { InstanceArgoCDClient };
+
 function clientFor(instance: ArgoCDInstanceConfig) {
   return new InstanceArgoCDClient(instance);
+}
+
+export async function getEnabledArgoCDClients(): Promise<
+  { instance: ArgoCDInstanceConfig; client: InstanceArgoCDClient }[]
+> {
+  const instances = await resolveInstances();
+  return instances.map((instance) => ({ instance, client: clientFor(instance) }));
 }
 
 async function resolveInstanceForApp(
@@ -424,6 +571,23 @@ class MultiArgoCDClient {
   async triggerSync(appName: string, instanceId?: string): Promise<void> {
     const { client } = await resolveInstanceForApp(appName, instanceId);
     return client.triggerSync(appName);
+  }
+
+  async getManagedResources(
+    appName: string,
+    instanceId?: string
+  ): Promise<ArgoCDManagedResourceItem[]> {
+    const { client } = await resolveInstanceForApp(appName, instanceId);
+    return client.getManagedResources(appName);
+  }
+
+  async getRevisionMetadata(
+    appName: string,
+    revisionSha: string,
+    instanceId?: string
+  ): Promise<ArgoCDRevisionMetadata | null> {
+    const { client } = await resolveInstanceForApp(appName, instanceId);
+    return client.getRevisionMetadata(appName, revisionSha);
   }
 
   async login(username: string, password: string): Promise<{ token: string }> {

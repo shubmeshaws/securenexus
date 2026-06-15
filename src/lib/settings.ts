@@ -1,4 +1,11 @@
-import prisma from '@/lib/prisma';
+import prisma from './prisma';
+import {
+  DEFAULT_RESOURCE_AUDIT_DATA_START,
+  DEFAULT_RESOURCE_AUDIT_RETENTION_AMOUNT,
+  DEFAULT_RESOURCE_AUDIT_RETENTION_UNIT,
+  RESOURCE_AUDIT_RETENTION_UNITS,
+  type ResourceAuditRetentionUnit,
+} from '@/lib/resource-audit-retention';
 import { decryptSecret, encryptSecret } from '@/lib/crypto';
 
 export const SETTING_KEYS = {
@@ -12,6 +19,9 @@ export const SETTING_KEYS = {
   ARGOCD_INSECURE_TLS: 'argocd_insecure_tls',
   SETUP_COMPLETE: 'setup_complete',
   ACTIVITY_LOG_RETENTION_DAYS: 'activity_log_retention_days',
+  RESOURCE_AUDIT_RETENTION_AMOUNT: 'resource_audit_retention_amount',
+  RESOURCE_AUDIT_RETENTION_UNIT: 'resource_audit_retention_unit',
+  RESOURCE_AUDIT_DATA_START_DATE: 'resource_audit_data_start_date',
 } as const;
 
 type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
@@ -36,6 +46,9 @@ const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
     process.env.ARGOCD_INSECURE_TLS === 'true' ? 'true' : undefined,
   [SETTING_KEYS.SETUP_COMPLETE]: () => undefined,
   [SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS]: () => '90',
+  [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT]: () => '3',
+  [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT]: () => 'months',
+  [SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE]: () => '2026-06-01',
 };
 
 export function normalizeArgoCDServer(url: string): string {
@@ -115,6 +128,9 @@ export interface AdminSettingsView {
   redisUrl: string;
   apiBaseUrl: string;
   activityLogRetentionDays: number;
+  resourceAuditRetentionAmount: number;
+  resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
+  resourceAuditDataStartDate: string;
 }
 
 export async function getAdminSettings(): Promise<AdminSettingsView> {
@@ -138,6 +154,21 @@ export async function getAdminSettings(): Promise<AdminSettingsView> {
       1,
       parseInt(read(SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS) || '90', 10) || 90
     ),
+    resourceAuditRetentionAmount: Math.max(
+      1,
+      parseInt(read(SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT) || String(DEFAULT_RESOURCE_AUDIT_RETENTION_AMOUNT), 10) ||
+        DEFAULT_RESOURCE_AUDIT_RETENTION_AMOUNT
+    ),
+    resourceAuditRetentionUnit: (() => {
+      const unit = read(SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT).trim().toLowerCase();
+      return (RESOURCE_AUDIT_RETENTION_UNITS as readonly string[]).includes(unit)
+        ? (unit as ResourceAuditRetentionUnit)
+        : DEFAULT_RESOURCE_AUDIT_RETENTION_UNIT;
+    })(),
+    resourceAuditDataStartDate: (() => {
+      const value = read(SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE).trim();
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : DEFAULT_RESOURCE_AUDIT_DATA_START;
+    })(),
   };
 }
 
@@ -151,6 +182,9 @@ export interface AdminSettingsInput {
   redisUrl?: string;
   apiBaseUrl?: string;
   activityLogRetentionDays?: number;
+  resourceAuditRetentionAmount?: number;
+  resourceAuditRetentionUnit?: ResourceAuditRetentionUnit;
+  resourceAuditDataStartDate?: string;
 }
 
 const SECRET_PLACEHOLDER = '••••••••';
@@ -222,6 +256,42 @@ export async function updateAdminSettings(
     upserts.push({
       key: SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS,
       value: String(days),
+      isSecret: false,
+    });
+  }
+  if (
+    input.resourceAuditRetentionAmount !== undefined ||
+    input.resourceAuditRetentionUnit !== undefined
+  ) {
+    const current = await getAdminSettings();
+    const unit = input.resourceAuditRetentionUnit ?? current.resourceAuditRetentionUnit;
+    if (!(RESOURCE_AUDIT_RETENTION_UNITS as readonly string[]).includes(unit)) {
+      throw new Error('Invalid resource audit retention unit');
+    }
+    const amountRaw = input.resourceAuditRetentionAmount ?? current.resourceAuditRetentionAmount;
+    const max = unit === 'weeks' ? 52 : unit === 'months' ? 36 : 10;
+    const amount = Math.min(max, Math.max(1, Math.round(amountRaw)));
+    upserts.push(
+      {
+        key: SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT,
+        value: String(amount),
+        isSecret: false,
+      },
+      {
+        key: SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT,
+        value: unit,
+        isSecret: false,
+      }
+    );
+  }
+  if (input.resourceAuditDataStartDate !== undefined) {
+    const value = input.resourceAuditDataStartDate.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error('Invalid resource audit data start date');
+    }
+    upserts.push({
+      key: SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE,
+      value,
       isSecret: false,
     });
   }

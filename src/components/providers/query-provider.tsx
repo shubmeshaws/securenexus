@@ -20,3 +20,13 @@ export function QueryProvider({ children }: { children: ReactNode }) {
 }
 
 export const POLL_INTERVAL = 30_000;
+
+/** Faster refresh for schedules / live window (sidebar badge, tables). */
+export const SCHEDULE_POLL_INTERVAL = 10_000;
+
+export const scheduleLiveQueryOptions = {
+  refetchInterval: SCHEDULE_POLL_INTERVAL,
+  refetchIntervalInBackground: true,
+  refetchOnWindowFocus: true,
+  staleTime: 5_000,
+} as const;

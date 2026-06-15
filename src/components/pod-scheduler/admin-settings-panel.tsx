@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Database,
+  Fingerprint,
   Globe2,
   Icons,
   Loader2,
@@ -13,12 +14,21 @@ import {
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch } from '@/lib/api-client';
+import { TECH_ICONS } from '@/lib/tech-icons';
 import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instances-panel';
+import { BitbucketIntegrationPanel } from '@/components/pod-scheduler/bitbucket-integration-panel';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
 const SECRET_PLACEHOLDER = '••••••••';
@@ -30,7 +40,24 @@ export interface AdminSettings {
   redisUrl: string;
   apiBaseUrl: string;
   activityLogRetentionDays: number;
+  resourceAuditRetentionAmount: number;
+  resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
+  resourceAuditDataStartDate: string;
 }
+
+const RESOURCE_AUDIT_RETENTION_PRESETS: {
+  label: string;
+  amount: number;
+  unit: 'weeks' | 'months' | 'years';
+}[] = [
+  { label: '1 week', amount: 1, unit: 'weeks' },
+  { label: '2 weeks', amount: 2, unit: 'weeks' },
+  { label: '1 month', amount: 1, unit: 'months' },
+  { label: '3 months', amount: 3, unit: 'months' },
+  { label: '6 months', amount: 6, unit: 'months' },
+  { label: '1 year', amount: 1, unit: 'years' },
+  { label: '2 years', amount: 2, unit: 'years' },
+];
 
 export function AdminSettingsPanel() {
   const queryClient = useQueryClient();
@@ -47,6 +74,11 @@ export function AdminSettingsPanel() {
   const [redisUrl, setRedisUrl] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
   const [activityLogRetentionDays, setActivityLogRetentionDays] = useState(90);
+  const [resourceAuditRetentionAmount, setResourceAuditRetentionAmount] = useState(3);
+  const [resourceAuditRetentionUnit, setResourceAuditRetentionUnit] = useState<
+    'weeks' | 'months' | 'years'
+  >('months');
+  const [resourceAuditDataStartDate, setResourceAuditDataStartDate] = useState('2026-06-01');
 
   useEffect(() => {
     if (!settings) return;
@@ -56,7 +88,15 @@ export function AdminSettingsPanel() {
     setRedisUrl(settings.redisUrl);
     setApiBaseUrl(settings.apiBaseUrl);
     setActivityLogRetentionDays(settings.activityLogRetentionDays);
+    setResourceAuditRetentionAmount(settings.resourceAuditRetentionAmount);
+    setResourceAuditRetentionUnit(settings.resourceAuditRetentionUnit);
+    setResourceAuditDataStartDate(settings.resourceAuditDataStartDate);
   }, [settings]);
+
+  const retentionPresetValue = `${resourceAuditRetentionAmount}:${resourceAuditRetentionUnit}`;
+  const matchedPreset = RESOURCE_AUDIT_RETENTION_PRESETS.find(
+    (preset) => `${preset.amount}:${preset.unit}` === retentionPresetValue
+  );
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -66,6 +106,9 @@ export function AdminSettingsPanel() {
         redisUrl,
         apiBaseUrl,
         activityLogRetentionDays,
+        resourceAuditRetentionAmount,
+        resourceAuditRetentionUnit,
+        resourceAuditDataStartDate,
       };
       if (kubeconfigBase64 && kubeconfigBase64 !== SECRET_PLACEHOLDER) {
         payload.kubeconfigBase64 = kubeconfigBase64;
@@ -82,6 +125,8 @@ export function AdminSettingsPanel() {
       queryClient.invalidateQueries({ queryKey: ['argocd-apps'] });
       queryClient.invalidateQueries({ queryKey: ['infrastructure'] });
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
+      queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
+      queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
     },
   });
 
@@ -100,7 +145,16 @@ export function AdminSettingsPanel() {
       </GlassPanel>
 
       <GlassPanel className="p-5">
-        <PanelHeader title="Kubernetes" icon={ServerCog} />
+        <BitbucketIntegrationPanel />
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
+        <PanelHeader
+          title="Kubernetes"
+          brandIconSrc={TECH_ICONS.kubernetes}
+          brandIconAlt="Kubernetes"
+          accent="sky"
+        />
         <div className="mt-4 space-y-2">
           <Label>Global kubeconfig (base64) — optional</Label>
             <textarea
@@ -182,6 +236,89 @@ export function AdminSettingsPanel() {
           <p className="text-[11px] text-muted-foreground">
             Activity logs older than this are removed automatically. Users only see logs within this window.
           </p>
+        </div>
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
+        <PanelHeader title="Resource Changes" icon={Fingerprint} />
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2 sm:col-span-2">
+            <Label>Retention period</Label>
+            <Select
+              value={matchedPreset ? retentionPresetValue : 'custom'}
+              onValueChange={(value) => {
+                if (value === 'custom') return;
+                const [amount, unit] = value.split(':');
+                setResourceAuditRetentionAmount(parseInt(amount, 10) || 3);
+                setResourceAuditRetentionUnit(unit as 'weeks' | 'months' | 'years');
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select retention" />
+              </SelectTrigger>
+              <SelectContent>
+                {RESOURCE_AUDIT_RETENTION_PRESETS.map((preset) => (
+                  <SelectItem key={preset.label} value={`${preset.amount}:${preset.unit}`}>
+                    {preset.label}
+                  </SelectItem>
+                ))}
+                {!matchedPreset && (
+                  <SelectItem value="custom">
+                    Custom ({resourceAuditRetentionAmount}{' '}
+                    {resourceAuditRetentionAmount === 1
+                      ? resourceAuditRetentionUnit.slice(0, -1)
+                      : resourceAuditRetentionUnit}
+                    )
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              Data older than this window is removed automatically from Resource Changes and git
+              history.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Custom amount</Label>
+            <Input
+              type="number"
+              min={1}
+              max={resourceAuditRetentionUnit === 'weeks' ? 52 : resourceAuditRetentionUnit === 'months' ? 36 : 10}
+              value={resourceAuditRetentionAmount}
+              onChange={(e) =>
+                setResourceAuditRetentionAmount(parseInt(e.target.value, 10) || 1)
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Custom unit</Label>
+            <Select
+              value={resourceAuditRetentionUnit}
+              onValueChange={(value) =>
+                setResourceAuditRetentionUnit(value as 'weeks' | 'months' | 'years')
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="weeks">Weeks</SelectItem>
+                <SelectItem value="months">Months</SelectItem>
+                <SelectItem value="years">Years</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>Earliest data date</Label>
+            <Input
+              type="date"
+              value={resourceAuditDataStartDate}
+              onChange={(e) => setResourceAuditDataStartDate(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Resource Changes never shows or keeps data before this date. Default: 1 June 2026.
+            </p>
+          </div>
         </div>
       </GlassPanel>
 

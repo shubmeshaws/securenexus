@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { getPageMeta } from '@/lib/page-meta';
 import { ModernIcon, type IconAccent } from '@/components/ui/modern-icon';
+import { BrandIcon } from '@/components/ui/brand-icon';
 import type { LucideIcon } from 'lucide-react';
 
 const STAT_GLOW: Record<IconAccent, string> = {
@@ -93,18 +94,26 @@ export function GlassPanel({
 export function PanelHeader({
   title,
   icon: Icon,
+  brandIconSrc,
+  brandIconAlt,
   action,
   accent = 'blue',
 }: {
   title: string;
   icon?: LucideIcon;
+  brandIconSrc?: string;
+  brandIconAlt?: string;
   action?: React.ReactNode;
   accent?: IconAccent;
 }) {
   return (
     <div className="modern-card-header">
       <div className="flex items-center gap-3">
-        {Icon && <ModernIcon icon={Icon} accent={accent} size="sm" />}
+        {brandIconSrc ? (
+          <BrandIcon src={brandIconSrc} alt={brandIconAlt ?? title} accent={accent} size="sm" />
+        ) : (
+          Icon && <ModernIcon icon={Icon} accent={accent} size="sm" />
+        )}
         <h2 className="modern-card-title">{title}</h2>
       </div>
       {action}

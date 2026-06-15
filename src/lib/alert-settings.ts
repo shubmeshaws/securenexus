@@ -16,6 +16,7 @@ export const DEFAULT_ALERT_EVENTS: ActivityAction[] = [
   'scale-up',
   'infra-shutdown',
   'infra-startup',
+  'resource-change',
 ];
 
 export interface AlertConfigJson {
@@ -29,6 +30,7 @@ export interface AlertConfigJson {
   smtpUser: string;
   smtpSecure: boolean;
   events: ActivityAction[];
+  resourceChangeThresholdUsd?: number;
 }
 
 export const DEFAULT_ALERT_CONFIG: AlertConfigJson = {
@@ -42,6 +44,7 @@ export const DEFAULT_ALERT_CONFIG: AlertConfigJson = {
   smtpUser: '',
   smtpSecure: false,
   events: [...DEFAULT_ALERT_EVENTS],
+  resourceChangeThresholdUsd: 5,
 };
 
 export interface AlertSettingsView {
@@ -57,6 +60,7 @@ export interface AlertSettingsView {
   teamsWebhookSet: boolean;
   smtpPasswordSet: boolean;
   events: ActivityAction[];
+  resourceChangeThresholdUsd: number;
 }
 
 export interface AlertSettingsInput {
@@ -72,6 +76,7 @@ export interface AlertSettingsInput {
   teamsWebhookUrl?: string;
   smtpPassword?: string;
   events?: ActivityAction[];
+  resourceChangeThresholdUsd?: number;
 }
 
 export const SECRET_PLACEHOLDER = '••••••••';
@@ -106,6 +111,7 @@ function parseConfig(raw: string | undefined): AlertConfigJson {
       ...parsed,
       events: parsed.events?.length ? parsed.events : [...DEFAULT_ALERT_EVENTS],
       emailRecipients: parsed.emailRecipients ?? [],
+      resourceChangeThresholdUsd: parsed.resourceChangeThresholdUsd ?? 5,
     };
   } catch {
     return { ...DEFAULT_ALERT_CONFIG, events: [...DEFAULT_ALERT_EVENTS] };
@@ -131,6 +137,7 @@ export async function getAlertSettings(): Promise<AlertSettingsView> {
     teamsWebhookSet: Boolean(webhook),
     smtpPasswordSet: Boolean(smtpPass),
     events: config.events,
+    resourceChangeThresholdUsd: config.resourceChangeThresholdUsd ?? 5,
   };
 }
 
@@ -178,6 +185,8 @@ export async function updateAlertSettings(
     smtpUser: input.smtpUser ?? current.smtpUser,
     smtpSecure: input.smtpSecure ?? current.smtpSecure,
     events: input.events ?? current.events,
+    resourceChangeThresholdUsd:
+      input.resourceChangeThresholdUsd ?? current.resourceChangeThresholdUsd ?? 5,
   };
 
   await prisma.systemSetting.upsert({

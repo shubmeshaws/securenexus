@@ -6,7 +6,6 @@ import {
   BadgeCheck,
   Bolt,
   CircleX,
-  CloudCog,
   Loader2,
   PenLine,
   PlusCircle,
@@ -15,6 +14,7 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, getAuthToken, type ArgoCDInstance } from '@/lib/api-client';
 import { getApiBaseUrl } from '@/lib/client-settings';
+import { TECH_ICONS } from '@/lib/tech-icons';
 import { PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -183,7 +183,12 @@ export function ArgoCDInstancesPanel() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <PanelHeader title="ArgoCD Integrations" icon={CloudCog} />
+        <PanelHeader
+          title="ArgoCD Integrations"
+          brandIconSrc={TECH_ICONS.argocd}
+          brandIconAlt="Argo CD"
+          accent="violet"
+        />
         <Button size="sm" onClick={openCreate}>
           <AppIcon icon={PlusCircle} size="sm" />
           Add ArgoCD

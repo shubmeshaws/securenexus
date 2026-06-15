@@ -1,8 +1,23 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { formatInTimeZone } from 'date-fns-tz';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 export const IST_TIMEZONE = 'Asia/Kolkata';
+
+/** YYYY-MM-DD for `<input type="date">` in IST (matches displayed timestamps). */
+export function formatDateInputIST(date: Date = new Date()): string {
+  return formatInTimeZone(date, IST_TIMEZONE, 'yyyy-MM-dd');
+}
+
+/** Start of calendar day in IST as UTC Date for API queries. */
+export function parseDateInputStartIST(dateStr: string): Date {
+  return fromZonedTime(`${dateStr}T00:00:00`, IST_TIMEZONE);
+}
+
+/** End of calendar day in IST as UTC Date for API queries. */
+export function parseDateInputEndIST(dateStr: string): Date {
+  return fromZonedTime(`${dateStr}T23:59:59.999`, IST_TIMEZONE);
+}
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -24,7 +39,12 @@ export function formatRelativeTime(date: string | Date | null | undefined): stri
 export function formatTimestampIST(date: string | Date | null | undefined): string {
   if (!date) return '—';
   const d = typeof date === 'string' ? new Date(date) : date;
-  return formatInTimeZone(d, IST_TIMEZONE, 'dd MMM yyyy, hh:mm:ss a') + ' IST';
+  if (Number.isNaN(d.getTime())) return '—';
+  try {
+    return formatInTimeZone(d, IST_TIMEZONE, 'dd MMM yyyy, hh:mm:ss a') + ' IST';
+  } catch {
+    return '—';
+  }
 }
 
 export function formatHoursDisplay(hours: number): string {
@@ -36,7 +56,7 @@ export function formatHoursDisplay(hours: number): string {
 }
 
 export function formatUsd(amount: number): string {
-  if (amount <= 0) return '$0.00';
+  if (!Number.isFinite(amount) || amount <= 0) return '$0.00';
   const fractionDigits = amount < 0.01 ? 4 : 2;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -44,6 +64,19 @@ export function formatUsd(amount: number): string {
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits,
   }).format(amount);
+}
+
+/** Signed daily cost impact (increases positive, decreases negative). */
+export function formatSignedUsd(amount: number): string {
+  if (!Number.isFinite(amount) || amount === 0) return '$0.00';
+  const fractionDigits = Math.abs(amount) < 0.01 ? 4 : 2;
+  const formatted = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(Math.abs(amount));
+  return amount > 0 ? `+${formatted}` : `-${formatted}`;
 }
 
 /** Sum savings without zeroing sub-cent amounts before display. */
@@ -100,19 +133,30 @@ export function inferScheduleEnvironment(namespace: string, cluster: string): st
 }
 
 /** Parse EKS-style cluster names like `123456789012/my-cluster`. */
-export function parseClusterDisplay(cluster: string): {
+export function parseClusterDisplay(cluster: string | null | undefined): {
   accountId: string | null;
   clusterName: string;
 } {
-  const slash = cluster.indexOf('/');
+  if (cluster == null || typeof cluster !== 'string') {
+    return { accountId: null, clusterName: '—' };
+  }
+  const normalized = cluster.trim();
+  if (
+    normalized === 'in-cluster' ||
+    normalized === 'kubernetes.default.svc' ||
+    normalized === 'https://kubernetes.default.svc'
+  ) {
+    return { accountId: null, clusterName: 'in-cluster' };
+  }
+  const slash = normalized.indexOf('/');
   if (slash > 0) {
-    const accountId = cluster.slice(0, slash);
-    const clusterName = cluster.slice(slash + 1);
+    const accountId = normalized.slice(0, slash);
+    const clusterName = normalized.slice(slash + 1);
     if (/^\d{10,14}$/.test(accountId)) {
       return { accountId, clusterName };
     }
   }
-  return { accountId: null, clusterName: cluster };
+  return { accountId: null, clusterName: normalized };
 }
 
 /** Display 24h HH:mm as 12h with AM/PM. */

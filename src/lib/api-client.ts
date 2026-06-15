@@ -2,7 +2,8 @@ import { getApiBaseUrl } from '@/lib/client-settings';
 
 export { isDemoMode } from '@/lib/client-settings';
 
-function formatApiError(error: unknown, status: number): string {
+function formatApiError(error: unknown, status: number, message?: string): string {
+  if (typeof message === 'string' && message.trim()) return message;
   if (typeof error === 'string' && error.trim()) return error;
   if (error && typeof error === 'object') {
     const flattened = error as {
@@ -43,8 +44,11 @@ export async function apiFetch<T>(
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: unknown };
-    throw new Error(formatApiError(body.error, res.status));
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: unknown;
+      message?: string;
+    };
+    throw new Error(formatApiError(body.error, res.status, body.message));
   }
 
   return res.json() as Promise<T>;

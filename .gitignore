@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 *.tsbuildinfo
+
+# local git mirrors for Bitbucket sync
+/.git-repos/

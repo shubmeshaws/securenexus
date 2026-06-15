@@ -7,7 +7,7 @@ import { Activity, CircleStop, Icons, Loader2 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch } from '@/lib/api-client';
 import { formatRelativeTime } from '@/lib/utils';
-import { POLL_INTERVAL } from '@/components/providers/query-provider';
+import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { usePermissions } from '@/components/auth/session-context';
 import { PageHeader, GlassPanel, PanelHeader, EmptyState } from '@/components/pod-scheduler/ui-primitives';
@@ -59,7 +59,7 @@ export function ActiveSchedulesContent() {
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['schedules-live'],
     queryFn: () => apiFetch<LiveSchedulesResponse>('/api/schedules/live'),
-    refetchInterval: POLL_INTERVAL,
+    ...scheduleLiveQueryOptions,
   });
 
   const stopMutation = useMutation({

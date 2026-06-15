@@ -20,6 +20,7 @@ const ACTION_TITLES: Record<string, string> = {
   'schedule-startup': 'Scheduled startup',
   'infra-shutdown': 'Infrastructure stopped',
   'infra-startup': 'Infrastructure started',
+  'resource-change': 'Resource increase detected',
 };
 
 export interface AlertDispatchInput extends LogActivityParams {

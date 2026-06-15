@@ -28,6 +28,7 @@ const ACTION_COLORS: Record<string, { bg: string; accent: string; emoji: string 
   'infra-startup': { bg: '#ecfdf5', accent: '#059669', emoji: '🚀' },
   'sync-off': { bg: '#fffbeb', accent: '#d97706', emoji: '🔕' },
   'sync-on': { bg: '#ecfdf5', accent: '#059669', emoji: '🔔' },
+  'resource-change': { bg: '#fef2f2', accent: '#dc2626', emoji: '📈' },
 };
 
 function buildHtmlEmail(payload: EmailAlertPayload): string {

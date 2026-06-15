@@ -265,6 +265,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] });
       queryClient.invalidateQueries({ queryKey: ['overview'] });
+      queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
       onClose();
     },
   });

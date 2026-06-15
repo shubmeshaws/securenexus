@@ -142,6 +142,7 @@ export const Icons = {
     activity: ScrollText,
     admin: ShieldCheck,
     liveSchedules: Activity,
+    resourceAudit: Fingerprint,
     alerts: BellRing,
   },
   dashboard: {

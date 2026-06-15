@@ -31,6 +31,7 @@ export function getVisibleNavHrefs(role: string, active: boolean): string[] {
     '/schedules',
     '/active-schedules',
     '/activity',
+    '/resource-audit',
     '/alerts',
     '/admin',
   ];

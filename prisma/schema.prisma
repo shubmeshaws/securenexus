@@ -132,3 +132,156 @@ model SystemSetting {
   updatedBy String?
   updatedAt DateTime @updatedAt
 }
+
+model ResourceChangeAudit {
+  id                        String   @id @default(uuid())
+  argocdApp                 String
+  cluster                   String
+  environment               String
+  namespace                 String
+  workload                  String
+  containerName             String
+  resourceType              String   // CPU_REQUEST | CPU_LIMIT | MEMORY_REQUEST | MEMORY_LIMIT | REPLICAS
+  oldValue                  String
+  newValue                  String
+  revisionSha               String
+  branchName                String?
+  podCount                  Int?
+  authorName                String
+  authorEmail               String?
+  commitMessage             String?  @db.Text
+  syncedAt                  DateTime
+  estimatedCostImpactPerDay Decimal? @db.Decimal(12, 4)
+  createdAt                 DateTime @default(now())
+
+  @@index([cluster, namespace, syncedAt])
+  @@index([syncedAt(sort: Desc)])
+  @@index([authorEmail])
+  @@index([argocdApp])
+}
+
+model ResourceAppRevision {
+  id              String   @id @default(cuid())
+  argocdApp       String   @unique
+  cluster         String?
+  namespace       String?
+  lastRevisionSha String
+  branchName      String?
+  lastSyncedAt    DateTime
+  updatedAt       DateTime @updatedAt
+
+  @@index([cluster, namespace])
+}
+
+model ResourceAppCatalog {
+  id        String   @id @default(cuid())
+  argocdApp String   @unique
+  cluster   String
+  namespace String
+  updatedAt DateTime @updatedAt
+
+  @@index([cluster, namespace])
+}
+
+model ResourceSnapshot {
+  id            String   @id @default(cuid())
+  argocdApp     String
+  namespace     String
+  workload      String
+  containerName String
+  resourceType  String
+  value         String
+  capturedAt    DateTime @default(now())
+
+  @@unique([argocdApp, namespace, workload, containerName, resourceType])
+}
+
+model BitbucketConnection {
+  id           String   @id @default("default")
+  username     String
+  authUsername String?
+  tokenEnc     String
+  tokenType    String   @default("user_api") // user_api | workspace_access
+  workspace    String?
+  status     String   @default("disconnected") // connected | disconnected | error
+  lastTestAt DateTime?
+  lastError  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  repositories GitRepository[]
+}
+
+model GitRepository {
+  id              String    @id @default(cuid())
+  name            String
+  workspace       String
+  repoSlug        String
+  repoUrl         String
+  defaultBranch   String?
+  pullIntervalMin Int       @default(1440)
+  enabled         Boolean   @default(true)
+  clonePath       String?
+  clonedAt        DateTime?
+  syncStatus      String    @default("idle") // idle | cloning | pulling
+  syncStartedAt   DateTime?
+  lastPullAt      DateTime?
+  lastCommitSha   String?
+  lastPullStatus  String?
+  lastPullError   String?   @db.Text
+  connectionId    String    @default("default")
+  connection      BitbucketConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  gitResourceChanges GitResourceChange[]
+  appSources         ArgoCDAppSource[]
+
+  @@unique([workspace, repoSlug])
+  @@index([enabled, lastPullAt])
+}
+
+model ArgoCDAppSource {
+  id                 String   @id @default(cuid())
+  argocdApp          String   @unique
+  argocdInstanceId   String
+  argocdInstanceName String
+  cluster            String?
+  namespace          String?
+  repoUrl            String
+  repoPath           String?
+  targetRevision     String?
+  helmValueFiles     String[] @default([])
+  gitRepositoryId    String?
+  gitRepository      GitRepository? @relation(fields: [gitRepositoryId], references: [id], onDelete: SetNull)
+  updatedAt          DateTime @updatedAt
+
+  @@index([gitRepositoryId])
+  @@index([repoUrl])
+  @@index([cluster, namespace])
+}
+
+model GitResourceChange {
+  id              String   @id @default(cuid())
+  gitRepositoryId String
+  gitRepository   GitRepository @relation(fields: [gitRepositoryId], references: [id], onDelete: Cascade)
+  commitSha       String
+  branchName      String?
+  authorName      String?
+  authorEmail     String?
+  commitMessage   String?  @db.Text
+  committedAt     DateTime
+  filePath        String
+  workload        String?
+  containerName   String
+  resourceType    String
+  oldValue        String
+  newValue        String
+  pulledAt        DateTime @default(now())
+  auditLinked     Boolean  @default(false)
+
+  @@unique([gitRepositoryId, commitSha, filePath, workload, containerName, resourceType])
+  @@index([gitRepositoryId, committedAt(sort: Desc)])
+  @@index([commitSha])
+  @@index([auditLinked])
+}

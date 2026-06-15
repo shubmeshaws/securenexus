@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ICON_STROKE, Icons } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
-import { POLL_INTERVAL } from '@/components/providers/query-provider';
+import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
 import { cn } from '@/lib/utils';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { useSidebar } from './sidebar-context';
@@ -19,6 +19,7 @@ const navItems = [
   { href: '/schedules', label: 'Schedules', icon: Icons.pages.schedules },
   { href: '/active-schedules', label: 'Live Schedules', icon: Icons.pages.liveSchedules, liveCount: true },
   { href: '/activity', label: 'Activity Logs', icon: Icons.pages.activity },
+  { href: '/resource-audit', label: 'Resource changes', icon: Icons.pages.resourceAudit },
   { href: '/alerts', label: 'Alerts', icon: Icons.pages.alerts },
   { href: '/admin', label: 'Admin Panel', icon: Icons.pages.admin },
 ];
@@ -38,7 +39,7 @@ export function AppSidebar() {
   const { data: liveData } = useQuery({
     queryKey: ['schedules-live'],
     queryFn: () => apiFetch<{ total: number }>('/api/schedules/live'),
-    refetchInterval: POLL_INTERVAL,
+    ...scheduleLiveQueryOptions,
   });
   const liveCount = liveData?.total ?? 0;
 
@@ -107,7 +108,7 @@ export function AppSidebar() {
                 >
                   <Icon className="h-4 w-4" strokeWidth={ICON_STROKE} />
                   {badgeCount > 0 && collapsed && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[9px] font-bold text-white ring-2 ring-card">
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white ring-2 ring-card">
                       {badgeCount > 9 ? '9+' : badgeCount}
                     </span>
                   )}
@@ -116,7 +117,7 @@ export function AppSidebar() {
                   <>
                     <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
                     {badgeCount > 0 && (
-                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-700 dark:text-red-400">
                         {badgeCount}
                       </span>
                     )}

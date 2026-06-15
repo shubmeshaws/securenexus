@@ -44,6 +44,7 @@ const EVENT_LABELS: Record<ActivityAction, string> = {
   'sync-on': 'Sync enabled',
   'infra-shutdown': 'Infrastructure stop',
   'infra-startup': 'Infrastructure start',
+  'resource-change': 'Resource increase detected',
   'alert-broadcast': 'Admin broadcast',
 };
 
@@ -60,6 +61,7 @@ interface AlertSettings {
   teamsWebhookSet: boolean;
   smtpPasswordSet: boolean;
   events: ActivityAction[];
+  resourceChangeThresholdUsd: number;
 }
 
 interface TestResult {
@@ -105,6 +107,7 @@ export function AlertsContent() {
   const [smtpSecure, setSmtpSecure] = useState(false);
   const [teamsWebhookUrl, setTeamsWebhookUrl] = useState('');
   const [events, setEvents] = useState<Set<ActivityAction>>(new Set());
+  const [resourceChangeThresholdUsd, setResourceChangeThresholdUsd] = useState('5');
   const [feedback, setFeedback] = useState<TestResult | null>(null);
 
   const [broadcastTitle, setBroadcastTitle] = useState('');
@@ -125,6 +128,7 @@ export function AlertsContent() {
     setTeamsWebhookUrl(settings.teamsWebhookSet ? SECRET_PLACEHOLDER : '');
     setSmtpSecure(settings.smtpSecure);
     setEvents(new Set(settings.events.filter((e) => e !== 'alert-broadcast')));
+    setResourceChangeThresholdUsd(String(settings.resourceChangeThresholdUsd ?? 5));
     hydratedRef.current = true;
   }, [settings]);
 
@@ -135,6 +139,7 @@ export function AlertsContent() {
         emailEnabled,
         teamsEnabled,
         events: Array.from(events),
+        resourceChangeThresholdUsd: parseFloat(resourceChangeThresholdUsd) || 5,
       };
 
       if (scope === 'toggles') return base;
@@ -174,6 +179,7 @@ export function AlertsContent() {
       smtpPassword,
       smtpSecure,
       teamsWebhookUrl,
+      resourceChangeThresholdUsd,
     ]
   );
 
@@ -347,6 +353,22 @@ export function AlertsContent() {
               {EVENT_LABELS[action] ?? action}
             </button>
           ))}
+        </div>
+        <div className="border-t border-border px-5 py-4">
+          <Field label="Resource change alert threshold (USD/day)">
+            <Input
+              type="number"
+              min={0}
+              step={0.5}
+              value={resourceChangeThresholdUsd}
+              onChange={(e) => setResourceChangeThresholdUsd(e.target.value)}
+              className="max-w-[200px]"
+            />
+          </Field>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Teams/email alert when a single sync&apos;s cumulative resource increase exceeds this
+            value (default $5/day).
+          </p>
         </div>
         <p className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
           When these events occur, all enabled channels below are notified automatically.

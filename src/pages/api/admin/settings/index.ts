@@ -3,6 +3,7 @@ import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib
 import { getAdminSettings, updateAdminSettings } from '@/lib/settings';
 import { invalidateKubeConfigCache } from '@/lib/k8s-client';
 import { invalidateWorkloadCache } from '@/lib/workload-scan';
+import { pruneResourceAuditDataByRetention } from '@/lib/resource-audit-retention';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -15,6 +16,12 @@ const updateSchema = z.object({
   redisUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),
   activityLogRetentionDays: z.number().int().min(1).max(3650).optional(),
+  resourceAuditRetentionAmount: z.number().int().min(1).max(52).optional(),
+  resourceAuditRetentionUnit: z.enum(['weeks', 'months', 'years']).optional(),
+  resourceAuditDataStartDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
 });
 
 async function getHandler(_req: AuthenticatedRequest, res: NextApiResponse) {
@@ -26,7 +33,28 @@ async function putHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const settings = await updateAdminSettings(parsed.data, req.user?.email);
+  const retentionTouched =
+    parsed.data.resourceAuditRetentionAmount !== undefined ||
+    parsed.data.resourceAuditRetentionUnit !== undefined ||
+    parsed.data.resourceAuditDataStartDate !== undefined;
+
+  let settings;
+  try {
+    settings = await updateAdminSettings(parsed.data, req.user?.email);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid settings';
+    return res.status(400).json({ error: message });
+  }
+
+  if (retentionTouched) {
+    const pruned = await pruneResourceAuditDataByRetention();
+    if (pruned.auditDeleted > 0 || pruned.gitDeleted > 0) {
+      console.log(
+        `[ResourceAudit] Retention prune: ${pruned.auditDeleted} audit rows, ${pruned.gitDeleted} git rows removed`
+      );
+    }
+  }
+
   invalidateKubeConfigCache();
   invalidateWorkloadCache();
   return res.status(200).json({ settings });

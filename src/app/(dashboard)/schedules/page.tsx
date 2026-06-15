@@ -13,13 +13,13 @@ import {
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
-import { POLL_INTERVAL } from '@/components/providers/query-provider';
+import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
+import { cn } from '@/lib/utils';
 import { ScheduleFormDrawer } from '@/components/pod-scheduler/schedule-form-drawer';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { PageHeader, GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { usePermissions } from '@/components/auth/session-context';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
   DialogContent,
@@ -37,6 +37,7 @@ import {
   ScheduleShutdownAtCell,
   ScheduleStartupAtCell,
   ScheduleRepeatsCell,
+  ScheduleStatusCell,
 } from '@/components/pod-scheduler/schedule-table-cells';
 
 export default function SchedulesPage() {
@@ -50,13 +51,15 @@ export default function SchedulesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['schedules'],
     queryFn: () => apiFetch<{ schedules: Schedule[] }>('/api/schedules'),
-    refetchInterval: POLL_INTERVAL,
+    ...scheduleLiveQueryOptions,
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/api/schedules/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
+      queryClient.invalidateQueries({ queryKey: ['overview'] });
       setScheduleToDelete(null);
     },
   });
@@ -69,6 +72,8 @@ export default function SchedulesPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
+      queryClient.invalidateQueries({ queryKey: ['overview'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
       setRunSchedule(null);
     },
@@ -132,7 +137,13 @@ export default function SchedulesPage() {
                   </tr>
                 )}
                 {schedules.map((s) => (
-                  <tr key={s.id} className="border-b border-border">
+                  <tr
+                    key={s.id}
+                    className={cn(
+                      'border-b border-border',
+                      s.liveActive && 'bg-red-500/[0.04] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]'
+                    )}
+                  >
                     <td className="px-5 py-3.5 font-medium text-foreground">{s.name}</td>
                     <td className="px-5 py-3.5">
                       <ScheduleClusterCell cluster={s.cluster} />
@@ -158,9 +169,7 @@ export default function SchedulesPage() {
                       <ScheduleRepeatsCell schedule={s} />
                     </td>
                     <td className="px-5 py-3.5">
-                      <Badge variant={s.enabled ? 'success' : s.oneTimeCompleted ? 'unknown' : 'unknown'}>
-                        {s.oneTimeCompleted ? 'Completed' : s.enabled ? 'Enabled' : 'Disabled'}
-                      </Badge>
+                      <ScheduleStatusCell schedule={s} />
                     </td>
                     <td className="px-5 py-3.5">
                       <ScheduleNextRunCell schedule={s} />

@@ -28,6 +28,7 @@ const ACTION_META: Record<
   'sync-on': { emoji: '🔔', label: 'Sync Enabled', accentColor: 'Good', containerStyle: 'good' },
   'infra-shutdown': { emoji: '🛑', label: 'Infrastructure Stopped', accentColor: 'Attention', containerStyle: 'attention' },
   'infra-startup': { emoji: '🚀', label: 'Infrastructure Started', accentColor: 'Good', containerStyle: 'good' },
+  'resource-change': { emoji: '📈', label: 'Resource Increase Detected', accentColor: 'Attention', containerStyle: 'attention' },
   'alert-broadcast': { emoji: '📢', label: 'Team Announcement', accentColor: 'Accent', containerStyle: 'accent' },
 };
 
@@ -165,11 +166,128 @@ export function buildTeamsAdaptiveCard(payload: TeamsAlertPayload) {
   };
 }
 
+export interface ResourceChangeTeamsInput {
+  argocdApp: string;
+  cluster: string;
+  namespace: string;
+  authorName: string;
+  authorEmail: string | null;
+  revisionSha: string;
+  commitMessage: string | null;
+  changes: {
+    workload: string;
+    containerName: string;
+    resourceType: string;
+    oldValue: string;
+    newValue: string;
+    costImpact: number | null;
+  }[];
+  totalCostImpactPerDay: number;
+}
+
+export function buildResourceChangeTeamsCard(input: ResourceChangeTeamsInput) {
+  const changeRows = input.changes
+    .slice(0, 8)
+    .map(
+      (c) =>
+        `• ${c.workload}${c.containerName !== '__replicas__' ? `/${c.containerName}` : ''} · ${c.resourceType}: ${c.oldValue} → ${c.newValue}`
+    )
+    .join('\n');
+
+  const author = input.authorEmail
+    ? `${input.authorName} <${input.authorEmail}>`
+    : input.authorName;
+
+  return {
+    type: 'message' as const,
+    style: 'emphasis' as const,
+    summary: `Resource increase on ${input.argocdApp} (+$${input.totalCostImpactPerDay.toFixed(2)}/day)`,
+    attachments: [
+      {
+        contentType: 'application/vnd.microsoft.card.adaptive',
+        contentUrl: null,
+        content: {
+          $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+          type: 'AdaptiveCard',
+          version: '1.5',
+          body: [
+            {
+              type: 'Container',
+              style: 'attention',
+              items: [
+                {
+                  type: 'TextBlock',
+                  text: '📈 Resource increase detected',
+                  weight: 'Bolder',
+                  size: 'Large',
+                  color: 'Attention',
+                },
+                {
+                  type: 'TextBlock',
+                  text: 'SecureNexus Resource changes',
+                  isSubtle: true,
+                  spacing: 'None',
+                  size: 'Small',
+                },
+              ],
+            },
+            {
+              type: 'FactSet',
+              spacing: 'Medium',
+              facts: [
+                { title: 'App', value: input.argocdApp },
+                { title: 'Cluster', value: input.cluster },
+                { title: 'Namespace', value: input.namespace },
+                { title: 'Author', value: author },
+                { title: 'Est. impact', value: `+$${input.totalCostImpactPerDay.toFixed(2)}/day` },
+              ],
+            },
+            {
+              type: 'TextBlock',
+              text: 'Resource changes',
+              weight: 'Bolder',
+              spacing: 'Medium',
+            },
+            {
+              type: 'TextBlock',
+              text: changeRows || '—',
+              wrap: true,
+              fontType: 'Monospace',
+              size: 'Small',
+            },
+            ...(input.commitMessage
+              ? [
+                  {
+                    type: 'TextBlock',
+                    text: `Commit: ${input.commitMessage.slice(0, 200)}`,
+                    wrap: true,
+                    spacing: 'Medium',
+                    isSubtle: true,
+                  },
+                ]
+              : []),
+            {
+              type: 'TextBlock',
+              text: `Revision: ${input.revisionSha.slice(0, 12)}`,
+              isSubtle: true,
+              spacing: 'Small',
+              size: 'Small',
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
 export async function sendTeamsWebhook(
   webhookUrl: string,
-  payload: TeamsAlertPayload
+  payload: TeamsAlertPayload | Record<string, unknown>
 ): Promise<{ ok: boolean; message: string }> {
-  const body = buildTeamsAdaptiveCard(payload);
+  const body =
+    'action' in payload && payload.action
+      ? buildTeamsAdaptiveCard(payload as TeamsAlertPayload)
+      : (payload as Record<string, unknown>);
 
   try {
     const res = await fetch(webhookUrl, {

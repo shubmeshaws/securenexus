@@ -13,6 +13,7 @@ export type ActivityAction =
   | 'schedule-startup'
   | 'infra-shutdown'
   | 'infra-startup'
+  | 'resource-change'
   | 'alert-broadcast';
 
 export interface LogActivityParams {

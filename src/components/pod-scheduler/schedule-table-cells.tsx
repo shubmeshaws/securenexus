@@ -187,3 +187,36 @@ export function ScheduleNextRunCell({ schedule }: { schedule: Pick<Schedule, 'ne
     </div>
   );
 }
+
+export function ScheduleStatusCell({
+  schedule,
+}: {
+  schedule: Pick<Schedule, 'enabled' | 'liveActive' | 'oneTimeCompleted'>;
+}) {
+  if (schedule.liveActive) {
+    return (
+      <Badge variant="failed" className="rounded-full text-[10px] font-semibold">
+        Stopped
+      </Badge>
+    );
+  }
+  if (schedule.oneTimeCompleted) {
+    return (
+      <Badge variant="unknown" className="rounded-full text-[10px] font-medium">
+        Completed
+      </Badge>
+    );
+  }
+  if (schedule.enabled) {
+    return (
+      <Badge variant="success" className="rounded-full text-[10px] font-medium">
+        Enabled
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="unknown" className="rounded-full text-[10px] font-medium">
+      Disabled
+    </Badge>
+  );
+}

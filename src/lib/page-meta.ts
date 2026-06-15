@@ -57,6 +57,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     iconClass: 'text-emerald-700',
     accent: 'emerald',
   },
+  '/resource-audit': {
+    title: 'Resource changes',
+    subtitle: 'Pod resource & replica changes via ArgoCD',
+    icon: Icons.pages.resourceAudit,
+    gradient: 'from-orange-500 via-amber-500 to-yellow-600',
+    ring: 'ring-orange-500/25',
+    iconClass: 'text-orange-700',
+    accent: 'amber',
+  },
   '/activity': {
     title: 'Activity Logs',
     subtitle: 'Audit & compliance trail',
