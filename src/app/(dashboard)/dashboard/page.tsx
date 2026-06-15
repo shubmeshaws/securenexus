@@ -1,13 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   CalendarRange,
-  CirclePlay,
-  CircleStop,
-  Cpu,
   Icons,
   Loader2,
   PiggyBank,
@@ -15,7 +10,6 @@ import {
   ServerCog,
   TrendingDown,
 } from '@/lib/icons';
-import { AppIcon } from '@/components/ui/app-icon';
 import { ModernIcon } from '@/components/ui/modern-icon';
 import { Badge } from '@/components/ui/badge';
 import { apiFetch, type OverviewData } from '@/lib/api-client';
@@ -28,15 +22,6 @@ import {
   PanelHeader,
   ScrollTable,
 } from '@/components/pod-scheduler/ui-primitives';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   ScheduleClusterCell,
   ScheduleTargetCell,
@@ -59,28 +44,11 @@ function RowCountBadge({ shown, total }: { shown: number; total: number }) {
 }
 
 export default function PodSchedulerOverviewPage() {
-  const queryClient = useQueryClient();
-  const [bulkAction, setBulkAction] = useState<'stop-all' | 'start-all' | null>(null);
-
   const { data, isLoading, isError, error, refetch, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ['overview'],
     queryFn: () => apiFetch<OverviewData>('/api/schedules/overview'),
     ...scheduleLiveQueryOptions,
     retry: 1,
-  });
-
-  const bulkMutation = useMutation({
-    mutationFn: (action: 'stop-all' | 'start-all') =>
-      apiFetch('/api/schedules/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ action, defaultReplicas: 1 }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['overview'] });
-      queryClient.invalidateQueries({ queryKey: ['deployments'] });
-      queryClient.invalidateQueries({ queryKey: ['infrastructure'] });
-      setBulkAction(null);
-    },
   });
 
   const summary = data?.summary ?? {
@@ -110,33 +78,17 @@ export default function PodSchedulerOverviewPage() {
         title="Dashboard"
         description="Live data from your clusters, schedules, and activity logs — refreshed every 30 seconds."
         action={
-          <div className="flex flex-wrap items-center gap-2">
-            {data && (
-              <span className="live-pill inline-flex items-center gap-1.5">
-                <Radio className="h-3 w-3 animate-pulse" strokeWidth={1.5} />
-                Live
-                {dataUpdatedAt > 0 && (
-                  <span className="font-normal opacity-70">
-                    · {isFetching ? 'updating…' : formatRelativeTime(new Date(dataUpdatedAt))}
-                  </span>
-                )}
-              </span>
-            )}
-            <Link href="/infrastructure">
-              <Button size="sm">
-                <AppIcon icon={Cpu} size="sm" />
-                Infrastructure
-              </Button>
-            </Link>
-            <Button variant="danger" size="sm" onClick={() => setBulkAction('stop-all')}>
-              <AppIcon icon={CircleStop} size="sm" />
-              Stop all
-            </Button>
-            <Button variant="success" size="sm" onClick={() => setBulkAction('start-all')}>
-              <AppIcon icon={CirclePlay} size="sm" />
-              Start all
-            </Button>
-          </div>
+          data ? (
+            <span className="live-pill inline-flex items-center gap-1.5">
+              <Radio className="h-3 w-3 animate-pulse" strokeWidth={1.5} />
+              Live
+              {dataUpdatedAt > 0 && (
+                <span className="font-normal opacity-70">
+                  · {isFetching ? 'updating…' : formatRelativeTime(new Date(dataUpdatedAt))}
+                </span>
+              )}
+            </span>
+          ) : undefined
         }
       />
 
@@ -472,31 +424,6 @@ export default function PodSchedulerOverviewPage() {
           </GlassPanel>
         </>
       )}
-
-      <Dialog open={bulkAction !== null} onOpenChange={() => setBulkAction(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {bulkAction === 'stop-all' ? 'Stop all deployments?' : 'Start all deployments?'}
-            </DialogTitle>
-            <DialogDescription>
-              {bulkAction === 'stop-all'
-                ? 'This will scale all deployments to 0 replicas and disable ArgoCD sync where matched.'
-                : 'This will restore all stopped deployments to 1 replica.'}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setBulkAction(null)}>Cancel</Button>
-            <Button
-              variant={bulkAction === 'stop-all' ? 'destructive' : 'success'}
-              onClick={() => bulkAction && bulkMutation.mutate(bulkAction)}
-              disabled={bulkMutation.isPending}
-            >
-              Confirm
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
