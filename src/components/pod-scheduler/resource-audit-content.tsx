@@ -706,11 +706,31 @@ export function ResourceAuditContent() {
                 {rows.length === 0 && (
                   <tr>
                     <td colSpan={11} className="p-8 text-center text-muted-foreground">
-                      {`No changes in the selected date range${
-                            cluster || namespace || application || author || resourceTypes.length
-                              ? ' for the current filters'
-                              : ''
-                          }. Widen the date range or adjust filters.`}
+                      <p className="text-sm">
+                        {`No changes in the selected date range${
+                          cluster || namespace || application || author || resourceTypes.length
+                            ? ' for the current filters'
+                            : ''
+                        }. Widen the date range or adjust filters.`}
+                      </p>
+                      {!cluster &&
+                        !namespace &&
+                        !application &&
+                        !author &&
+                        !resourceTypes.length &&
+                        !fromDate &&
+                        !toDate && (
+                          <div className="mx-auto mt-4 max-w-lg rounded-xl border border-border bg-muted/30 px-4 py-3 text-left text-xs leading-relaxed">
+                            <p className="mb-2 font-medium text-foreground">Setup checklist</p>
+                            <ol className="list-decimal space-y-1 pl-4">
+                              <li>Admin → Settings → ArgoCD: instance connected and test passes</li>
+                              <li>Admin → Settings → Bitbucket: connect, add repos, click <strong>Clone</strong>, then <strong>Pull</strong></li>
+                              <li>Bitbucket panel → <strong>Sync from ArgoCD</strong> (Git repo column should show linked)</li>
+                              <li>Admin → Settings → Resource audit: set <strong>Data start date</strong> before your commits</li>
+                              <li>Wait ~10 min for background scan, or Pull repos again to analyze commits</li>
+                            </ol>
+                          </div>
+                        )}
                     </td>
                   </tr>
                 )}
