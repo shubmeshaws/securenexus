@@ -9,11 +9,12 @@ import {
   helmEnvsFromChangedFiles,
   inferAppFromHelmValuesPath,
 } from './helm-values-path';
-import { resolveAuditClusterName } from './resource-audit-cluster';
+import { resolveAuditClusterName, getRegisteredClusterNames } from './resource-audit-cluster';
 import { fetchLivePodCount } from './resource-audit-kubectl';
 import { getClusterResourceRates } from './resource-audit-rates';
 import { recomputeResourceAuditCostEstimates } from './resource-audit-maintenance';
 import type { ClusterResourceRates } from './instance-pricing';
+import { getResourceAuditDataWindow } from './resource-audit-retention';
 
 function isEmptyResourceValue(value: string): boolean {
   const v = value.trim().toLowerCase();
@@ -113,6 +114,12 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
 
   if (!changes.length) return 0;
 
+  const [{ dataAvailableFrom }, registeredClusters] = await Promise.all([
+    getResourceAuditDataWindow(),
+    getRegisteredClusterNames(),
+  ]);
+  const skipLivePodLookup = registeredClusters.length === 0;
+
   const ratesCache = new Map<string, ClusterResourceRates>();
   const replicaMaps = new Map<string, Map<string, number>>();
 
@@ -120,6 +127,10 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
   const linkedIds: string[] = [];
 
   for (const change of changes) {
+    if (change.committedAt < dataAvailableFrom) {
+      linkedIds.push(change.id);
+      continue;
+    }
     if (change.resourceType === 'FILE_TOUCH') {
       linkedIds.push(change.id);
       continue;
@@ -183,7 +194,7 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
     let podCount: number | null = null;
     if (change.resourceType === 'REPLICAS' && change.containerName === REPLICAS_CONTAINER_MARKER) {
       podCount = replicaCountFromChange(change);
-    } else {
+    } else if (!skipLivePodLookup) {
       podCount = await fetchLivePodCount(
         cluster,
         namespace,

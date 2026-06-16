@@ -145,10 +145,16 @@ export async function dedupeAppUpWithResourceChanges(): Promise<number> {
 
 /** Wipe audit rows when catalog is full but history was never backfilled. */
 export async function needsFullHistoryBackfill(): Promise<boolean> {
-  const [auditCount, catalogCount] = await Promise.all([
+  const [auditCount, catalogCount, gitChangeCount, unlinkedGit] = await Promise.all([
     prisma.resourceChangeAudit.count(),
     prisma.resourceAppCatalog.count(),
+    prisma.gitResourceChange.count({ where: { resourceType: { not: 'FILE_TOUCH' } } }),
+    prisma.gitResourceChange.count({
+      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+    }),
   ]);
+  // Git-backed history is authoritative — never wipe when git analysis exists or is pending.
+  if (gitChangeCount > 0 || unlinkedGit > 0) return false;
   return catalogCount > 50 && auditCount < 200;
 }
 

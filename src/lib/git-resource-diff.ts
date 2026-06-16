@@ -7,6 +7,7 @@ import { inferAppFromHelmValuesPath } from './helm-values-path';
 import { parseHelmValuesEnvFromPath, isHelmValuesResourcePath } from './helm-env-cluster';
 import type { ResourceFieldSnapshot } from './resource-audit-types';
 import { REPLICAS_CONTAINER_MARKER } from './resource-audit-types';
+import { getResourceAuditDataWindow } from './resource-audit-retention';
 
 const execFileAsync = promisify(execFile);
 /** Max commits to scan on first pull when the clone is already up to date. */
@@ -217,10 +218,12 @@ export async function processCommitsForRepo(input: {
   branch: string | null;
   commits: GitCommitInfo[];
 }): Promise<{ stored: number; commitShas: string[] }> {
+  const { dataAvailableFrom } = await getResourceAuditDataWindow();
+  const inWindowCommits = input.commits.filter((c) => c.committedAt >= dataAvailableFrom);
   let stored = 0;
-  const commitShas = input.commits.map((c) => c.sha);
+  const commitShas = inWindowCommits.map((c) => c.sha);
 
-  for (const commit of input.commits) {
+  for (const commit of inWindowCommits) {
     const files = await changedFilesForCommit(input.repoPath, commit.sha);
     const parentSha = await runGit(['rev-parse', `${commit.sha}^`], input.repoPath).catch(
       () => null

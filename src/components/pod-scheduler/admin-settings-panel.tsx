@@ -8,6 +8,7 @@ import {
   Globe2,
   Icons,
   Loader2,
+  RefreshCcw,
   Save,
   ServerCog,
   ShieldCheck,
@@ -81,6 +82,9 @@ export function AdminSettingsPanel() {
   >('months');
   const [resourceAuditDataStartDate, setResourceAuditDataStartDate] = useState('2026-06-01');
   const [saveFeedback, setSaveFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [rebuildFeedback, setRebuildFeedback] = useState<{ ok: boolean; message: string } | null>(
+    null
+  );
 
   useEffect(() => {
     if (!settings) return;
@@ -136,6 +140,33 @@ export function AdminSettingsPanel() {
       setSaveFeedback({
         ok: false,
         message: err.message || 'Failed to save settings',
+      });
+    },
+  });
+
+  const rebuildMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        ok: boolean;
+        message: string;
+        auditBefore: number;
+        auditAfter: number;
+        unlinkedBefore: number;
+        unlinkedAfter: number;
+      }>('/api/admin/resource-audit/rebuild', { method: 'POST' }),
+    onMutate: () => setRebuildFeedback(null),
+    onSuccess: (data) => {
+      setRebuildFeedback({
+        ok: true,
+        message: `${data.message} (${data.auditBefore} → ${data.auditAfter} rows)`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
+      queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
+    },
+    onError: (err: Error) => {
+      setRebuildFeedback({
+        ok: false,
+        message: err.message || 'Rebuild failed',
       });
     },
   });
@@ -332,6 +363,40 @@ export function AdminSettingsPanel() {
             <p className="text-[11px] text-muted-foreground">
               Resource Changes never shows or keeps data before this date. Default: 1 June 2026.
             </p>
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label>Rebuild from git history</Label>
+            <p className="text-[11px] text-muted-foreground">
+              Re-link Resource Changes from cloned Bitbucket repos. Use after first deploy or if the
+              table is empty despite successful git pulls.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              {rebuildFeedback && (
+                <p
+                  className={cn(
+                    'text-xs',
+                    rebuildFeedback.ok
+                      ? 'text-emerald-700 dark:text-emerald-400'
+                      : 'text-red-700 dark:text-red-400'
+                  )}
+                >
+                  {rebuildFeedback.message}
+                </p>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => rebuildMutation.mutate()}
+                disabled={rebuildMutation.isPending}
+              >
+                {rebuildMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCcw className="h-4 w-4" />
+                )}
+                Rebuild Resource Changes
+              </Button>
+            </div>
           </div>
         </div>
       </GlassPanel>

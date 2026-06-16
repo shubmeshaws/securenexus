@@ -35,7 +35,7 @@ import {
   reconcileResourceAuditClusterNames,
 } from '../cluster-resolve';
 import { syncResourceAppCatalog, bootstrapCatalogFromSnapshots } from '../resource-app-catalog';
-import { joinGitChangesWithArgoSync, shouldRecordGitSyncForApp } from '../git-resource-audit-join';
+import { joinGitChangesWithArgoSync, shouldRecordGitSyncForApp, linkGitChangesToResourceAudit } from '../git-resource-audit-join';
 
 const RESOURCE_AUDIT_GLOBAL_KEY = '__secureNexusResourceAuditStarted__';
 
@@ -399,6 +399,16 @@ export function initResourceAuditJob() {
       console.log(
         `[ResourceAudit] Startup scan: ${summary.appsScanned} apps, ${summary.changesRecorded} new changes`
       );
+
+      const unlinkedGit = await prisma.gitResourceChange.count({
+        where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+      });
+      if (unlinkedGit > 0) {
+        const linked = await linkGitChangesToResourceAudit();
+        console.log(
+          `[ResourceAudit] Linked ${linked} resource change row(s) from ${unlinkedGit} pending git commit(s)`
+        );
+      }
     } catch (err) {
       console.error('[ResourceAudit] Startup scan failed:', err);
     }
