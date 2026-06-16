@@ -37,7 +37,7 @@ export function initGitSyncJob(): void {
   if (g[GIT_SYNC_GLOBAL_KEY]) return;
   g[GIT_SYNC_GLOBAL_KEY] = true;
 
-  cron.schedule('* * * * *', () => {
+  cron.schedule('*/5 * * * *', () => {
     void runGitSyncCycle();
   });
 
@@ -45,5 +45,7 @@ export function initGitSyncJob(): void {
     void syncArgoCDAppSources();
   });
 
-  void bootstrapGitIntegration();
+  void setTimeout(() => {
+    void bootstrapGitIntegration();
+  }, 60_000);
 }

@@ -1,5 +1,4 @@
 import type { Schedule } from '@prisma/client';
-import { resolveEffectiveCredentials } from './aws-credential-store';
 import prisma from './prisma';
 import { parseClusterDisplay } from './utils';
 
@@ -14,23 +13,8 @@ export async function enrichSchedulesWithAccountId<T extends Schedule>(
   const accountByCredName = new Map<string, string | null>();
 
   for (const cred of allCreds) {
-    let accountId = cred.awsAccountId;
-    if (!accountId) {
-      try {
-        const resolved = await resolveEffectiveCredentials(cred.id);
-        accountId = resolved.awsAccountId;
-        if (accountId) {
-          await prisma.awsCredential.update({
-            where: { id: cred.id },
-            data: { awsAccountId: accountId },
-          });
-        }
-      } catch {
-        // leave null
-      }
-    }
-    accountByCredId.set(cred.id, accountId ?? null);
-    accountByCredName.set(cred.name, accountId ?? null);
+    accountByCredId.set(cred.id, cred.awsAccountId ?? null);
+    accountByCredName.set(cred.name, cred.awsAccountId ?? null);
   }
 
   return schedules.map((schedule) => {

@@ -46,7 +46,7 @@ import {
   valuesFilePathFromRow,
 } from '@/lib/helm-values-path';
 
-export const RESOURCE_AUDIT_POLL_INTERVAL = 60_000;
+export const RESOURCE_AUDIT_POLL_INTERVAL = 90_000;
 
 interface AuditRow {
   id: string;
@@ -86,6 +86,7 @@ interface AuditResponse {
   pageSize: number;
   totalPages: number;
   totalCostImpact: number;
+  summary: SummaryResponse['summary'];
   filterOptions: {
     clusters: string[];
     namespaces: string[];
@@ -386,20 +387,16 @@ export function ResourceAuditContent() {
     return p.toString();
   }, [filterQueryParams, page, pageSize]);
 
-  const { data: summaryData, isLoading: summaryLoading, isFetching: summaryFetching } = useQuery({
-    queryKey: ['resource-audit-summary', filterQueryParams],
-    queryFn: () => apiFetch<SummaryResponse>(`/api/resource-audit/summary?${filterQueryParams}`),
-    refetchInterval: RESOURCE_AUDIT_POLL_INTERVAL,
-  });
-
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: ['resource-audit', queryParams],
     queryFn: () => apiFetch<AuditResponse>(`/api/resource-audit?${queryParams}`),
     refetchInterval: RESOURCE_AUDIT_POLL_INTERVAL,
+    refetchIntervalInBackground: false,
+    staleTime: 45_000,
   });
 
-  const summary = summaryData?.summary;
-  const summaryPending = summaryLoading || (summaryFetching && !summaryData);
+  const summary = data?.summary;
+  const summaryPending = isLoading || (isFetching && !data);
   const rows = data?.rows ?? [];
   const filterOptions = data?.filterOptions;
 

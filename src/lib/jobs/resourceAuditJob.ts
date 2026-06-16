@@ -315,105 +315,6 @@ export function initResourceAuditJob() {
   g[RESOURCE_AUDIT_GLOBAL_KEY] = true;
   console.log('[ResourceAudit] Initializing audit runner (every 10 minutes)...');
 
-  void (async () => {
-    try {
-      const purged = await purgeUnknownRevisionAudits();
-      if (purged > 0) {
-        console.log(`[ResourceAudit] Purged ${purged} non-git revision rows`);
-      }
-
-      const invalid = await purgeInvalidResourceAuditRows();
-      if (invalid > 0) {
-        console.log(`[ResourceAudit] Purged ${invalid} invalid resource diff rows`);
-      }
-
-      const catalog = await syncResourceAppCatalog();
-      console.log(
-        `[ResourceAudit] App catalog: ${catalog.appsSynced} apps synced` +
-          (catalog.errors.length ? ` (${catalog.errors.length} errors)` : '')
-      );
-      if (catalog.errors.length) {
-        console.warn('[ResourceAudit] Catalog errors:', catalog.errors.slice(0, 2).join('; '));
-      }
-
-      if (catalog.appsSynced < 20) {
-        const bootstrapped = await bootstrapCatalogFromSnapshots();
-        if (bootstrapped > 0) {
-          console.log(`[ResourceAudit] Bootstrapped ${bootstrapped} apps into catalog from snapshots`);
-        }
-      }
-
-      const deduped = await dedupeGitSyncAudits();
-      if (deduped > 0) {
-        console.log(`[ResourceAudit] Removed ${deduped} duplicate git sync rows`);
-      }
-
-      if (await needsAppUpV2Migration()) {
-        const reset = await resetAppUpRowsForRebackfill();
-        if (reset > 0) {
-          console.log(`[ResourceAudit] Reset ${reset} app-up rows for v2 backfill`);
-        }
-      }
-
-      const invalidDiffs = await resetInvalidResourceDiffRows();
-      if (invalidDiffs > 0) {
-        console.log(`[ResourceAudit] Reset ${invalidDiffs} resource rows with missing prior values`);
-      }
-
-      if (await needsFullHistoryBackfill()) {
-        const wiped = await resetResourceAuditForFullBackfill();
-        console.log(
-          `[ResourceAudit] Cleared ${wiped} audit rows for full ${RESOURCE_AUDIT_DEFAULT_DAYS}d history backfill`
-        );
-      }
-
-      const backfill = await backfillResourceAuditLast7Days();
-      console.log(
-        `[ResourceAudit] Backfill (${RESOURCE_AUDIT_DEFAULT_DAYS}d): ${backfill.changesRecorded} changes from ${backfill.appsProcessed} apps`
-      );
-      if (backfill.errors.length) {
-        console.warn('[ResourceAudit] Backfill errors:', backfill.errors.slice(0, 3).join('; '));
-      }
-
-      const appUpDeduped = await dedupeAppUpWithResourceChanges();
-      if (appUpDeduped > 0) {
-        console.log(`[ResourceAudit] Removed ${appUpDeduped} app-up rows superseded by resource changes`);
-      }
-
-      const appUpFixed = await recomputeAppUpRunningCosts();
-      if (appUpFixed > 0) {
-        console.log(`[ResourceAudit] Recomputed running cost on ${appUpFixed} app-up rows`);
-      }
-
-      const clusterFixed = await reconcileResourceAuditClusterNames();
-      if (clusterFixed > 0) {
-        console.log(`[ResourceAudit] Updated cluster name on ${clusterFixed} rows`);
-      }
-
-      const costsFixed = await recomputeResourceAuditCostEstimates();
-      if (costsFixed > 0) {
-        console.log(`[ResourceAudit] Recomputed cost on ${costsFixed} rows`);
-      }
-
-      const summary = await runResourceAuditJob();
-      console.log(
-        `[ResourceAudit] Startup scan: ${summary.appsScanned} apps, ${summary.changesRecorded} new changes`
-      );
-
-      const unlinkedGit = await prisma.gitResourceChange.count({
-        where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
-      });
-      if (unlinkedGit > 0) {
-        const { linked } = await linkUnlinkedGitChangesIncremental();
-        console.log(
-          `[ResourceAudit] Linked ${linked} resource change row(s) from ${unlinkedGit} pending git commit(s)`
-        );
-      }
-    } catch (err) {
-      console.error('[ResourceAudit] Startup scan failed:', err);
-    }
-  })();
-
   auditJob = cron.schedule('*/10 * * * *', async () => {
     try {
       const summary = await runResourceAuditJob();
@@ -429,6 +330,111 @@ export function initResourceAuditJob() {
       console.error('[ResourceAudit] Job error:', err);
     }
   });
+
+  const STARTUP_DEFER_MS = 120_000;
+  setTimeout(() => {
+    void runResourceAuditStartupMaintenance();
+  }, STARTUP_DEFER_MS);
+  console.log(`[ResourceAudit] Deferred startup maintenance by ${STARTUP_DEFER_MS / 1000}s`);
+}
+
+async function runResourceAuditStartupMaintenance(): Promise<void> {
+  try {
+    const purged = await purgeUnknownRevisionAudits();
+    if (purged > 0) {
+      console.log(`[ResourceAudit] Purged ${purged} non-git revision rows`);
+    }
+
+    const invalid = await purgeInvalidResourceAuditRows();
+    if (invalid > 0) {
+      console.log(`[ResourceAudit] Purged ${invalid} invalid resource diff rows`);
+    }
+
+    const catalog = await syncResourceAppCatalog();
+    console.log(
+      `[ResourceAudit] App catalog: ${catalog.appsSynced} apps synced` +
+        (catalog.errors.length ? ` (${catalog.errors.length} errors)` : '')
+    );
+    if (catalog.errors.length) {
+      console.warn('[ResourceAudit] Catalog errors:', catalog.errors.slice(0, 2).join('; '));
+    }
+
+    if (catalog.appsSynced < 20) {
+      const bootstrapped = await bootstrapCatalogFromSnapshots();
+      if (bootstrapped > 0) {
+        console.log(`[ResourceAudit] Bootstrapped ${bootstrapped} apps into catalog from snapshots`);
+      }
+    }
+
+    const deduped = await dedupeGitSyncAudits();
+    if (deduped > 0) {
+      console.log(`[ResourceAudit] Removed ${deduped} duplicate git sync rows`);
+    }
+
+    if (await needsAppUpV2Migration()) {
+      const reset = await resetAppUpRowsForRebackfill();
+      if (reset > 0) {
+        console.log(`[ResourceAudit] Reset ${reset} app-up rows for v2 backfill`);
+      }
+    }
+
+    const invalidDiffs = await resetInvalidResourceDiffRows();
+    if (invalidDiffs > 0) {
+      console.log(`[ResourceAudit] Reset ${invalidDiffs} resource rows with missing prior values`);
+    }
+
+    if (await needsFullHistoryBackfill()) {
+      const wiped = await resetResourceAuditForFullBackfill();
+      console.log(
+        `[ResourceAudit] Cleared ${wiped} audit rows for full ${RESOURCE_AUDIT_DEFAULT_DAYS}d history backfill`
+      );
+    }
+
+    const backfill = await backfillResourceAuditLast7Days();
+    console.log(
+      `[ResourceAudit] Backfill (${RESOURCE_AUDIT_DEFAULT_DAYS}d): ${backfill.changesRecorded} changes from ${backfill.appsProcessed} apps`
+    );
+    if (backfill.errors.length) {
+      console.warn('[ResourceAudit] Backfill errors:', backfill.errors.slice(0, 3).join('; '));
+    }
+
+    const appUpDeduped = await dedupeAppUpWithResourceChanges();
+    if (appUpDeduped > 0) {
+      console.log(`[ResourceAudit] Removed ${appUpDeduped} app-up rows superseded by resource changes`);
+    }
+
+    const appUpFixed = await recomputeAppUpRunningCosts();
+    if (appUpFixed > 0) {
+      console.log(`[ResourceAudit] Recomputed running cost on ${appUpFixed} app-up rows`);
+    }
+
+    const clusterFixed = await reconcileResourceAuditClusterNames();
+    if (clusterFixed > 0) {
+      console.log(`[ResourceAudit] Updated cluster name on ${clusterFixed} rows`);
+    }
+
+    const costsFixed = await recomputeResourceAuditCostEstimates();
+    if (costsFixed > 0) {
+      console.log(`[ResourceAudit] Recomputed cost on ${costsFixed} rows`);
+    }
+
+    const summary = await runResourceAuditJob();
+    console.log(
+      `[ResourceAudit] Startup scan: ${summary.appsScanned} apps, ${summary.changesRecorded} new changes`
+    );
+
+    const unlinkedGit = await prisma.gitResourceChange.count({
+      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+    });
+    if (unlinkedGit > 0) {
+      const { linked } = await linkUnlinkedGitChangesIncremental();
+      console.log(
+        `[ResourceAudit] Linked ${linked} resource change row(s) from ${unlinkedGit} pending git commit(s)`
+      );
+    }
+  } catch (err) {
+    console.error('[ResourceAudit] Startup scan failed:', err);
+  }
 }
 
 export function ensureResourceAuditRunning() {

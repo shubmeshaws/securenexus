@@ -19,6 +19,26 @@ import {
 } from './resource-app-catalog';
 
 export const RESOURCE_AUDIT_DEFAULT_DAYS = 30;
+export const RESOURCE_AUDIT_FETCH_LIMIT = 2500;
+const GROUPED_ROWS_CACHE_TTL_MS = 45_000;
+
+const groupedRowsCache = new Map<
+  string,
+  { at: number; rows: ResourceAuditRowBase[] }
+>();
+
+function filtersCacheKey(filters: ResourceAuditFilters): string {
+  return JSON.stringify({
+    cluster: filters.cluster ?? '',
+    namespace: filters.namespace ?? '',
+    argocdApp: filters.argocdApp ?? '',
+    environment: filters.environment ?? '',
+    author: filters.author ?? '',
+    fromDate: filters.fromDate?.toISOString() ?? '',
+    toDate: filters.toDate?.toISOString() ?? '',
+    resourceTypes: filters.resourceTypes?.join(',') ?? '',
+  });
+}
 
 export interface ResourceAuditFilters {
   cluster?: string;
@@ -103,9 +123,75 @@ async function fetchGroupedResourceAuditRows(
   const rawRows = await prisma.resourceChangeAudit.findMany({
     where,
     orderBy: { syncedAt: 'desc' },
-    take: 10_000,
+    take: RESOURCE_AUDIT_FETCH_LIMIT,
   });
   return groupResourceAuditRows(rawRows.map(serializeAuditRow));
+}
+
+async function fetchGroupedResourceAuditRowsCached(
+  filters: ResourceAuditFilters
+): Promise<ResourceAuditRowBase[]> {
+  const key = filtersCacheKey(filters);
+  const hit = groupedRowsCache.get(key);
+  if (hit && Date.now() - hit.at < GROUPED_ROWS_CACHE_TTL_MS) {
+    return hit.rows;
+  }
+
+  const rows = await fetchGroupedResourceAuditRows(filters);
+  groupedRowsCache.set(key, { at: Date.now(), rows });
+  if (groupedRowsCache.size > 24) {
+    const oldest = Array.from(groupedRowsCache.entries()).sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) groupedRowsCache.delete(oldest[0]);
+  }
+  return rows;
+}
+
+function buildSummaryFromGroupedRows(
+  grouped: ResourceAuditRowBase[],
+  dataWindow: ResourceAuditDataWindow
+) {
+  const top = computeTopContributorFromGroupedRows(grouped);
+
+  let podsAddedTotal = 0;
+  let podsRemovedTotal = 0;
+  for (const row of grouped) {
+    const changes = row.changes?.length
+      ? row.changes
+      : [{ resourceType: row.resourceType, oldValue: row.oldValue, newValue: row.newValue }];
+    for (const change of changes) {
+      if (change.resourceType !== 'REPLICAS') continue;
+      const oldR = parseInt(change.oldValue, 10) || 0;
+      const newR = parseInt(change.newValue, 10) || 0;
+      const delta = newR - oldR;
+      if (delta > 0) podsAddedTotal += delta;
+      else if (delta < 0) podsRemovedTotal += Math.abs(delta);
+    }
+  }
+
+  const totalChanges = grouped.length;
+
+  return {
+    totalCostImpact: sumGroupedRowsCostImpact(grouped),
+    totalChanges,
+    gitSyncCount: 0,
+    resourceChangeCount: totalChanges,
+    podsAddedTotal,
+    podsRemovedTotal,
+    dataWindow: serializeResourceAuditDataWindow(dataWindow),
+    topContributor: top
+      ? {
+          authorName: top.authorName,
+          authorEmail: top.authorEmail,
+          commits: top.commitShas.size,
+          resourceIncreases: top.resourceIncreases,
+          totalCostImpact: top.totalCostImpact,
+          gitSyncs: 0,
+          resourceChanges: top.resourceChanges,
+          podsAdded: top.podsAdded,
+          podsRemoved: top.podsRemoved,
+        }
+      : null,
+  };
 }
 
 function authorIdentityKey(row: Pick<ResourceAuditRowBase, 'authorName' | 'authorEmail'>): string {
@@ -251,9 +337,14 @@ export async function queryResourceAudit(filters: ResourceAuditFilters) {
   const page = Math.max(1, filters.page ?? 1);
   const pageSize = Math.min(500, Math.max(1, filters.pageSize ?? 10));
 
-  const grouped = await fetchGroupedResourceAuditRows(filters);
+  const [grouped, dataWindow] = await Promise.all([
+    fetchGroupedResourceAuditRowsCached(filters),
+    getResourceAuditDataWindow(),
+  ]);
+
   const total = grouped.length;
   const rows = grouped.slice((page - 1) * pageSize, page * pageSize);
+  const summary = buildSummaryFromGroupedRows(grouped, dataWindow);
 
   return {
     rows,
@@ -261,63 +352,23 @@ export async function queryResourceAudit(filters: ResourceAuditFilters) {
     page,
     pageSize,
     totalPages: Math.ceil(total / pageSize),
-    totalCostImpact: sumGroupedRowsCostImpact(grouped),
+    totalCostImpact: summary.totalCostImpact,
+    summary,
   };
 }
 
 export async function getResourceAuditSummary(filters: ResourceAuditFilters = {}) {
   const [grouped, dataWindow] = await Promise.all([
-    fetchGroupedResourceAuditRows(filters),
+    fetchGroupedResourceAuditRowsCached(filters),
     getResourceAuditDataWindow(),
   ]);
 
-  const top = computeTopContributorFromGroupedRows(grouped);
-
-  let podsAddedTotal = 0;
-  let podsRemovedTotal = 0;
-  for (const row of grouped) {
-    const changes = row.changes?.length
-      ? row.changes
-      : [{ resourceType: row.resourceType, oldValue: row.oldValue, newValue: row.newValue }];
-    for (const change of changes) {
-      if (change.resourceType !== 'REPLICAS') continue;
-      const oldR = parseInt(change.oldValue, 10) || 0;
-      const newR = parseInt(change.newValue, 10) || 0;
-      const delta = newR - oldR;
-      if (delta > 0) podsAddedTotal += delta;
-      else if (delta < 0) podsRemovedTotal += Math.abs(delta);
-    }
-  }
-
-  const totalChanges = grouped.length;
-
-  return {
-    totalCostImpact: sumGroupedRowsCostImpact(grouped),
-    totalChanges,
-    gitSyncCount: 0,
-    resourceChangeCount: totalChanges,
-    podsAddedTotal,
-    podsRemovedTotal,
-    dataWindow: serializeResourceAuditDataWindow(dataWindow),
-    topContributor: top
-      ? {
-          authorName: top.authorName,
-          authorEmail: top.authorEmail,
-          commits: top.commitShas.size,
-          resourceIncreases: top.resourceIncreases,
-          totalCostImpact: top.totalCostImpact,
-          gitSyncs: 0,
-          resourceChanges: top.resourceChanges,
-          podsAdded: top.podsAdded,
-          podsRemoved: top.podsRemoved,
-        }
-      : null,
-  };
+  return buildSummaryFromGroupedRows(grouped, dataWindow);
 }
 
 export async function getResourceAuditFilterOptions(filters: ResourceAuditFilters = {}) {
-  const { dataAvailableFrom } = await getResourceAuditDataWindow();
-  const effectiveFrom = clampAuditFromDate(filters.fromDate, dataAvailableFrom);
+  const dataWindow = await getResourceAuditDataWindow();
+  const effectiveFrom = clampAuditFromDate(filters.fromDate, dataWindow.dataAvailableFrom);
 
   const optionWhere: Prisma.ResourceChangeAuditWhereInput = {
     resourceType: { not: 'GIT_SYNC' },
@@ -329,52 +380,49 @@ export async function getResourceAuditFilterOptions(filters: ResourceAuditFilter
     optionWhere.resourceType = { in: filters.resourceTypes };
   }
 
-  const [clusters, namespaces, applications, authors, registeredNames] = await Promise.all([
-    prisma.resourceChangeAudit.findMany({
-      where: optionWhere,
-      distinct: ['cluster'],
-      select: { cluster: true },
-      orderBy: { cluster: 'asc' },
-    }),
-    prisma.resourceChangeAudit.findMany({
-      where: optionWhere,
-      distinct: ['namespace'],
-      select: { namespace: true },
-      orderBy: { namespace: 'asc' },
-    }),
-    prisma.resourceChangeAudit.findMany({
-      where: optionWhere,
-      distinct: ['argocdApp'],
-      select: { argocdApp: true },
-      orderBy: { argocdApp: 'asc' },
-    }),
-    prisma.resourceChangeAudit.findMany({
-      where: optionWhere,
-      distinct: ['authorName'],
-      select: { authorName: true, authorEmail: true },
-      orderBy: { authorName: 'asc' },
-      take: 200,
-    }),
-    getRegisteredClusterNames(),
-  ]);
+  const [clusterGroups, namespaceGroups, appGroups, authorGroups, registeredNames] =
+    await Promise.all([
+      prisma.resourceChangeAudit.groupBy({
+        by: ['cluster'],
+        where: optionWhere,
+        orderBy: { cluster: 'asc' },
+      }),
+      prisma.resourceChangeAudit.groupBy({
+        by: ['namespace'],
+        where: optionWhere,
+        orderBy: { namespace: 'asc' },
+      }),
+      prisma.resourceChangeAudit.groupBy({
+        by: ['argocdApp'],
+        where: optionWhere,
+        orderBy: { argocdApp: 'asc' },
+      }),
+      prisma.resourceChangeAudit.groupBy({
+        by: ['authorName', 'authorEmail'],
+        where: optionWhere,
+        orderBy: { authorName: 'asc' },
+        take: 200,
+      }),
+      getRegisteredClusterNames(),
+    ]);
 
   const clusterSet = new Set<string>([
     ...registeredNames,
-    ...clusters.map((r) => r.cluster).filter(Boolean),
+    ...clusterGroups.map((r) => r.cluster).filter(Boolean),
   ]);
 
   return {
     clusters: Array.from(clusterSet).sort(),
-    namespaces: namespaces.map((r) => r.namespace).filter(Boolean).sort(),
-    applications: applications.map((r) => r.argocdApp).filter(Boolean).sort(),
-    authors: authors
+    namespaces: namespaceGroups.map((r) => r.namespace).filter(Boolean).sort(),
+    applications: appGroups.map((r) => r.argocdApp).filter(Boolean).sort(),
+    authors: authorGroups
       .filter((r) => r.authorName)
       .map((r) => ({
         name: r.authorName,
         email: r.authorEmail,
       })),
     resourceTypes: [...RESOURCE_AUDIT_TYPES],
-    dataWindow: serializeResourceAuditDataWindow(await getResourceAuditDataWindow()),
+    dataWindow: serializeResourceAuditDataWindow(dataWindow),
   };
 }
 

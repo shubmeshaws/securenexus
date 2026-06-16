@@ -93,8 +93,9 @@ export function TopBar({ pathname }: { pathname: string | null }) {
   const { data: notificationsData } = useQuery({
     queryKey: ['notifications'],
     queryFn: () => apiFetch<{ notifications: AppNotification[]; unread: number }>('/api/notifications'),
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    refetchIntervalInBackground: false,
   });
 
   const { data: searchData } = useQuery({

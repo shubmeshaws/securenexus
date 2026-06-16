@@ -64,12 +64,14 @@ async function fetchStoppedLogs() {
       status: 'success',
     },
     orderBy: { timestamp: 'asc' },
-    take: 10000,
+    take: 5000,
   });
 }
 
-export async function computeNamespaceStoppedStats(now = new Date()): Promise<NamespaceStoppedStat[]> {
-  const logs = await fetchStoppedLogs();
+function namespaceStoppedStatsFromLogs(
+  logs: Awaited<ReturnType<typeof fetchStoppedLogs>>,
+  now: Date
+): NamespaceStoppedStat[] {
   const intervals = buildStoppedIntervals(logs, now);
   const totals = sumStoppedMsTotal(intervals, now);
 
@@ -87,48 +89,79 @@ export async function computeNamespaceStoppedStats(now = new Date()): Promise<Na
     .sort((a, b) => b.stoppedMs - a.stoppedMs);
 }
 
+export async function computeNamespaceStoppedStats(now = new Date()): Promise<NamespaceStoppedStat[]> {
+  const logs = await fetchStoppedLogs();
+  return namespaceStoppedStatsFromLogs(logs, now);
+}
+
 export async function estimateNamespaceResources(
   schedules: Schedule[]
 ): Promise<Map<string, { cpuCores: number; memoryGb: number }>> {
   const result = new Map<string, { cpuCores: number; memoryGb: number }>();
-  const { getDeploymentResources, listWorkloads, getDeployment } = await import('./k8s-client');
+  const byKey = new Map<string, Schedule[]>();
 
   for (const schedule of schedules) {
     const key = `${schedule.cluster}::${schedule.namespace}`;
-    const existing = result.get(key) ?? { cpuCores: 0, memoryGb: 0 };
+    const list = byKey.get(key) ?? [];
+    list.push(schedule);
+    byKey.set(key, list);
+  }
 
-    try {
-      if (isNamespaceSchedule(schedule)) {
-        const savedMap = parseSavedReplicas(schedule.savedWorkloadReplicas);
-        const workloads = await listWorkloads(schedule.cluster, schedule.namespace);
-        const excluded = new Set(schedule.excludedWorkloads ?? []);
-        for (const w of workloads) {
-          if (w.kind === 'DaemonSet') continue;
-          const wk = `${w.kind}::${w.name}`;
-          if (excluded.has(wk)) continue;
-          if (w.kind === 'Deployment') {
-            const res = await getDeploymentResources(schedule.cluster, schedule.namespace, w.name);
-            const replicas = savedMap[wk] ?? (await getDeployment(schedule.cluster, schedule.namespace, w.name))?.desiredReplicas ?? 1;
-            existing.cpuCores += res.cpuCores * replicas;
-            existing.memoryGb += res.memoryGb * replicas;
+  const { getDeploymentResources, listWorkloads, getDeployment } = await import('./k8s-client');
+
+  await Promise.all(
+    Array.from(byKey.entries()).map(async ([key, nsSchedules]) => {
+      const sep = key.indexOf('::');
+      const cluster = key.slice(0, sep);
+      const namespace = key.slice(sep + 2);
+      const totals = { cpuCores: 0, memoryGb: 0 };
+
+      try {
+        const namespaceSchedules = nsSchedules.filter(isNamespaceSchedule);
+        const workloadSchedules = nsSchedules.filter(
+          (s) => !isNamespaceSchedule(s) && s.workloadKind === 'Deployment'
+        );
+
+        if (namespaceSchedules.length) {
+          const workloads = await listWorkloads(cluster, namespace);
+          for (const schedule of namespaceSchedules) {
+            const savedMap = parseSavedReplicas(schedule.savedWorkloadReplicas);
+            const excluded = new Set(schedule.excludedWorkloads ?? []);
+            await Promise.all(
+              workloads
+                .filter((w) => w.kind === 'Deployment')
+                .filter((w) => !excluded.has(`${w.kind}::${w.name}`))
+                .map(async (w) => {
+                  const wk = `${w.kind}::${w.name}`;
+                  const res = await getDeploymentResources(cluster, namespace, w.name);
+                  const replicas =
+                    savedMap[wk] ??
+                    (await getDeployment(cluster, namespace, w.name))?.desiredReplicas ??
+                    1;
+                  totals.cpuCores += res.cpuCores * replicas;
+                  totals.memoryGb += res.memoryGb * replicas;
+                })
+            );
           }
         }
-      } else if (schedule.workloadKind === 'Deployment') {
-        const res = await getDeploymentResources(
-          schedule.cluster,
-          schedule.namespace,
-          schedule.appName
-        );
-        const replicas = schedule.savedReplicas ?? schedule.targetReplicas ?? 1;
-        existing.cpuCores += res.cpuCores * replicas;
-        existing.memoryGb += res.memoryGb * replicas;
-      }
-    } catch {
-      // skip unreachable workloads
-    }
 
-    result.set(key, existing);
-  }
+        await Promise.all(
+          workloadSchedules.map(async (schedule) => {
+            const res = await getDeploymentResources(cluster, namespace, schedule.appName);
+            const replicas = schedule.savedReplicas ?? schedule.targetReplicas ?? 1;
+            totals.cpuCores += res.cpuCores * replicas;
+            totals.memoryGb += res.memoryGb * replicas;
+          })
+        );
+      } catch {
+        // skip unreachable cluster/namespace
+      }
+
+      if (totals.cpuCores > 0 || totals.memoryGb > 0) {
+        result.set(key, totals);
+      }
+    })
+  );
 
   return result;
 }
@@ -142,14 +175,39 @@ function parseSavedReplicas(value: unknown): Record<string, number> {
   return out;
 }
 
-async function buildClusterRateMap(): Promise<Map<string, ReturnType<typeof clusterResourceRates>>> {
+export interface DashboardInsightsResult {
+  namespaceStopped: NamespaceStoppedStat[];
+  instanceTypes: InstanceTypeStat[];
+  costSavings: NamespaceCostSavings[];
+  costCalendarTz: string;
+  totals: {
+    stoppedHours: number;
+    stoppedHoursToday: number;
+    stoppedHoursMonth: number;
+    cpuSavedTotal: number;
+    memorySavedTotal: number;
+    cpuSavedPerDay: number;
+    memorySavedPerDay: number;
+    cpuSavedPerMonth: number;
+    memorySavedPerMonth: number;
+  };
+}
+
+const INSIGHTS_CACHE_TTL_MS = 90_000;
+let insightsCache: { at: number; data: DashboardInsightsResult } | null = null;
+
+async function fetchClusterNodeMetrics(): Promise<{
+  instanceTypes: InstanceTypeStat[];
+  clusterRates: Map<string, ReturnType<typeof clusterResourceRates>>;
+}> {
   const clusters = await listClusters().catch(() => []);
-  const map = new Map<string, ReturnType<typeof clusterResourceRates>>();
+  const instanceTypes: InstanceTypeStat[] = [];
+  const clusterRates = new Map<string, ReturnType<typeof clusterResourceRates>>();
 
   await Promise.all(
     clusters.map(async (cluster) => {
       const types = await listClusterInstanceTypes(cluster.name).catch(() => []);
-      map.set(
+      clusterRates.set(
         cluster.name,
         clusterResourceRates(
           types.map((t) => ({
@@ -159,10 +217,31 @@ async function buildClusterRateMap(): Promise<Map<string, ReturnType<typeof clus
           }))
         )
       );
+
+      for (const t of types) {
+        const { spec, cpuHourlyPerCore, memHourlyPerGb, hourlyPrice } = resourceRatesFromInstance(
+          t.instanceType,
+          t.capacityType
+        );
+        instanceTypes.push({
+          cluster: cluster.name,
+          instanceType: t.instanceType,
+          capacityType: t.capacityType,
+          count: t.count,
+          vCpu: spec.vCpu,
+          memoryGiB: spec.memoryGiB,
+          hourlyPrice: roundUsd(hourlyPrice),
+          cpuRatePerCore: roundUsd(cpuHourlyPerCore),
+          memRatePerGb: roundUsd(memHourlyPerGb),
+        });
+      }
     })
   );
 
-  return map;
+  return {
+    instanceTypes: instanceTypes.sort((a, b) => b.count - a.count),
+    clusterRates,
+  };
 }
 
 export function buildCostSavings(
@@ -233,36 +312,15 @@ export function buildCostSavings(
 }
 
 export async function getClusterInstanceTypes(): Promise<InstanceTypeStat[]> {
-  const clusters = await listClusters().catch(() => []);
-  const rows: InstanceTypeStat[] = [];
-
-  await Promise.all(
-    clusters.map(async (cluster) => {
-      const types = await listClusterInstanceTypes(cluster.name).catch(() => []);
-      for (const t of types) {
-        const { spec, cpuHourlyPerCore, memHourlyPerGb, hourlyPrice } = resourceRatesFromInstance(
-          t.instanceType,
-          t.capacityType
-        );
-        rows.push({
-          cluster: cluster.name,
-          instanceType: t.instanceType,
-          capacityType: t.capacityType,
-          count: t.count,
-          vCpu: spec.vCpu,
-          memoryGiB: spec.memoryGiB,
-          hourlyPrice: roundUsd(hourlyPrice),
-          cpuRatePerCore: roundUsd(cpuHourlyPerCore),
-          memRatePerGb: roundUsd(memHourlyPerGb),
-        });
-      }
-    })
-  );
-
-  return rows.sort((a, b) => b.count - a.count);
+  const { instanceTypes } = await fetchClusterNodeMetrics();
+  return instanceTypes;
 }
 
-export async function getDashboardInsights(schedules: Schedule[]) {
+export async function getDashboardInsights(schedules: Schedule[]): Promise<DashboardInsightsResult> {
+  if (insightsCache && Date.now() - insightsCache.at < INSIGHTS_CACHE_TTL_MS) {
+    return insightsCache.data;
+  }
+
   const now = new Date();
   const dayBounds = getCalendarDayBounds(now);
   const monthBounds = getCalendarMonthBounds(now);
@@ -272,11 +330,10 @@ export async function getDashboardInsights(schedules: Schedule[]) {
   const stoppedMsToday = sumStoppedMsInRange(intervals, dayBounds.start, dayBounds.end, now);
   const stoppedMsMonth = sumStoppedMsInRange(intervals, monthBounds.start, monthBounds.end, now);
 
-  const [stoppedStats, instanceTypes, resourceMap, clusterRates] = await Promise.all([
-    computeNamespaceStoppedStats(now),
-    getClusterInstanceTypes(),
+  const [stoppedStats, nodeMetrics, resourceMap] = await Promise.all([
+    Promise.resolve(namespaceStoppedStatsFromLogs(logs, now)),
+    fetchClusterNodeMetrics(),
     estimateNamespaceResources(schedules),
-    buildClusterRateMap(),
   ]);
 
   const costSavings = buildCostSavings(
@@ -284,12 +341,12 @@ export async function getDashboardInsights(schedules: Schedule[]) {
     resourceMap,
     stoppedMsToday,
     stoppedMsMonth,
-    clusterRates
+    nodeMetrics.clusterRates
   );
 
-  return {
+  const data = {
     namespaceStopped: stoppedStats,
-    instanceTypes,
+    instanceTypes: nodeMetrics.instanceTypes,
     costSavings,
     costCalendarTz: COST_CALENDAR_TZ,
     totals: {
@@ -304,4 +361,7 @@ export async function getDashboardInsights(schedules: Schedule[]) {
       memorySavedPerMonth: sumUsd(costSavings.map((r) => r.memorySavedPerMonth)),
     },
   };
+
+  insightsCache = { at: Date.now(), data };
+  return data;
 }
