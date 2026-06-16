@@ -14,8 +14,10 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
 
   const outcome = startResourceAuditRebuild();
   if (outcome === 'already_running') {
-    return res.status(409).json({
-      ok: false,
+    return res.status(202).json({
+      ok: true,
+      started: false,
+      alreadyRunning: true,
       message: 'A rebuild is already running',
       status: getResourceAuditRebuildStatus(),
     });

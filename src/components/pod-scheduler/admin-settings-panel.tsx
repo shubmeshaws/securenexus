@@ -14,8 +14,7 @@ import {
   ShieldCheck,
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
-import { apiFetch, getAuthToken } from '@/lib/api-client';
-import { getApiBaseUrl } from '@/lib/client-settings';
+import { apiFetch } from '@/lib/api-client';
 import { TECH_ICONS } from '@/lib/tech-icons';
 import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instances-panel';
 import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-panel';
@@ -228,33 +227,21 @@ export function AdminSettingsPanel() {
   }, []);
 
   const rebuildMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch(`${getApiBaseUrl()}/api/admin/resource-audit/rebuild`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${getAuthToken()}`,
-        },
-      });
-      const body = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        message?: string;
-        status?: ResourceAuditRebuildStatus;
-      };
-      if (res.status === 202 || res.status === 409) {
-        return body;
-      }
-      throw new Error(body.message || `Request failed: ${res.status}`);
-    },
+    mutationFn: () =>
+      apiFetch<{
+        ok: boolean;
+        started?: boolean;
+        alreadyRunning?: boolean;
+        message: string;
+        status: ResourceAuditRebuildStatus;
+      }>('/api/admin/resource-audit/rebuild', { method: 'POST' }),
     onMutate: () => setRebuildFeedback(null),
     onSuccess: (data) => {
-      if (data.status?.running || data.ok) {
-        setRebuildFeedback({
-          ok: true,
-          message: data.message || 'Rebuild started in the background…',
-        });
-        startRebuildPolling();
-      }
+      setRebuildFeedback({
+        ok: true,
+        message: data.message || 'Rebuild started in the background…',
+      });
+      startRebuildPolling();
     },
     onError: (err: Error) => {
       setRebuildRunning(false);
