@@ -1,41 +1,31 @@
 import type { NextApiResponse } from 'next';
 import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
-import prisma from '@/lib/prisma';
-import { refreshGitResourceAuditRows } from '@/lib/git-resource-audit-join';
-import { linkAppSourcesToRepositories } from '@/lib/git-repositories';
+import {
+  getResourceAuditRebuildStatus,
+  startResourceAuditRebuild,
+} from '@/lib/resource-audit-rebuild';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  if (req.method === 'GET') {
+    return res.status(200).json({ ok: true, status: getResourceAuditRebuildStatus() });
+  }
 
-  await linkAppSourcesToRepositories().catch(() => 0);
+  if (req.method !== 'POST') return methodNotAllowed(res, ['GET', 'POST']);
 
-  const [gitChanges, unlinkedBefore, auditBefore] = await Promise.all([
-    prisma.gitResourceChange.count({ where: { resourceType: { not: 'FILE_TOUCH' } } }),
-    prisma.gitResourceChange.count({
-      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
-    }),
-    prisma.resourceChangeAudit.count({ where: { resourceType: { not: 'GIT_SYNC' } } }),
-  ]);
+  const outcome = startResourceAuditRebuild();
+  if (outcome === 'already_running') {
+    return res.status(409).json({
+      ok: false,
+      message: 'A rebuild is already running',
+      status: getResourceAuditRebuildStatus(),
+    });
+  }
 
-  const result = await refreshGitResourceAuditRows();
-
-  const [auditAfter, unlinkedAfter] = await Promise.all([
-    prisma.resourceChangeAudit.count({ where: { resourceType: { not: 'GIT_SYNC' } } }),
-    prisma.gitResourceChange.count({
-      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
-    }),
-  ]);
-
-  return res.status(200).json({
+  return res.status(202).json({
     ok: true,
-    message: `Rebuild complete — ${result.linked} row(s) linked from git history`,
-    gitChanges,
-    unlinkedBefore,
-    auditBefore,
-    auditAfter,
-    unlinkedAfter,
-    deleted: result.deleted,
-    gitSyncRemoved: result.gitSyncRemoved,
+    started: true,
+    message: 'Rebuild started in the background. This may take several minutes.',
+    status: getResourceAuditRebuildStatus(),
   });
 }
 

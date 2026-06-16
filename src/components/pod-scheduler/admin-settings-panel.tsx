@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Database,
@@ -14,7 +14,8 @@ import {
   ShieldCheck,
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, getAuthToken } from '@/lib/api-client';
+import { getApiBaseUrl } from '@/lib/client-settings';
 import { TECH_ICONS } from '@/lib/tech-icons';
 import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instances-panel';
 import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-panel';
@@ -45,6 +46,17 @@ export interface AdminSettings {
   resourceAuditRetentionAmount: number;
   resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
   resourceAuditDataStartDate: string;
+}
+
+interface ResourceAuditRebuildStatus {
+  running: boolean;
+  phase: string;
+  message: string | null;
+  error: string | null;
+  auditBefore: number;
+  auditAfter: number;
+  linked: number;
+  unlinkedAfter: number;
 }
 
 const RESOURCE_AUDIT_RETENTION_PRESETS: {
@@ -85,6 +97,8 @@ export function AdminSettingsPanel() {
   const [rebuildFeedback, setRebuildFeedback] = useState<{ ok: boolean; message: string } | null>(
     null
   );
+  const [rebuildRunning, setRebuildRunning] = useState(false);
+  const rebuildPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -144,26 +158,106 @@ export function AdminSettingsPanel() {
     },
   });
 
+  const stopRebuildPolling = () => {
+    if (rebuildPollRef.current) {
+      clearInterval(rebuildPollRef.current);
+      rebuildPollRef.current = null;
+    }
+  };
+
+  const ensureRebuildPolling = () => {
+    if (rebuildPollRef.current) return;
+    rebuildPollRef.current = setInterval(() => {
+      void pollRebuildStatus();
+    }, 3000);
+  };
+
+  const pollRebuildStatus = async () => {
+    try {
+      const data = await apiFetch<{ ok: boolean; status: ResourceAuditRebuildStatus }>(
+        '/api/admin/resource-audit/rebuild'
+      );
+      const status = data.status;
+      if (status.running) {
+        setRebuildRunning(true);
+        setRebuildFeedback({
+          ok: true,
+          message: status.message || 'Rebuilding Resource Changes…',
+        });
+        ensureRebuildPolling();
+        return;
+      }
+
+      stopRebuildPolling();
+      setRebuildRunning(false);
+
+      if (status.phase === 'done') {
+        setRebuildFeedback({
+          ok: true,
+          message:
+            status.message ||
+            `Rebuild complete (${status.auditBefore} → ${status.auditAfter} rows)`,
+        });
+        queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
+        queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
+      } else if (status.phase === 'failed') {
+        setRebuildFeedback({
+          ok: false,
+          message: status.error || status.message || 'Rebuild failed',
+        });
+      }
+    } catch (err) {
+      stopRebuildPolling();
+      setRebuildRunning(false);
+      setRebuildFeedback({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Failed to check rebuild status',
+      });
+    }
+  };
+
+  const startRebuildPolling = () => {
+    setRebuildRunning(true);
+    void pollRebuildStatus();
+  };
+
+  useEffect(() => {
+    void pollRebuildStatus();
+    return () => stopRebuildPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const rebuildMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{
-        ok: boolean;
-        message: string;
-        auditBefore: number;
-        auditAfter: number;
-        unlinkedBefore: number;
-        unlinkedAfter: number;
-      }>('/api/admin/resource-audit/rebuild', { method: 'POST' }),
+    mutationFn: async () => {
+      const res = await fetch(`${getApiBaseUrl()}/api/admin/resource-audit/rebuild`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken()}`,
+        },
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        message?: string;
+        status?: ResourceAuditRebuildStatus;
+      };
+      if (res.status === 202 || res.status === 409) {
+        return body;
+      }
+      throw new Error(body.message || `Request failed: ${res.status}`);
+    },
     onMutate: () => setRebuildFeedback(null),
     onSuccess: (data) => {
-      setRebuildFeedback({
-        ok: true,
-        message: `${data.message} (${data.auditBefore} → ${data.auditAfter} rows)`,
-      });
-      queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
-      queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
+      if (data.status?.running || data.ok) {
+        setRebuildFeedback({
+          ok: true,
+          message: data.message || 'Rebuild started in the background…',
+        });
+        startRebuildPolling();
+      }
     },
     onError: (err: Error) => {
+      setRebuildRunning(false);
       setRebuildFeedback({
         ok: false,
         message: err.message || 'Rebuild failed',
@@ -367,8 +461,8 @@ export function AdminSettingsPanel() {
           <div className="space-y-2 sm:col-span-2">
             <Label>Rebuild from git history</Label>
             <p className="text-[11px] text-muted-foreground">
-              Re-link Resource Changes from cloned Bitbucket repos. Use after first deploy or if the
-              table is empty despite successful git pulls.
+              Re-link Resource Changes from cloned Bitbucket repos. Runs in the background and may
+              take several minutes on EC2 — keep this page open to see progress.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               {rebuildFeedback && (
@@ -387,9 +481,9 @@ export function AdminSettingsPanel() {
                 type="button"
                 variant="outline"
                 onClick={() => rebuildMutation.mutate()}
-                disabled={rebuildMutation.isPending}
+                disabled={rebuildRunning || rebuildMutation.isPending}
               >
-                {rebuildMutation.isPending ? (
+                {rebuildRunning || rebuildMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <RefreshCcw className="h-4 w-4" />

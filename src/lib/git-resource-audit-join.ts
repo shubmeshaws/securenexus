@@ -473,7 +473,9 @@ export async function joinGitChangesWithArgoSync(
 }
 
 /** Remove git-sourced audit rows and re-link from gitResourceChange with cost. */
-export async function refreshGitResourceAuditRows(): Promise<{
+export async function refreshGitResourceAuditRows(
+  onProgress?: (linkedSoFar: number, unlinkedRemaining: number) => void
+): Promise<{
   deleted: number;
   linked: number;
   gitSyncRemoved: number;
@@ -498,11 +500,23 @@ export async function refreshGitResourceAuditRows(): Promise<{
     data: { auditLinked: false },
   });
 
-  const linked = await linkGitChangesToResourceAudit();
+  let totalLinked = 0;
+  while (true) {
+    const batchLinked = await linkGitChangesToResourceAudit();
+    totalLinked += batchLinked;
+
+    const unlinkedRemaining = await prisma.gitResourceChange.count({
+      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+    });
+    onProgress?.(totalLinked, unlinkedRemaining);
+
+    if (batchLinked === 0 || unlinkedRemaining === 0) break;
+  }
+
   const gitSyncRemoved = await cleanupGitSyncForAnalyzedCommits(shaList);
   await recomputeResourceAuditCostEstimates();
 
-  return { deleted: deleted.count, linked, gitSyncRemoved };
+  return { deleted: deleted.count, linked: totalLinked, gitSyncRemoved };
 }
 
 /** Re-process recent helm-charts commits (path-inferred apps, scrub unrelated GIT_SYNC). */
