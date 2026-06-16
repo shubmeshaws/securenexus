@@ -184,6 +184,10 @@ export function AdminSettingsPanel() {
           message: status.message || 'Rebuilding Resource Changes…',
         });
         ensureRebuildPolling();
+        if (status.auditAfter > 0) {
+          queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
+          queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
+        }
         return;
       }
 
@@ -195,7 +199,7 @@ export function AdminSettingsPanel() {
           ok: true,
           message:
             status.message ||
-            `Rebuild complete (${status.auditBefore} → ${status.auditAfter} rows)`,
+            `Rebuild complete — ${status.auditAfter} row(s) visible`,
         });
         queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
         queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });

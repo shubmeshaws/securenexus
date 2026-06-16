@@ -12,9 +12,30 @@ import {
 import { resolveAuditClusterName, getRegisteredClusterNames } from './resource-audit-cluster';
 import { fetchLivePodCount } from './resource-audit-kubectl';
 import { getClusterResourceRates } from './resource-audit-rates';
-import { recomputeResourceAuditCostEstimates } from './resource-audit-maintenance';
 import type { ClusterResourceRates } from './instance-pricing';
 import { getResourceAuditDataWindow } from './resource-audit-retention';
+
+/** Small batches for low-memory servers (4GB / 2 vCPU). Override via GIT_AUDIT_LINK_BATCH_SIZE. */
+export const GIT_AUDIT_LINK_BATCH_SIZE = Math.min(
+  500,
+  Math.max(50, parseInt(process.env.GIT_AUDIT_LINK_BATCH_SIZE ?? '150', 10) || 150)
+);
+
+function yieldEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function auditDedupeKey(row: {
+  revisionSha: string;
+  cluster: string;
+  namespace: string;
+  resourceType: string;
+  containerName: string;
+  oldValue: string;
+  newValue: string;
+}): string {
+  return `${row.revisionSha}::${row.cluster}::${row.namespace}::${row.containerName}::${row.resourceType}::${row.oldValue}::${row.newValue}`;
+}
 
 function isEmptyResourceValue(value: string): boolean {
   const v = value.trim().toLowerCase();
@@ -103,13 +124,11 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
   const changes = await prisma.gitResourceChange.findMany({
     where: {
       auditLinked: false,
+      resourceType: { not: 'FILE_TOUCH' },
       ...(gitRepositoryId ? { gitRepositoryId } : {}),
     },
-    include: {
-      gitRepository: true,
-    },
-    orderBy: { committedAt: 'asc' },
-    take: 5000,
+    orderBy: { committedAt: 'desc' },
+    take: GIT_AUDIT_LINK_BATCH_SIZE,
   });
 
   if (!changes.length) return 0;
@@ -121,17 +140,41 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
   const skipLivePodLookup = registeredClusters.length === 0;
 
   const ratesCache = new Map<string, ClusterResourceRates>();
+  const clusterCache = new Map<string, string>();
   const replicaMaps = new Map<string, Map<string, number>>();
+
+  const commitShas = Array.from(new Set(changes.map((c) => c.commitSha)));
+  const existingRows = await prisma.resourceChangeAudit.findMany({
+    where: {
+      revisionSha: { in: commitShas },
+      resourceType: { not: 'GIT_SYNC' },
+    },
+    select: {
+      revisionSha: true,
+      cluster: true,
+      namespace: true,
+      resourceType: true,
+      containerName: true,
+      oldValue: true,
+      newValue: true,
+    },
+  });
+  const existingKeys = new Set(existingRows.map(auditDedupeKey));
 
   const toPersist: ResourceChangeInput[] = [];
   const linkedIds: string[] = [];
 
+  const resolveCluster = async (filePath: string, branch: string | null | undefined) => {
+    const key = `${filePath}::${branch ?? ''}`;
+    const cached = clusterCache.get(key);
+    if (cached) return cached;
+    const cluster = await resolveAuditClusterName({ filePath, branch });
+    clusterCache.set(key, cluster);
+    return cluster;
+  };
+
   for (const change of changes) {
     if (change.committedAt < dataAvailableFrom) {
-      linkedIds.push(change.id);
-      continue;
-    }
-    if (change.resourceType === 'FILE_TOUCH') {
       linkedIds.push(change.id);
       continue;
     }
@@ -145,32 +188,29 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
     }
 
     const inferred = inferAppFromHelmValuesPath(change.filePath);
-    if (!inferred) continue;
+    if (!inferred) {
+      linkedIds.push(change.id);
+      continue;
+    }
 
     const envFromFile = inferred.env;
     const namespace = inferred.namespace;
-    const cluster = await resolveAuditClusterName({
-      filePath: change.filePath,
-      branch: change.branchName,
-    });
+    const cluster = await resolveCluster(change.filePath, change.branchName);
 
     const oldValue = normalizeStoredValue(change.oldValue);
     const newValue = normalizeStoredValue(change.newValue);
     const valuesFilePath = inferred.filePath;
 
-    const exists = await prisma.resourceChangeAudit.findFirst({
-      where: {
-        revisionSha: change.commitSha,
-        cluster,
-        namespace,
-        resourceType: change.resourceType,
-        containerName: change.containerName,
-        oldValue,
-        newValue,
-      },
-    });
-    if (exists) {
-      if (!linkedIds.includes(change.id)) linkedIds.push(change.id);
+    if (existingKeys.has(auditDedupeKey({
+      revisionSha: change.commitSha,
+      cluster,
+      namespace,
+      resourceType: change.resourceType,
+      containerName: change.containerName,
+      oldValue,
+      newValue,
+    }))) {
+      linkedIds.push(change.id);
       continue;
     }
 
@@ -180,12 +220,8 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
     if (!replicaMap) {
       replicaMap = await loadReplicaCountMapForCommits(
         change.gitRepositoryId,
-        Array.from(
-          new Set(
-            changes
-              .filter((c) => c.gitRepositoryId === change.gitRepositoryId)
-              .map((c) => c.commitSha)
-          )
+        commitShas.filter((sha) =>
+          changes.some((c) => c.gitRepositoryId === change.gitRepositoryId && c.commitSha === sha)
         )
       );
       replicaMaps.set(change.gitRepositoryId, replicaMap);
@@ -228,7 +264,7 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
       syncedAt: change.committedAt,
       estimatedCostImpactPerDay: estimateChangeCost(change, replicaCount, rates),
     });
-    if (!linkedIds.includes(change.id)) linkedIds.push(change.id);
+    linkedIds.push(change.id);
   }
 
   if (toPersist.length) {
@@ -243,6 +279,38 @@ export async function linkGitChangesToResourceAudit(gitRepositoryId?: string): P
   }
 
   return toPersist.length;
+}
+
+/** Link unlinked git rows in small newest-first batches (no wipe). Safe for low-memory servers. */
+export async function linkUnlinkedGitChangesIncremental(
+  onProgress?: (
+    linkedSoFar: number,
+    unlinkedRemaining: number,
+    auditRowCount: number
+  ) => void | Promise<void>
+): Promise<{ linked: number }> {
+  let totalLinked = 0;
+
+  while (true) {
+    const batchLinked = await linkGitChangesToResourceAudit();
+    totalLinked += batchLinked;
+
+    const [unlinkedRemaining, auditRowCount] = await Promise.all([
+      prisma.gitResourceChange.count({
+        where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+      }),
+      prisma.resourceChangeAudit.count({ where: { resourceType: { not: 'GIT_SYNC' } } }),
+    ]);
+
+    await onProgress?.(totalLinked, unlinkedRemaining, auditRowCount);
+
+    if (unlinkedRemaining === 0) break;
+    if (batchLinked === 0) break;
+
+    await yieldEventLoop();
+  }
+
+  return { linked: totalLinked };
 }
 
 /** Skip GIT_SYNC when git analysis shows the commit did not touch this app's values files. */
@@ -411,22 +479,6 @@ export async function runGitPullResourceAnalysis(input: {
     bootstrap: input.bootstrap,
   });
 
-  if (commitShas.length) {
-    await prisma.resourceChangeAudit.deleteMany({
-      where: {
-        resourceType: { not: 'GIT_SYNC' },
-        OR: commitShas.flatMap((sha) => [
-          { revisionSha: sha },
-          { revisionSha: { startsWith: sha.slice(0, 7) } },
-        ]),
-      },
-    });
-    await prisma.gitResourceChange.updateMany({
-      where: { gitRepositoryId: input.repoId, commitSha: { in: commitShas } },
-      data: { auditLinked: false },
-    });
-  }
-
   const auditRowsLinked = await linkGitChangesToResourceAudit(input.repoId);
 
   let gitSyncRemoved = 0;
@@ -474,7 +526,7 @@ export async function joinGitChangesWithArgoSync(
 
 /** Remove git-sourced audit rows and re-link from gitResourceChange with cost. */
 export async function refreshGitResourceAuditRows(
-  onProgress?: (linkedSoFar: number, unlinkedRemaining: number) => void
+  onProgress?: (linkedSoFar: number, unlinkedRemaining: number, auditRowCount: number) => void
 ): Promise<{
   deleted: number;
   linked: number;
@@ -497,26 +549,17 @@ export async function refreshGitResourceAuditRows(
       : { count: 0 };
 
   await prisma.gitResourceChange.updateMany({
+    where: { resourceType: { not: 'FILE_TOUCH' } },
     data: { auditLinked: false },
   });
 
-  let totalLinked = 0;
-  while (true) {
-    const batchLinked = await linkGitChangesToResourceAudit();
-    totalLinked += batchLinked;
+  const { linked } = await linkUnlinkedGitChangesIncremental(onProgress);
 
-    const unlinkedRemaining = await prisma.gitResourceChange.count({
-      where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
-    });
-    onProgress?.(totalLinked, unlinkedRemaining);
+  const gitSyncRemoved = shaList.length
+    ? await cleanupGitSyncForAnalyzedCommits(shaList)
+    : 0;
 
-    if (batchLinked === 0 || unlinkedRemaining === 0) break;
-  }
-
-  const gitSyncRemoved = await cleanupGitSyncForAnalyzedCommits(shaList);
-  await recomputeResourceAuditCostEstimates();
-
-  return { deleted: deleted.count, linked: totalLinked, gitSyncRemoved };
+  return { deleted: deleted.count, linked, gitSyncRemoved };
 }
 
 /** Re-process recent helm-charts commits (path-inferred apps, scrub unrelated GIT_SYNC). */

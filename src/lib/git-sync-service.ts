@@ -319,7 +319,11 @@ export async function cloneRepository(
         },
       });
 
-      enqueueRepositoryAnalysis(repo, clonePath, branch, previousSha, headSha, !previousSha);
+      if (manual) {
+        await runRepositoryAnalysis(repo, clonePath, branch, previousSha, headSha, !previousSha);
+      } else {
+        enqueueRepositoryAnalysis(repo, clonePath, branch, previousSha, headSha, !previousSha);
+      }
 
       const branchLabel = repo.defaultBranch?.trim() || branch;
       return {

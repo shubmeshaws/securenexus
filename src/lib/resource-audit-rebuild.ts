@@ -1,5 +1,5 @@
 import prisma from './prisma';
-import { refreshGitResourceAuditRows } from './git-resource-audit-join';
+import { linkUnlinkedGitChangesIncremental } from './git-resource-audit-join';
 import { linkAppSourcesToRepositories } from './git-repositories';
 
 export type ResourceAuditRebuildPhase =
@@ -77,25 +77,40 @@ export function startResourceAuditRebuild(): 'started' | 'already_running' {
         gitChanges,
         unlinkedBefore,
         auditBefore,
+        auditAfter: auditBefore,
         phase: 'rebuilding',
-        message: `Rebuilding from ${gitChanges} git change(s)…`,
+        message:
+          unlinkedBefore > 0
+            ? `Linking ${unlinkedBefore} git change(s) — newest commits first…`
+            : 'No pending git changes to link',
       };
 
-      const result = await refreshGitResourceAuditRows((linkedSoFar, unlinkedRemaining) => {
+      if (unlinkedBefore === 0) {
         rebuildStatus = {
           ...rebuildStatus,
-          linked: linkedSoFar,
-          unlinkedAfter: unlinkedRemaining,
-          message: `Linked ${linkedSoFar} row(s) — ${unlinkedRemaining} git change(s) remaining…`,
+          running: false,
+          phase: 'done',
+          finishedAt: new Date().toISOString(),
+          message: `Already up to date (${auditBefore} audit row(s))`,
         };
-      });
+        return;
+      }
 
-      const [auditAfter, unlinkedAfter] = await Promise.all([
-        prisma.resourceChangeAudit.count({ where: { resourceType: { not: 'GIT_SYNC' } } }),
-        prisma.gitResourceChange.count({
-          where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
-        }),
-      ]);
+      const result = await linkUnlinkedGitChangesIncremental(
+        async (linkedSoFar, unlinkedRemaining, auditRowCount) => {
+          rebuildStatus = {
+            ...rebuildStatus,
+            linked: linkedSoFar,
+            auditAfter: auditRowCount,
+            unlinkedAfter: unlinkedRemaining,
+            message: `${auditRowCount} row(s) visible — linked ${linkedSoFar}, ${unlinkedRemaining} pending…`,
+          };
+        }
+      );
+
+      const unlinkedAfter = await prisma.gitResourceChange.count({
+        where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
+      });
 
       rebuildStatus = {
         running: false,
@@ -106,12 +121,12 @@ export function startResourceAuditRebuild(): 'started' | 'already_running' {
         unlinkedBefore,
         auditBefore,
         linked: result.linked,
-        auditAfter,
+        auditAfter: rebuildStatus.auditAfter,
         unlinkedAfter,
-        deleted: result.deleted,
-        gitSyncRemoved: result.gitSyncRemoved,
+        deleted: 0,
+        gitSyncRemoved: 0,
         error: null,
-        message: `Rebuild complete — ${result.linked} row(s) linked (${auditBefore} → ${auditAfter} audit rows)`,
+        message: `Rebuild complete — ${rebuildStatus.auditAfter} row(s) visible (${result.linked} linked from git)`,
       };
 
       console.log('[ResourceAudit] Background rebuild complete:', rebuildStatus.message);

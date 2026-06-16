@@ -35,7 +35,7 @@ import {
   reconcileResourceAuditClusterNames,
 } from '../cluster-resolve';
 import { syncResourceAppCatalog, bootstrapCatalogFromSnapshots } from '../resource-app-catalog';
-import { joinGitChangesWithArgoSync, shouldRecordGitSyncForApp, linkGitChangesToResourceAudit } from '../git-resource-audit-join';
+import { joinGitChangesWithArgoSync, shouldRecordGitSyncForApp, linkUnlinkedGitChangesIncremental } from '../git-resource-audit-join';
 
 const RESOURCE_AUDIT_GLOBAL_KEY = '__secureNexusResourceAuditStarted__';
 
@@ -404,7 +404,7 @@ export function initResourceAuditJob() {
         where: { auditLinked: false, resourceType: { not: 'FILE_TOUCH' } },
       });
       if (unlinkedGit > 0) {
-        const linked = await linkGitChangesToResourceAudit();
+        const { linked } = await linkUnlinkedGitChangesIncremental();
         console.log(
           `[ResourceAudit] Linked ${linked} resource change row(s) from ${unlinkedGit} pending git commit(s)`
         );

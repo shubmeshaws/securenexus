@@ -11,7 +11,10 @@ import { getResourceAuditDataWindow } from './resource-audit-retention';
 
 const execFileAsync = promisify(execFile);
 /** Max commits to scan on first pull when the clone is already up to date. */
-export const INITIAL_COMMIT_SCAN_LIMIT = 50;
+export const INITIAL_COMMIT_SCAN_LIMIT = Math.min(
+  500,
+  Math.max(50, parseInt(process.env.GIT_INITIAL_COMMIT_SCAN_LIMIT ?? '200', 10) || 200)
+);
 
 interface GitCommitInfo {
   sha: string;
@@ -219,11 +222,15 @@ export async function processCommitsForRepo(input: {
   commits: GitCommitInfo[];
 }): Promise<{ stored: number; commitShas: string[] }> {
   const { dataAvailableFrom } = await getResourceAuditDataWindow();
-  const inWindowCommits = input.commits.filter((c) => c.committedAt >= dataAvailableFrom);
+  const inWindowCommits = input.commits
+    .filter((c) => c.committedAt >= dataAvailableFrom)
+    .sort((a, b) => b.committedAt.getTime() - a.committedAt.getTime());
+
   let stored = 0;
   const commitShas = inWindowCommits.map((c) => c.sha);
 
   for (const commit of inWindowCommits) {
+    let storedThisCommit = 0;
     const files = await changedFilesForCommit(input.repoPath, commit.sha);
     const parentSha = await runGit(['rev-parse', `${commit.sha}^`], input.repoPath).catch(
       () => null
@@ -243,7 +250,7 @@ export async function processCommitsForRepo(input: {
 
           const sources = resolveSourcesForGitFile(filePath);
           for (const source of sources) {
-            stored += await storeResourceDiff({
+            storedThisCommit += await storeResourceDiff({
               repoId: input.repoId,
               commit,
               branch: input.branch,
@@ -257,6 +264,13 @@ export async function processCommitsForRepo(input: {
       } catch {
         // skip malformed or template YAML files
       }
+    }
+
+    stored += storedThisCommit;
+
+    if (storedThisCommit > 0) {
+      const { linkGitChangesToResourceAudit } = await import('./git-resource-audit-join');
+      await linkGitChangesToResourceAudit(input.repoId);
     }
   }
 
@@ -280,10 +294,19 @@ export async function listCommitsSince(
       // Commits landed since the last recorded pull (exclusive..inclusive).
       raw = await runGit(['log', `--format=${format}`, `${previousSha}..${currentSha}`], repoPath);
     } else if (options?.bootstrap) {
-      // First pull on an already-up-to-date clone — scan recent history once.
+      // First clone — scan commits since earliest data date (newest first, capped).
+      const { dataAvailableFrom } = await getResourceAuditDataWindow();
+      const since = dataAvailableFrom.toISOString().slice(0, 10);
       const ref = branch ?? currentSha;
       raw = await runGit(
-        ['log', `--format=${format}`, '-n', String(INITIAL_COMMIT_SCAN_LIMIT), ref],
+        [
+          'log',
+          `--format=${format}`,
+          `--since=${since}`,
+          '-n',
+          String(INITIAL_COMMIT_SCAN_LIMIT),
+          ref,
+        ],
         repoPath
       );
     } else {
@@ -311,7 +334,7 @@ export async function listCommitsSince(
     });
   }
 
-  return commits.sort((a, b) => a.committedAt.getTime() - b.committedAt.getTime());
+  return commits.sort((a, b) => b.committedAt.getTime() - a.committedAt.getTime());
 }
 
 export async function changedFilesForCommit(repoPath: string, commitSha: string): Promise<string[]> {
