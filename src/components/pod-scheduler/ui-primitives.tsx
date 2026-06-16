@@ -214,7 +214,8 @@ export function UserAvatar({ name, size = 'md' }: { name: string; size?: 'sm' | 
     'from-sky-500 to-blue-600',
     'from-rose-500 to-pink-600',
   ];
-  const idx = name.charCodeAt(0) % gradients.length;
+  const safeName = name?.trim() || '?';
+  const idx = safeName.charCodeAt(0) % gradients.length;
 
   return (
     <div className={cn(
@@ -222,7 +223,7 @@ export function UserAvatar({ name, size = 'md' }: { name: string; size?: 'sm' | 
       sizes[size],
       gradients[idx]
     )}>
-      {name.charAt(0).toUpperCase()}
+      {safeName.charAt(0).toUpperCase()}
     </div>
   );
 }

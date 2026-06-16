@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Loader2,
+  ScanSearch,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
@@ -20,8 +21,10 @@ import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { UserAccessDialog } from '@/components/pod-scheduler/user-access-dialog';
 import { useSession } from '@/components/auth/session-context';
 import { ROLE_LABELS, type AppRole, type UserPermissions } from '@/lib/permissions';
+import { normalizeAppRole } from '@/lib/user-permissions';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
   Select,
@@ -31,6 +34,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { formatRelativeTime } from '@/lib/utils';
+import { filterUsersByQuery } from '@/lib/user-search';
 
 const ROLE_COLORS: Record<string, 'automated' | 'manual' | 'success'> = {
   admin: 'automated',
@@ -50,6 +54,7 @@ export function AdminPanelContent() {
     newRole: AppRole;
   } | null>(null);
   const [accessUser, setAccessUser] = useState<AdminUser | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin-users'],
@@ -59,7 +64,11 @@ export function AdminPanelContent() {
     retry: false,
   });
 
-  const users = data?.users ?? [];
+  const users = useMemo(() => data?.users ?? [], [data?.users]);
+  const filteredUsers = useMemo(
+    () => filterUsersByQuery(users, searchQuery),
+    [users, searchQuery]
+  );
 
   const updateUserMutation = useMutation({
     mutationFn: ({
@@ -172,6 +181,31 @@ export function AdminPanelContent() {
             </div>
           ) : (
             <GlassPanel className="overflow-hidden">
+              <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <AppIcon icon={UsersRound} size="sm" className="text-blue-500" />
+                  <h2 className="text-sm font-semibold text-foreground">All Users</h2>
+                  {searchQuery.trim() && (
+                    <Badge variant="secondary" className="text-[10px] font-normal">
+                      {filteredUsers.length} of {users.length}
+                    </Badge>
+                  )}
+                </div>
+                <div className="relative w-full sm:max-w-xs">
+                  <AppIcon
+                    icon={ScanSearch}
+                    size="sm"
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search users…"
+                    className="pl-9"
+                    aria-label="Search users"
+                  />
+                </div>
+              </div>
               <div className="overflow-x-auto scrollbar-thin">
                 <table className="w-full text-sm table-modern">
                   <thead>
@@ -185,19 +219,32 @@ export function AdminPanelContent() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((user) => (
+                    {filteredUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                          {searchQuery.trim()
+                            ? `No users match "${searchQuery.trim()}".`
+                            : 'No users found.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredUsers.map((user) => {
+                        const role = normalizeAppRole(user.role);
+                        return (
                       <tr key={user.id} className="group border-b border-border">
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
-                            <UserAvatar name={user.displayName} size="sm" />
-                            <span className="text-sm font-medium text-foreground">{user.displayName}</span>
+                            <UserAvatar name={user.displayName || user.email || 'User'} size="sm" />
+                            <span className="text-sm font-medium text-foreground">
+                              {user.displayName || user.email || 'User'}
+                            </span>
                           </div>
                         </td>
                         <td className="px-5 py-4 font-mono text-xs text-muted-foreground">{user.email}</td>
                         <td className="px-5 py-4">
                           <Select
-                            key={`${user.id}-${user.role}`}
-                            defaultValue={user.role}
+                            key={`${user.id}-${role}`}
+                            defaultValue={role}
                             onValueChange={(value) => handleRoleSelect(user, value as AppRole)}
                             disabled={user.id === session?.id || updateUserMutation.isPending}
                           >
@@ -249,7 +296,9 @@ export function AdminPanelContent() {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>

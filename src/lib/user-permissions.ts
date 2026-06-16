@@ -49,6 +49,11 @@ export function isAdminRole(role: string): boolean {
   return role === 'admin';
 }
 
+export function normalizeAppRole(role: string | null | undefined): 'admin' | 'analyst' | 'viewer' {
+  if (role === 'admin' || role === 'analyst' || role === 'viewer') return role;
+  return 'viewer';
+}
+
 export function resolveUserPermissions(
   role: string,
   permissions: unknown

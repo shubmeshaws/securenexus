@@ -1,6 +1,5 @@
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { NextApiRequest, NextApiResponse } from 'next';
-import prisma from '@/lib/prisma';
 
 export const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-change-in-production';
 
@@ -44,6 +43,7 @@ export async function resolveAuthUserFromToken(
 ): Promise<(AuthUser & { active: boolean }) | null> {
   try {
     const claims = verifyToken(token);
+    const prisma = (await import('@/lib/prisma')).default;
     const dbUser = await prisma.user.findUnique({
       where: { id: claims.id },
       select: { id: true, email: true, role: true, active: true },
