@@ -1,5 +1,6 @@
 import prisma from './prisma';
 import type { AuthenticatedRequest } from './auth';
+import { dispatchAlerts } from './alert-dispatcher';
 import { invalidateDashboardInsightsCache } from './dashboard-metrics';
 import { getSetting, SETTING_KEYS } from './settings';
 

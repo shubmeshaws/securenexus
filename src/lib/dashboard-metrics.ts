@@ -38,7 +38,7 @@ async function buildEc2InstanceMeta(
   }
 
   const types = await lookupEc2InstanceTypes(lookupQueries);
-  for (const [instanceId, meta] of map) {
+  for (const [instanceId, meta] of Array.from(map.entries())) {
     const instanceType = types.get(instanceId);
     if (instanceType) {
       map.set(instanceId, { ...meta, instanceType });

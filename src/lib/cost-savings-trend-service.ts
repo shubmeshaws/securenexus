@@ -16,6 +16,7 @@ import { fetchStoppedActivityLogs } from './stopped-activity-logs';
 import {
   computeEc2StoppedIntervals,
   computeEksNamespaceStoppedIntervals,
+  type StoppedTimeLog,
 } from './stopped-time';
 import { parseClusterDisplay } from './utils';
 import type { Schedule } from '@prisma/client';

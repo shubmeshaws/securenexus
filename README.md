@@ -33,7 +33,8 @@ Automate workload shutdown and startup windows for **EKS** and **EC2**, cut non-
 - **Track live schedules** with countdown timers and manual override actions
 - **Manage multiple ArgoCD instances** from a single admin panel
 - **Register multiple Kubernetes clusters** via kubeconfig
-- **Monitor cost savings** from scheduled downtime
+- **Monitor cost savings** from scheduled downtime with trend charts and schedule action history
+- **Dashboard stop-time analytics** for EKS namespaces and standalone EC2 (from activity logs)
 - **Export activity logs** to CSV and PDF with date ranges
 - **Send alerts** via email, Microsoft Teams, and in-app notifications
 - **Control user permissions** per schedule (edit, start, stop, live stop)
@@ -45,6 +46,8 @@ Built with **Next.js 14**, **PostgreSQL**, **Prisma**, **Kubernetes client**, an
 
 ## Table of Contents
 
+- [Dashboard](#dashboard)
+- [Schedules (EKS & Non-EKS)](#schedules-eks--non-eks)
 - [Prerequisites (EC2)](#prerequisites-ec2)
 - [EC2 Deployment (Step by Step)](#ec2-deployment-step-by-step)
 - [Local Development](#local-development)
@@ -62,6 +65,45 @@ Built with **Next.js 14**, **PostgreSQL**, **Prisma**, **Kubernetes client**, an
 - [Project Structure](#project-structure)
 - [License](#license)
 - [Give a Star](#give-a-star-)
+
+---
+
+## Dashboard
+
+The **Dashboard** (`/dashboard`) is the live overview for cost and stop-time visibility.
+
+| Feature | Description |
+|---------|-------------|
+| **Environment uptime** | Shown beside the page title — total up time and when the current running period started |
+| **Global date filter** | One **Period** control at the top (7 / 14 / 30 days or custom range). Default is **14 days**. Applies to all charts and stop-time tables on the page |
+| **Cost savings trend** | Estimated daily savings from logged stop→start windows (line or bar chart), grouped by cluster |
+| **Schedule actions** | Daily shutdown vs startup counts; click a bar to open filtered **Activity** logs |
+| **Kubernetes stop time** | EKS namespace stop→start duration from schedules, manual runs, and infrastructure actions |
+| **Standalone stop time** | Non-EKS EC2 instance stop→start duration for the selected period |
+| **Refresh** | **Refresh** button in the page header refetches only this page’s data (no full browser reload) |
+| **Live updates** | Charts and stop-time tables refresh on an interval; changing the date filter updates data in place without reloading the whole page |
+
+Stop-time values are computed from **successful** activity log entries (`schedule-shutdown`, `scale-down`, `infra-shutdown` paired with matching startup actions). Data refreshes automatically about every 30 seconds.
+
+---
+
+## Schedules (EKS & Non-EKS)
+
+### EKS schedules
+
+- Pick a **registered cluster** (Clusters page), then namespace and workload — or an entire namespace with optional exclusions
+- Cluster list loads from the database; namespaces use Kubernetes API with fast fallbacks (schedules, audit history) when the API is slow
+- EKS auth tokens are cached to speed up namespace and workload loading
+
+### Non-EKS (EC2) schedules
+
+- Select an **AWS account** from Admin → Settings → AWS Integration, then choose instance(s)
+- **Single instance** — one schedule for one EC2 instance
+- **Multiple instances** — select several instances; SecureNexus creates **one schedule per instance** with the same timing
+- The instance picker **excludes EKS-managed nodes** tagged with `eks:cluster-name`, `eks:eks-cluster-name`, `eks:nodegroup-name`, or `kubernetes.io/cluster/*=owned`
+- Instance discovery is cached and scoped to the credential’s default region (plus regions already used in schedules) for faster loading
+
+Every app page includes a **Refresh** button in the header to reload that page’s data only.
 
 ---
 
@@ -758,7 +800,7 @@ pm2 restart securenexus   # or npm run start
 
 Alternatively, open `/getting-started` and run the schema step — it now **syncs** the latest schema even when tables already exist.
 
-Configure **Admin → Settings → AWS Integration** for EC2 (Non-EKS) scheduling: add named AWS accounts, test connection, optionally set an IAM role to assume.
+Configure **Admin → Settings → AWS Integration** for EC2 (Non-EKS) scheduling: add named AWS accounts, test connection, optionally set an IAM role to assume. When creating Non-EKS schedules, use **Multiple instances** to bulk-create schedules with the same window.
 
 ---
 
@@ -807,8 +849,13 @@ SecureNexus/
 ├── prisma/schema.prisma       # Database models (User, Schedule, AwsCredential, …)
 ├── src/
 │   ├── app/                   # Next.js App Router pages
-│   ├── components/            # UI & feature components
-│   ├── lib/                   # Core business logic
+│   ├── components/
+│   │   ├── dashboard/         # Cost trend, schedule actions, date filter
+│   │   └── pod-scheduler/     # Schedules, clusters, activity, admin UI
+│   ├── lib/
+│   │   ├── dashboard-metrics.ts      # Stop-time insights from activity logs
+│   │   ├── dashboard-date-range.ts   # Shared dashboard period filter
+│   │   ├── stopped-activity-logs.ts  # Stop/start log queries for analytics
 │   │   ├── scheduler-runner.ts
 │   │   ├── k8s-client.ts
 │   │   ├── argocd-client.ts

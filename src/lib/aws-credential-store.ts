@@ -484,7 +484,7 @@ const ec2InstanceCache = new Map<string, { at: number; instances: Ec2InstanceSum
 
 export function invalidateEc2InstanceCache(credentialId?: string) {
   if (credentialId) {
-    for (const key of ec2InstanceCache.keys()) {
+    for (const key of Array.from(ec2InstanceCache.keys())) {
       if (key.startsWith(`${credentialId}::`)) ec2InstanceCache.delete(key);
     }
     return;

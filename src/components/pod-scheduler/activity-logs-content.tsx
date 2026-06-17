@@ -144,6 +144,7 @@ export function ActivityLogsContent() {
   const [exportTo, setExportTo] = useState('');
 
   useEffect(() => {
+    if (!searchParams) return;
     const date = searchParams.get('date');
     const type = searchParams.get('type');
     if (date) setDateFilter(date);
