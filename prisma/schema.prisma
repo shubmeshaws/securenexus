@@ -286,6 +286,21 @@ model ArgoCDAppSource {
   @@index([cluster, namespace])
 }
 
+model DevOpsContact {
+  id          String   @id @default(cuid())
+  name        String
+  designation String   @default("")
+  email       String   @default("")
+  phone       String   @default("")
+  imageUrl    String?  @db.Text
+  sortOrder   Int      @default(0)
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([enabled, sortOrder])
+}
+
 model GitResourceChange {
   id              String   @id @default(cuid())
   gitRepositoryId String

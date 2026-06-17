@@ -176,6 +176,12 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [awsCredentialId, setAwsCredentialId] = useState(initial.awsCredentialId);
   const [ec2InstanceId, setEc2InstanceId] = useState(initial.ec2InstanceId);
   const [ec2Region, setEc2Region] = useState(initial.ec2Region);
+  const [ec2Scope, setEc2Scope] = useState<'single' | 'multiple'>('single');
+  const [selectedEc2Instances, setSelectedEc2Instances] = useState<string[]>(
+    initial.ec2InstanceId && initial.ec2Region
+      ? [ec2SelectValue(initial.ec2InstanceId, initial.ec2Region)]
+      : []
+  );
   const [recurrence, setRecurrence] = useState<ScheduleRecurrence>(initial.recurrence);
   const [shutdownTime, setShutdownTime] = useState(initial.shutdownTime);
   const [startupTime, setStartupTime] = useState(initial.startupTime);
@@ -210,28 +216,28 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const hasAwsCredentials = awsCredentialOptions.length > 0;
   const selectedAwsCred = awsCredentialOptions.find((c) => c.id === awsCredentialId);
 
-  const { data: ec2Data, isLoading: ec2Loading } = useQuery({
+  const { data: ec2Data, isLoading: ec2Loading, isFetching: ec2Fetching } = useQuery({
     queryKey: ['ec2-instances', awsCredentialId],
     queryFn: () =>
       apiFetch<{ instances: Ec2InstanceOption[] }>(
         `/api/aws-credentials/${encodeURIComponent(awsCredentialId)}/instances`
       ),
     enabled: platformType === 'non_eks' && Boolean(awsCredentialId),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
   const ec2Options = ec2Data?.instances ?? [];
   const ec2SelectValueCurrent =
     ec2InstanceId && ec2Region ? ec2SelectValue(ec2InstanceId, ec2Region) : '';
 
-  const { data: clustersData } = useQuery({
+  const { data: clustersData, isLoading: clustersLoading } = useQuery({
     queryKey: ['clusters'],
     queryFn: () => apiFetch<{ clusters: { name: string }[] }>('/api/k8s/clusters'),
-    enabled: platformType === 'eks',
     staleTime: 60_000,
   });
 
-  const { data: nsData } = useQuery({
+  const { data: nsData, isLoading: nsLoading, isFetching: nsFetching } = useQuery({
     queryKey: ['namespaces', cluster],
     queryFn: () =>
       apiFetch<{ namespaces: string[] }>(
@@ -239,9 +245,10 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
       ),
     enabled: platformType === 'eks' && Boolean(cluster),
     staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
-  const { data: workloadsData } = useQuery({
+  const { data: workloadsData, isLoading: workloadsLoading } = useQuery({
     queryKey: ['workloads', cluster, namespace],
     queryFn: () =>
       apiFetch<{ workloads: WorkloadOption[] }>(
@@ -290,6 +297,12 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
     );
   }
 
+  function toggleEc2Instance(value: string) {
+    setSelectedEc2Instances((prev) =>
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value].sort()
+    );
+  }
+
   const mutation = useMutation({
     mutationFn: async () => {
       const isNonEks = platformType === 'non_eks';
@@ -329,12 +342,43 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
               startupTime,
               daysOfWeek,
             };
+
       if (isEdit && schedule) {
         return apiFetch(`/api/schedules/${schedule.id}`, {
           method: 'PATCH',
           body: JSON.stringify(body),
         });
       }
+
+      if (isNonEks && ec2Scope === 'multiple') {
+        const targets = selectedEc2Instances
+          .map((value) => parseEc2SelectValue(value))
+          .filter((parsed): parsed is { instanceId: string; region: string } => Boolean(parsed));
+
+        if (!targets.length) {
+          throw new Error('Select at least one EC2 instance');
+        }
+
+        for (const parsed of targets) {
+          const match = ec2Options.find(
+            (i) => i.instanceId === parsed.instanceId && i.region === parsed.region
+          );
+          const instanceLabel = match?.name ?? parsed.instanceId;
+          await apiFetch('/api/schedules', {
+            method: 'POST',
+            body: JSON.stringify({
+              ...body,
+              name: targets.length === 1 ? name : `${name} · ${instanceLabel}`,
+              namespace: parsed.region,
+              appName: instanceLabel,
+              ec2InstanceId: parsed.instanceId,
+              ec2Region: parsed.region,
+            }),
+          });
+        }
+        return { created: targets.length };
+      }
+
       return apiFetch('/api/schedules', { method: 'POST', body: JSON.stringify(body) });
     },
     onSuccess: () => {
@@ -405,6 +449,8 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                   if (mode === 'non_eks') {
                     setScope('workload');
                     setExcludedWorkloads([]);
+                    setEc2Scope('single');
+                    setSelectedEc2Instances([]);
                   }
                 }}
                 className={cn(
@@ -438,6 +484,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                 setEc2InstanceId('');
                 setEc2Region('');
                 setAppName('');
+                setSelectedEc2Instances([]);
               }}
               required
             >
@@ -469,6 +516,32 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           </div>
 
           <div className="space-y-2">
+            <Label>Instance scope</Label>
+            <select
+              className={NATIVE_SELECT_CLASS}
+              value={ec2Scope}
+              disabled={isEdit}
+              onChange={(e) => {
+                const next = e.target.value as 'single' | 'multiple';
+                setEc2Scope(next);
+                setEc2InstanceId('');
+                setEc2Region('');
+                setAppName('');
+                setSelectedEc2Instances([]);
+              }}
+            >
+              <option value="single">Single instance</option>
+              <option value="multiple">Multiple instances</option>
+            </select>
+            {isEdit ? (
+              <p className="text-[10px] text-muted-foreground">
+                Edit applies to this schedule only. Create a new schedule to add more instances.
+              </p>
+            ) : null}
+          </div>
+
+          {ec2Scope === 'single' ? (
+          <div className="space-y-2">
             <Label>Instance name</Label>
             <select
               className={NATIVE_SELECT_CLASS}
@@ -487,7 +560,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
               required
             >
               <option value="" disabled>
-                {ec2Loading ? 'Loading instances…' : 'Select EC2 instance'}
+                {ec2Loading && !ec2Options.length ? 'Loading instances…' : 'Select EC2 instance'}
               </option>
               {ec2Options.map((instance) => (
                 <option
@@ -498,12 +571,58 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                 </option>
               ))}
             </select>
+            {ec2Fetching && ec2Options.length > 0 ? (
+              <p className="text-[10px] text-muted-foreground">Refreshing instance list…</p>
+            ) : null}
             {awsCredentialId && !ec2Loading && ec2Options.length === 0 && (
               <p className="text-[10px] text-muted-foreground">
-                No EC2 instances found across accessible regions for this account.
+                No standalone EC2 instances found in the default region. EKS nodes (tags eks:cluster-name, eks:eks-cluster-name) are excluded.
               </p>
             )}
           </div>
+          ) : (
+          <div className="space-y-2">
+            <Label>Instances</Label>
+            <p className="text-[10px] text-muted-foreground">
+              Creates one schedule per selected instance with the same timing settings.
+            </p>
+            {!awsCredentialId ? (
+              <p className="text-xs text-muted-foreground">Select an AWS account first.</p>
+            ) : ec2Loading && !ec2Options.length ? (
+              <p className="text-xs text-muted-foreground">Loading instances…</p>
+            ) : ec2Options.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                No standalone EC2 instances found. EKS nodes (tags eks:cluster-name, eks:eks-cluster-name) are excluded.
+              </p>
+            ) : (
+              <div className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-border p-3 scrollbar-thin">
+                {ec2Options.map((instance) => {
+                  const value = ec2SelectValue(instance.instanceId, instance.region);
+                  const checked = selectedEc2Instances.includes(value);
+                  return (
+                    <label
+                      key={value}
+                      className="flex items-start gap-2 text-xs text-foreground/90"
+                    >
+                      <Checkbox checked={checked} onCheckedChange={() => toggleEc2Instance(value)} />
+                      <span>
+                        <span className="font-medium">{instance.name}</span>
+                        <span className="block font-mono text-[10px] text-muted-foreground">
+                          {instance.region} · {instance.state} · {instance.instanceType}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            {selectedEc2Instances.length > 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                {selectedEc2Instances.length} instance(s) selected
+              </p>
+            )}
+          </div>
+          )}
         </>
       ) : (
         <>
@@ -512,6 +631,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <select
           className={NATIVE_SELECT_CLASS}
           value={cluster}
+          disabled={clustersLoading && !clusterOptions.length}
           onChange={(e) => {
             setCluster(e.target.value);
             setNamespace('');
@@ -521,7 +641,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           }}
         >
           <option value="" disabled>
-            Select cluster
+            {clustersLoading && !clusterOptions.length ? 'Loading clusters…' : 'Select cluster'}
           </option>
           {clusterOptions.map((c) => (
             <option key={c} value={c}>
@@ -529,6 +649,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             </option>
           ))}
         </select>
+        {!clustersLoading && clusterOptions.length === 0 && (
+          <p className="text-[10px] text-muted-foreground">
+            No clusters registered yet. Add one under Clusters first.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -536,7 +661,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <select
           className={NATIVE_SELECT_CLASS}
           value={namespace}
-          disabled={!cluster}
+          disabled={!cluster || (nsLoading && !namespaceOptions.length)}
           onChange={(e) => {
             setNamespace(e.target.value);
             setAppName('');
@@ -545,7 +670,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           }}
         >
           <option value="" disabled>
-            Select namespace
+            {!cluster
+              ? 'Select cluster first'
+              : nsLoading && !namespaceOptions.length
+                ? 'Loading namespaces…'
+                : 'Select namespace'}
           </option>
           {namespaceOptions.map((ns) => (
             <option key={ns} value={ns}>
@@ -553,6 +682,9 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             </option>
           ))}
         </select>
+        {nsFetching && namespaceOptions.length > 0 ? (
+          <p className="text-[10px] text-muted-foreground">Refreshing namespaces…</p>
+        ) : null}
       </div>
 
       <div className="space-y-2">
@@ -583,7 +715,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           <select
             className={NATIVE_SELECT_CLASS}
             value={workloadValue}
-            disabled={!namespace}
+            disabled={!namespace || (workloadsLoading && !workloadOptions.length)}
             onChange={(e) => {
               const parsed = parseWorkloadKey(e.target.value);
               if (!parsed) return;
@@ -592,7 +724,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             }}
           >
             <option value="" disabled>
-              Select workload
+              {workloadsLoading && !workloadOptions.length ? 'Loading workloads…' : 'Select workload'}
             </option>
             {workloadOptions.map((w) => (
               <option key={workloadKey(w.kind, w.name)} value={workloadKey(w.kind, w.name)}>

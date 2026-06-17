@@ -21,6 +21,7 @@ const navItems = [
   { href: '/activity', label: 'Activity Logs', icon: Icons.pages.activity },
   { href: '/resource-audit', label: 'Resource changes', icon: Icons.pages.resourceAudit },
   { href: '/alerts', label: 'Alerts', icon: Icons.pages.alerts },
+  { href: '/contact', label: 'Contact', icon: Icons.pages.contact },
   { href: '/admin', label: 'Admin Panel', icon: Icons.pages.admin },
 ];
 

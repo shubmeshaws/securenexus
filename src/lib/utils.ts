@@ -55,6 +55,26 @@ export function formatHoursDisplay(hours: number): string {
   return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
 }
 
+/** Stopped duration for dashboard tables: minutes below 1h, then hours, then days. */
+export function formatStoppedDuration(ms: number): string {
+  if (ms <= 0) return '0 min';
+
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 1) return '< 1 min';
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+
+  const totalHours = ms / 3_600_000;
+  if (totalHours < 24) {
+    const hours = Math.floor(totalHours);
+    const minutes = Math.round((ms - hours * 3_600_000) / 60_000);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  const days = Math.floor(totalHours / 24);
+  const hours = Math.round(totalHours % 24);
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+}
+
 export function formatUsd(amount: number): string {
   if (!Number.isFinite(amount) || amount <= 0) return '$0.00';
   const fractionDigits = amount < 0.01 ? 4 : 2;

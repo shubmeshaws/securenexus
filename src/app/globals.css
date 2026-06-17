@@ -171,29 +171,28 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
   }
 
-  /* Modern stat & panel cards — reference UI style */
+  /* Modern stat & panel cards */
   .stat-card {
-    @apply relative h-full w-full min-w-0 cursor-default overflow-hidden rounded-2xl border p-5 transition-all duration-300;
+    @apply relative h-full w-full min-w-0 cursor-default rounded-2xl border p-5;
     background: hsl(var(--card));
     border-color: hsl(var(--border) / 0.8);
-    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 1px 8px rgba(0, 0, 0, 0.04);
+  }
+
+  .stat-card-compact {
+    @apply p-3;
   }
 
   .dark .stat-card {
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
-  }
-
-  .stat-card:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
-  }
-
-  .dark .stat-card:hover {
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
   }
 
   .stat-value {
     @apply text-[1.65rem] font-bold tracking-tight text-foreground;
+  }
+
+  .stat-value-compact {
+    @apply text-lg;
   }
 
   .stat-label {
@@ -211,84 +210,6 @@
     border-color: rgba(52, 211, 153, 0.25);
     background: rgba(16, 185, 129, 0.12);
     color: rgb(52 211 153);
-  }
-
-  .stat-aurora-blue::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(59, 130, 246, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
-  }
-
-  .stat-aurora-emerald::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(16, 185, 129, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
-  }
-
-  .stat-aurora-amber::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(245, 158, 11, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
-  }
-
-  .stat-aurora-red::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(239, 68, 68, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
-  }
-
-  .stat-aurora-sky::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(56, 189, 248, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
-  }
-
-  .stat-aurora-violet::after {
-    content: '';
-    position: absolute;
-    right: -1rem;
-    top: -1rem;
-    height: 5rem;
-    width: 5rem;
-    border-radius: 9999px;
-    background: rgba(139, 92, 246, 0.15);
-    filter: blur(24px);
-    pointer-events: none;
   }
 
   .modern-card {
@@ -365,6 +286,15 @@
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+  }
+
+  .brand-subbranding {
+    font-family: var(--font-bai-jamjuree), system-ui, sans-serif;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .login-page .brand-subbranding {
+    color: #71717a;
   }
 
   .sidebar-brand-collapsed {

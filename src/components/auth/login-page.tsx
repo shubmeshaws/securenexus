@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { BrandSubbranding } from '@/components/brand/brand-logo';
 
 function GoogleIcon() {
   return (
@@ -64,7 +65,8 @@ export function LoginPage() {
             <span className="text-zinc-900">Secure</span>
             <span className="brand-accent">Nexus</span>
           </h1>
-          <p className="text-sm text-zinc-500">Sign in to manage your EKS infrastructure</p>
+          <BrandSubbranding className="mt-1.5" />
+          <p className="mt-3 text-sm text-zinc-500">Sign in to manage your EKS infrastructure</p>
         </div>
 
         {error && (

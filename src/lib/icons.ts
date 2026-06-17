@@ -59,6 +59,7 @@ import {
   X,
   MoonStar,
   SunMedium,
+  Phone,
   UserRound,
   PiggyBank,
   TrendingDown,
@@ -129,6 +130,7 @@ export {
   X,
   MoonStar,
   SunMedium,
+  Phone,
   UserRound,
   PiggyBank,
   TrendingDown,
@@ -148,6 +150,7 @@ export const Icons = {
     liveSchedules: Activity,
     resourceAudit: Fingerprint,
     alerts: BellRing,
+    contact: UsersRound,
   },
   dashboard: {
     apps: Layers,

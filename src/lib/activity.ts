@@ -1,6 +1,6 @@
 import prisma from './prisma';
 import type { AuthenticatedRequest } from './auth';
-import { dispatchAlerts } from './alert-dispatcher';
+import { invalidateDashboardInsightsCache } from './dashboard-metrics';
 import { getSetting, SETTING_KEYS } from './settings';
 
 export type ActivityAction =
@@ -113,6 +113,18 @@ export async function logActivity(params: LogActivityParams) {
   });
 
   void dispatchAlerts({ ...params, ...userFields, logId: log.id });
+
+  if (
+    params.status === 'success' &&
+    (params.action === 'schedule-shutdown' ||
+      params.action === 'schedule-startup' ||
+      params.action === 'infra-shutdown' ||
+      params.action === 'infra-startup' ||
+      params.action === 'scale-down' ||
+      params.action === 'scale-up')
+  ) {
+    invalidateDashboardInsightsCache();
+  }
 
   return log;
 }

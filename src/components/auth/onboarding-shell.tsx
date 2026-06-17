@@ -1,5 +1,6 @@
 'use client';
 
+import { BrandSubbranding } from '@/components/brand/brand-logo';
 import { cn } from '@/lib/utils';
 
 export function OnboardingShell({
@@ -25,7 +26,8 @@ export function OnboardingShell({
             <span className="text-zinc-900">Secure</span>
             <span className="brand-accent">Nexus</span>
           </h1>
-          <p className="mt-2 text-sm text-zinc-500">{subtitle}</p>
+          <BrandSubbranding className="mt-1.5" />
+          <p className="mt-3 text-sm text-zinc-500">{subtitle}</p>
           <div className="mt-4 flex items-center justify-center gap-2">
             {Array.from({ length: totalSteps }).map((_, i) => (
               <span

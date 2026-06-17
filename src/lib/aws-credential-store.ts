@@ -466,19 +466,85 @@ function instanceName(instance: Instance): string {
   return nameTag?.trim() || instance.InstanceId || 'unknown';
 }
 
+/** EKS managed nodes carry these tags — exclude from manual non-EKS schedules. */
+function isEksManagedInstance(instance: Instance): boolean {
+  return Boolean(
+    instance.Tags?.some((tag) => {
+      const key = tag.Key ?? '';
+      if (key === 'eks:cluster-name' || key === 'eks:eks-cluster-name' || key === 'eks:nodegroup-name') {
+        return true;
+      }
+      return key.startsWith('kubernetes.io/cluster/') && tag.Value === 'owned';
+    })
+  );
+}
+
+const EC2_INSTANCE_CACHE_TTL_MS = 10 * 60 * 1000;
+const ec2InstanceCache = new Map<string, { at: number; instances: Ec2InstanceSummary[] }>();
+
+export function invalidateEc2InstanceCache(credentialId?: string) {
+  if (credentialId) {
+    for (const key of ec2InstanceCache.keys()) {
+      if (key.startsWith(`${credentialId}::`)) ec2InstanceCache.delete(key);
+    }
+    return;
+  }
+  ec2InstanceCache.clear();
+}
+
+async function resolveEc2Regions(
+  credentialId: string,
+  credentials: { defaultRegion: string },
+  defaultClient: ReturnType<ReturnType<typeof clientsFor>['ec2']>,
+  allRegions: boolean
+): Promise<string[]> {
+  if (allRegions) {
+    try {
+      const regionsResp = await defaultClient.send(new DescribeRegionsCommand({ AllRegions: false }));
+      return (
+        regionsResp.Regions?.map((r) => r.RegionName).filter((r): r is string => Boolean(r)) ?? [
+          credentials.defaultRegion,
+        ]
+      );
+    } catch {
+      return credentials.defaultRegion?.trim() ? [credentials.defaultRegion] : ['us-east-1'];
+    }
+  }
+
+  const preferred = credentials.defaultRegion?.trim();
+  const scheduleRegions = await prisma.schedule
+    .findMany({
+      where: { awsCredentialId: credentialId, ec2Region: { not: null } },
+      distinct: ['ec2Region'],
+      select: { ec2Region: true },
+    })
+    .then((rows) => rows.map((r) => r.ec2Region).filter(Boolean) as string[]);
+
+  const regions = Array.from(new Set([...(preferred ? [preferred] : []), ...scheduleRegions]));
+  return regions.length ? regions : preferred ? [preferred] : ['us-east-1'];
+}
+
 export async function listEc2InstancesForCredential(
-  credentialId: string
+  credentialId: string,
+  options?: { allRegions?: boolean }
 ): Promise<Ec2InstanceSummary[]> {
+  const cacheKey = `${credentialId}::${options?.allRegions ? 'all' : 'default'}`;
+  const cached = ec2InstanceCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < EC2_INSTANCE_CACHE_TTL_MS) {
+    return cached.instances;
+  }
+
   const { credentials } = await resolveEffectiveCredentials(credentialId);
 
   const { ec2 } = clientsFor(credentials);
   const defaultClient = ec2(credentials.defaultRegion);
 
-  const regionsResp = await defaultClient.send(new DescribeRegionsCommand({ AllRegions: false }));
-  const regions =
-    regionsResp.Regions?.map((r) => r.RegionName).filter((r): r is string => Boolean(r)) ?? [
-      credentials.defaultRegion,
-    ];
+  const regions = await resolveEc2Regions(
+    credentialId,
+    credentials,
+    defaultClient,
+    Boolean(options?.allRegions)
+  );
 
   const instances: Ec2InstanceSummary[] = [];
 
@@ -501,7 +567,7 @@ export async function listEc2InstancesForCredential(
           );
           for (const reservation of resp.Reservations ?? []) {
             for (const instance of reservation.Instances ?? []) {
-              if (!instance.InstanceId) continue;
+              if (!instance.InstanceId || isEksManagedInstance(instance)) continue;
               instances.push({
                 instanceId: instance.InstanceId,
                 name: instanceName(instance),
@@ -519,9 +585,59 @@ export async function listEc2InstancesForCredential(
     })
   );
 
-  return instances.sort((a, b) =>
-    a.name.localeCompare(b.name) || a.region.localeCompare(b.region)
+  const sorted = instances.sort(
+    (a, b) => a.name.localeCompare(b.name) || a.region.localeCompare(b.region)
   );
+  ec2InstanceCache.set(cacheKey, { at: Date.now(), instances: sorted });
+  return sorted;
+}
+
+/** Look up instance types for specific EC2 instances (one region + credential per batch). */
+export async function lookupEc2InstanceTypes(
+  queries: Array<{ credentialId: string; instanceId: string; region: string }>
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (!queries.length) return result;
+
+  const batches = new Map<
+    string,
+    { credentialId: string; region: string; instanceIds: Set<string> }
+  >();
+
+  for (const q of queries) {
+    if (!q.credentialId || !q.instanceId || !q.region) continue;
+    const key = `${q.credentialId}::${normalizeRegion(q.region)}`;
+    const batch = batches.get(key) ?? {
+      credentialId: q.credentialId,
+      region: normalizeRegion(q.region),
+      instanceIds: new Set<string>(),
+    };
+    batch.instanceIds.add(q.instanceId);
+    batches.set(key, batch);
+  }
+
+  await Promise.all(
+    Array.from(batches.values()).map(async ({ credentialId, region, instanceIds }) => {
+      try {
+        const { credentials } = await resolveEffectiveCredentials(credentialId);
+        const client = clientsFor(credentials).ec2(region);
+        const resp = await client.send(
+          new DescribeInstancesCommand({ InstanceIds: Array.from(instanceIds) })
+        );
+        for (const reservation of resp.Reservations ?? []) {
+          for (const instance of reservation.Instances ?? []) {
+            if (instance.InstanceId && instance.InstanceType) {
+              result.set(instance.InstanceId, instance.InstanceType);
+            }
+          }
+        }
+      } catch {
+        // Instance type stays unknown when AWS lookup fails.
+      }
+    })
+  );
+
+  return result;
 }
 
 export async function stopEc2Instance(

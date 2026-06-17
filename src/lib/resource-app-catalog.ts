@@ -1,5 +1,6 @@
 import prisma from './prisma';
 import { getEnabledArgoCDClients } from './argocd-client';
+import { clusterNameVariants } from './cluster-name-utils';
 import { resolveRegisteredClusterForArgoCD } from './cluster-resolve';
 import { listNamespaces } from './k8s-client';
 
@@ -62,8 +63,9 @@ export async function syncResourceAppCatalog(): Promise<{
 }
 
 export async function getCatalogNamespacesForCluster(cluster: string): Promise<string[]> {
+  const variants = clusterNameVariants(cluster);
   const rows = await prisma.resourceAppCatalog.findMany({
-    where: { cluster },
+    where: { cluster: { in: variants } },
     distinct: ['namespace'],
     select: { namespace: true },
     orderBy: { namespace: 'asc' },
@@ -85,13 +87,14 @@ export async function getCatalogAppsForClusterNamespace(
 
 /** Fallback: namespaces from manifest snapshots for apps known on this cluster. */
 export async function getSnapshotNamespacesForCluster(cluster: string): Promise<string[]> {
+  const variants = clusterNameVariants(cluster);
   const [catalogApps, auditApps] = await Promise.all([
     prisma.resourceAppCatalog.findMany({
-      where: { cluster },
+      where: { cluster: { in: variants } },
       select: { argocdApp: true },
     }),
     prisma.resourceChangeAudit.findMany({
-      where: { cluster },
+      where: { cluster: { in: variants } },
       distinct: ['argocdApp'],
       select: { argocdApp: true },
     }),
@@ -109,6 +112,35 @@ export async function getSnapshotNamespacesForCluster(cluster: string): Promise<
     orderBy: { namespace: 'asc' },
   });
   return rows.map((r) => r.namespace);
+}
+
+/** Namespaces from live ArgoCD apps mapped to this registered cluster. */
+export async function getArgoCDNamespacesForCluster(cluster: string): Promise<string[]> {
+  const variants = new Set(clusterNameVariants(cluster));
+  const { getEnabledArgoCDClients } = await import('./argocd-client');
+  const clients = await getEnabledArgoCDClients();
+  const namespaces = new Set<string>();
+
+  for (const { instance, client } of clients) {
+    let apps;
+    try {
+      apps = await client.listApplications();
+    } catch {
+      continue;
+    }
+
+    for (const app of apps) {
+      const resolved = await resolveRegisteredClusterForArgoCD({
+        instance,
+        argocdDestination: app.cluster,
+      });
+      if (variants.has(resolved) && app.destinationNamespace) {
+        namespaces.add(app.destinationNamespace);
+      }
+    }
+  }
+
+  return Array.from(namespaces).sort();
 }
 
 export async function getK8sNamespacesForCluster(cluster: string): Promise<string[]> {

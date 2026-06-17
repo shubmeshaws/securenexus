@@ -3,30 +3,25 @@
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { getPageMeta } from '@/lib/page-meta';
+import { PageRefreshButton } from '@/components/pod-scheduler/page-refresh-button';
 import { ModernIcon, type IconAccent } from '@/components/ui/modern-icon';
 import { BrandIcon } from '@/components/ui/brand-icon';
 import type { LucideIcon } from 'lucide-react';
 
-const STAT_GLOW: Record<IconAccent, string> = {
-  blue: 'stat-aurora-blue',
-  emerald: 'stat-aurora-emerald',
-  amber: 'stat-aurora-amber',
-  red: 'stat-aurora-red',
-  sky: 'stat-aurora-sky',
-  violet: 'stat-aurora-violet',
-  slate: 'stat-aurora-violet',
-};
-
 export function PageHeader({
   title,
   description,
+  titleMeta,
   action,
   icon: IconOverride,
+  hideRefresh = false,
 }: {
   title?: string;
   description?: string;
+  titleMeta?: React.ReactNode;
   action?: React.ReactNode;
   icon?: LucideIcon;
+  hideRefresh?: boolean;
 }) {
   const pathname = usePathname();
   const meta = getPageMeta(pathname);
@@ -41,7 +36,12 @@ export function PageHeader({
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             {meta.subtitle}
           </p>
-          <h1 className="page-title mt-1">{displayTitle}</h1>
+          <h1 className="page-title mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span>{displayTitle}</span>
+            {titleMeta ? (
+              <span className="text-xs font-normal text-muted-foreground sm:text-sm">{titleMeta}</span>
+            ) : null}
+          </h1>
           {description && (
             <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-sm">
               {description}
@@ -49,7 +49,12 @@ export function PageHeader({
           )}
         </div>
       </div>
-      {action && <div className="shrink-0 self-start lg:self-center">{action}</div>}
+      {(action || !hideRefresh) && (
+        <div className="flex shrink-0 items-center gap-2 self-start lg:self-center">
+          {!hideRefresh ? <PageRefreshButton /> : null}
+          {action}
+        </div>
+      )}
     </div>
   );
 }
@@ -60,23 +65,66 @@ export function StatCard({
   icon: Icon,
   accent = 'blue',
   trend,
+  compact = false,
 }: {
   label: string;
   value: number | string;
   icon: LucideIcon;
   accent?: IconAccent;
   trend?: string;
+  compact?: boolean;
 }) {
   return (
-    <div className={cn('stat-card group', STAT_GLOW[accent])}>
-      <div className="mb-4 flex items-start justify-between">
-        <ModernIcon icon={Icon} accent={accent} size="md" />
+    <div className={cn('stat-card', compact && 'stat-card-compact')}>
+      <div className={cn('flex items-start justify-between', compact ? 'mb-2' : 'mb-4')}>
+        <ModernIcon icon={Icon} accent={accent} size={compact ? 'sm' : 'md'} />
         {trend && (
           <span className="live-pill">{trend}</span>
         )}
       </div>
-      <p className="stat-value">{value}</p>
+      <p className={cn('stat-value', compact && 'stat-value-compact')}>{value}</p>
       <p className="stat-label">{label}</p>
+    </div>
+  );
+}
+
+/** Lightweight analytics-style metric card (no animations). */
+export function InsightMetricCard({
+  label,
+  value,
+  icon: Icon,
+  accent = 'blue',
+  hint,
+}: {
+  label: string;
+  value: number | string;
+  icon: LucideIcon;
+  accent?: IconAccent;
+  hint?: string;
+}) {
+  const iconBg: Record<IconAccent, string> = {
+    blue: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+    emerald: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+    amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    red: 'bg-red-500/10 text-red-600 dark:text-red-400',
+    sky: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+    violet: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
+    slate: 'bg-slate-500/10 text-slate-600 dark:text-slate-400',
+  };
+
+  return (
+    <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-sm">
+      <div
+        className={cn(
+          'mb-4 flex h-10 w-10 items-center justify-center rounded-full',
+          iconBg[accent]
+        )}
+      >
+        <Icon className="h-5 w-5" strokeWidth={1.75} />
+      </div>
+      <p className="text-2xl font-semibold tracking-tight text-foreground">{value}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{label}</p>
+      {hint && <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -129,7 +177,7 @@ export function PanelHeader({
   );
 }
 
-/** Scrollable table body — shows ~maxRows then scrolls. */
+/** Scrollable table body — fixed height for `maxRows` so footers align across panels. */
 export function ScrollTable({
   maxRows = 5,
   children,
@@ -139,13 +187,13 @@ export function ScrollTable({
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
-  const maxHeight = maxRows * 44 + 40;
+  const bodyHeight = maxRows * 44 + 40;
 
   return (
-    <div>
+    <div className="flex flex-col">
       <div
         className="overflow-x-auto overflow-y-auto scrollbar-thin"
-        style={{ maxHeight: `${maxHeight}px` }}
+        style={{ minHeight: `${bodyHeight}px`, maxHeight: `${bodyHeight}px` }}
       >
         {children}
       </div>

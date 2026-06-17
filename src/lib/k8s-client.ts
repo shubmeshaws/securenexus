@@ -1,6 +1,7 @@
 import * as k8s from '@kubernetes/client-node';
 import prisma from '@/lib/prisma';
 import { readKubeconfigFromPath } from '@/lib/kubeconfig-file';
+import { buildEksKubeConfigForRegisteredCluster } from '@/lib/eks-kubeconfig';
 export interface ClusterInfo {
   name: string;
   context: string;
@@ -136,6 +137,15 @@ async function getConfigForCluster(clusterName: string): Promise<k8s.KubeConfig>
   }
 
   const registeredB64 = resolveClusterKubeconfigB64(registered);
+
+  const fromAwsIntegration = await buildEksKubeConfigForRegisteredCluster({
+    registeredName: clusterName,
+    contextName: registered.contextName ?? clusterName,
+    kubeconfigB64: registeredB64,
+    region: registered.region,
+  });
+  if (fromAwsIntegration) return fromAwsIntegration;
+
   if (!registeredB64) {
     throw new Error(`Cluster "${clusterName}" has no kubeconfig stored. Re-add the cluster with a valid kubeconfig.`);
   }

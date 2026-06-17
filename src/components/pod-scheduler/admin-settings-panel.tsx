@@ -19,6 +19,7 @@ import { TECH_ICONS } from '@/lib/tech-icons';
 import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instances-panel';
 import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-panel';
 import { BitbucketIntegrationPanel } from '@/components/pod-scheduler/bitbucket-integration-panel';
+import { DevOpsContactsPanel } from '@/components/pod-scheduler/devops-contacts-panel';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -268,6 +269,10 @@ export function AdminSettingsPanel() {
     <div className="space-y-4">
       <GlassPanel className="p-5">
         <ArgoCDInstancesPanel />
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
+        <DevOpsContactsPanel />
       </GlassPanel>
 
       <GlassPanel className="p-5">

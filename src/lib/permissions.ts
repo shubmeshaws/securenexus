@@ -2,7 +2,7 @@ export type AppRole = 'admin' | 'analyst' | 'viewer';
 
 export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin'] as const;
 
-export const VIEWER_ROUTES = ['/dashboard', '/schedules', '/active-schedules'] as const;
+export const VIEWER_ROUTES = ['/dashboard', '/schedules', '/active-schedules', '/contact'] as const;
 
 export const ROLE_LABELS: Record<AppRole, string> = {
   admin: 'Admin',
@@ -42,6 +42,7 @@ export function getVisibleNavHrefs(role: string, active: boolean): string[] {
     '/activity',
     '/resource-audit',
     '/alerts',
+    '/contact',
     '/admin',
   ];
   if (!active) return all;

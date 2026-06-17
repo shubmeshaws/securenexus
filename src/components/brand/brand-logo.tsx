@@ -29,6 +29,14 @@ export function BrandName({ size = 'md', className }: BrandNameProps) {
   );
 }
 
+export function BrandSubbranding({ className }: { className?: string }) {
+  return (
+    <p className={cn('brand-subbranding font-sans text-[10px] font-normal leading-none tracking-wide', className)}>
+      By DevOps Team
+    </p>
+  );
+}
+
 export function BrandMark({ className }: { className?: string }) {
   return (
     <div className={cn('brand-mark group relative shrink-0', className)}>
@@ -61,8 +69,14 @@ export function BrandLogo({ collapsed = false, className }: BrandLogoProps) {
   }
 
   return (
-    <div className={cn('sidebar-brand-wrap flex min-w-0 items-center justify-center', className)}>
+    <div
+      className={cn(
+        'sidebar-brand-wrap flex min-w-0 flex-col items-center justify-center gap-1',
+        className
+      )}
+    >
       <BrandName size="lg" className="inline-block text-center" />
+      <BrandSubbranding />
     </div>
   );
 }

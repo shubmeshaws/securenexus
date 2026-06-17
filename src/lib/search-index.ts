@@ -29,6 +29,7 @@ export const PAGE_SEARCH_ITEMS: SearchResult[] = [
   { id: 'page-resource-audit', title: 'Resource changes', subtitle: 'CPU memory replica changes', href: '/resource-audit', category: 'page', icon: PAGE_META['/resource-audit'].icon, keywords: 'resource audit cpu memory replicas argocd author commit' },
   { id: 'page-activity', title: 'Activity Logs', subtitle: 'Audit trail', href: '/activity', category: 'page', icon: PAGE_META['/activity'].icon, keywords: 'activity logs audit history' },
   { id: 'page-alerts', title: 'Alerts', subtitle: 'Email, Teams & in-app notifications', href: '/alerts', category: 'page', icon: PAGE_META['/alerts'].icon, keywords: 'alerts notifications email teams webhook' },
+  { id: 'page-contact', title: 'Contact', subtitle: 'DevOps team directory', href: '/contact', category: 'page', icon: PAGE_META['/contact'].icon, keywords: 'contact devops team support email phone' },
   { id: 'page-admin', title: 'Admin Panel', subtitle: 'Users & roles', href: '/admin', category: 'page', icon: PAGE_META['/admin'].icon, keywords: 'admin users roles permissions' },
 ];
 

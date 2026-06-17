@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { ListFilter, Loader2, ScanSearch, FileUp, ScrollText } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
@@ -22,6 +23,7 @@ import {
 import { formatRelativeTime, formatTimestampIST, parseClusterDisplay } from '@/lib/utils';
 import { activityActorLabel } from '@/lib/alert-display';
 import { formatWorkloadKeyLabel } from '@/lib/workload-utils';
+import { SHUTDOWN_ACTIONS, STARTUP_ACTIONS } from '@/lib/dashboard-schedule-actions';
 import { cn } from '@/lib/utils';
 
 const ACTION_LABELS: Record<string, string> = {
@@ -126,8 +128,11 @@ function ActivityTargetCell({
 }
 
 export function ActivityLogsContent() {
+  const searchParams = useSearchParams();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [dateFilter, setDateFilter] = useState('');
+  const [actionTypeFilter, setActionTypeFilter] = useState<'all' | 'shutdown' | 'startup'>('all');
   const [detailLog, setDetailLog] = useState<{
     log: ActivityLogEntry;
     workloads: string[];
@@ -137,6 +142,13 @@ export function ActivityLogsContent() {
   const [exportFormat, setExportFormat] = useState<'csv' | 'pdf'>('csv');
   const [exportFrom, setExportFrom] = useState('');
   const [exportTo, setExportTo] = useState('');
+
+  useEffect(() => {
+    const date = searchParams.get('date');
+    const type = searchParams.get('type');
+    if (date) setDateFilter(date);
+    if (type === 'shutdown' || type === 'startup') setActionTypeFilter(type);
+  }, [searchParams]);
 
   const openExportDialog = (format: 'csv' | 'pdf') => {
     setExportFormat(format);
@@ -179,6 +191,16 @@ export function ActivityLogsContent() {
 
   const logs = (data?.logs ?? []).filter((log) => {
     if (statusFilter !== 'all' && log.status !== statusFilter) return false;
+    if (dateFilter) {
+      const logDate = log.timestamp.slice(0, 10);
+      if (logDate !== dateFilter) return false;
+    }
+    if (actionTypeFilter === 'shutdown' && !(SHUTDOWN_ACTIONS as readonly string[]).includes(log.action)) {
+      return false;
+    }
+    if (actionTypeFilter === 'startup' && !(STARTUP_ACTIONS as readonly string[]).includes(log.action)) {
+      return false;
+    }
     if (!search) return true;
     const q = search.toLowerCase();
     return (
@@ -257,6 +279,32 @@ export function ActivityLogsContent() {
           ))}
         </div>
       </div>
+
+      {(dateFilter || actionTypeFilter !== 'all') && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Chart filter:</span>
+          {dateFilter && (
+            <Badge variant="secondary" className="font-normal">
+              Date {dateFilter}
+            </Badge>
+          )}
+          {actionTypeFilter !== 'all' && (
+            <Badge variant="secondary" className="font-normal capitalize">
+              {actionTypeFilter}s
+            </Badge>
+          )}
+          <button
+            type="button"
+            className="text-blue-600 underline dark:text-blue-400"
+            onClick={() => {
+              setDateFilter('');
+              setActionTypeFilter('all');
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground">{logs.length} entries · timestamps in IST</p>
 

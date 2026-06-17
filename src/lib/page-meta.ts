@@ -93,6 +93,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     iconClass: 'text-slate-700',
     accent: 'slate',
   },
+  '/contact': {
+    title: 'Contact',
+    subtitle: 'DevOps team directory',
+    icon: Icons.pages.contact,
+    gradient: 'from-blue-500 via-sky-600 to-cyan-600',
+    ring: 'ring-blue-500/25',
+    iconClass: 'text-blue-700',
+    accent: 'sky',
+  },
 };
 
 const FALLBACK_META: PageMeta = {

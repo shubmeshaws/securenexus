@@ -197,43 +197,16 @@ export interface DashboardInsights {
     stoppedHours: number;
     stoppedMs: number;
   }[];
-  instanceTypes: {
-    cluster: string;
+  standaloneStopped: {
+    instanceName: string;
+    instanceId: string;
     instanceType: string;
-    capacityType: 'spot' | 'on-demand';
-    count: number;
-    vCpu: number;
-    memoryGiB: number;
-    hourlyPrice: number;
-    cpuRatePerCore: number;
-    memRatePerGb: number;
-  }[];
-  costSavings: {
-    cluster: string;
-    namespace: string;
+    stoppedMs: number;
     stoppedHours: number;
-    stoppedHoursToday: number;
-    stoppedHoursMonth: number;
-    cpuCores: number;
-    memoryGb: number;
-    cpuSavedTotal: number;
-    memorySavedTotal: number;
-    cpuSavedPerDay: number;
-    memorySavedPerDay: number;
-    cpuSavedPerMonth: number;
-    memorySavedPerMonth: number;
   }[];
-  costCalendarTz?: string;
   totals: {
-    stoppedHours: number;
-    stoppedHoursToday: number;
-    stoppedHoursMonth: number;
-    cpuSavedTotal: number;
-    memorySavedTotal: number;
-    cpuSavedPerDay: number;
-    memorySavedPerDay: number;
-    cpuSavedPerMonth: number;
-    memorySavedPerMonth: number;
+    eksStoppedMs: number;
+    standaloneStoppedMs: number;
   };
 }
 
