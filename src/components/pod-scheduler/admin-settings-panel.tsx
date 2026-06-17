@@ -20,6 +20,7 @@ import { ArgoCDInstancesPanel } from '@/components/pod-scheduler/argocd-instance
 import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-panel';
 import { BitbucketIntegrationPanel } from '@/components/pod-scheduler/bitbucket-integration-panel';
 import { DevOpsContactsPanel } from '@/components/pod-scheduler/devops-contacts-panel';
+import { NewUserAccessSettingCard } from '@/components/pod-scheduler/new-user-access-setting';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -268,6 +269,24 @@ export function AdminSettingsPanel() {
   return (
     <div className="space-y-4">
       <GlassPanel className="p-5">
+        <PanelHeader title="Authentication" icon={ShieldCheck} />
+        <div className="mt-4 space-y-4">
+          <NewUserAccessSettingCard compact />
+          <div className="space-y-2">
+            <Label>Google Allowed Domain</Label>
+            <Input
+              value={googleAllowedDomain}
+              onChange={(e) => setGoogleAllowedDomain(e.target.value)}
+              placeholder="yourcompany.com"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Only users with this email domain can sign in. Google Client ID/Secret stay in <code>.env</code>.
+            </p>
+          </div>
+        </div>
+      </GlassPanel>
+
+      <GlassPanel className="p-5">
         <ArgoCDInstancesPanel />
       </GlassPanel>
 
@@ -306,21 +325,6 @@ export function AdminSettingsPanel() {
               Not required when clusters are added via Clusters → Add Cluster. Each registered cluster stores its own kubeconfig.
               Use this field only as a global fallback for legacy flows.
             </p>
-        </div>
-      </GlassPanel>
-
-      <GlassPanel className="p-5">
-        <PanelHeader title="Authentication" icon={ShieldCheck} />
-        <div className="mt-4 space-y-2">
-          <Label>Google Allowed Domain</Label>
-          <Input
-            value={googleAllowedDomain}
-            onChange={(e) => setGoogleAllowedDomain(e.target.value)}
-            placeholder="yourcompany.com"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Only users with this email domain can sign in. Google Client ID/Secret stay in <code>.env</code>.
-          </p>
         </div>
       </GlassPanel>
 

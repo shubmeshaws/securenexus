@@ -12,6 +12,7 @@ const updateSchema = z.object({
   argocdInsecureTls: z.boolean().optional(),
   kubeconfigBase64: z.string().optional(),
   googleAllowedDomain: z.string().optional(),
+  newUserAccessEnabled: z.boolean().optional(),
   demoMode: z.boolean().optional(),
   redisUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),

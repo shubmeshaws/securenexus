@@ -13,6 +13,7 @@ export const SETTING_KEYS = {
   ARGOCD_TOKEN: 'argocd_token',
   KUBECONFIG_BASE64: 'kubeconfig_base64',
   GOOGLE_ALLOWED_DOMAIN: 'google_allowed_domain',
+  NEW_USER_ACCESS_ENABLED: 'new_user_access_enabled',
   DEMO_MODE: 'demo_mode',
   REDIS_URL: 'redis_url',
   API_BASE_URL: 'api_base_url',
@@ -44,6 +45,7 @@ const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
   [SETTING_KEYS.ARGOCD_TOKEN]: () => process.env.ARGOCD_TOKEN,
   [SETTING_KEYS.KUBECONFIG_BASE64]: () => process.env.KUBECONFIG_BASE64,
   [SETTING_KEYS.GOOGLE_ALLOWED_DOMAIN]: () => process.env.GOOGLE_ALLOWED_DOMAIN,
+  [SETTING_KEYS.NEW_USER_ACCESS_ENABLED]: () => 'true',
   [SETTING_KEYS.DEMO_MODE]: () => {
     if (process.env.NEXT_PUBLIC_DEMO_MODE === 'true') return 'true';
     return 'false';
@@ -137,12 +139,19 @@ export async function getAllowedDomain(): Promise<string | null> {
   return domain?.trim() || null;
 }
 
+/** Whether new Google SSO users are created with access enabled (Admin → Settings). First user is always enabled. */
+export async function getNewUserAccessEnabled(): Promise<boolean> {
+  const value = await getSetting(SETTING_KEYS.NEW_USER_ACCESS_ENABLED);
+  return value !== 'false';
+}
+
 export interface AdminSettingsView {
   argocdServer: string;
   argocdTokenSet: boolean;
   argocdInsecureTls: boolean;
   kubeconfigSet: boolean;
   googleAllowedDomain: string;
+  newUserAccessEnabled: boolean;
   demoMode: boolean;
   redisUrl: string;
   apiBaseUrl: string;
@@ -166,6 +175,7 @@ export async function getAdminSettings(): Promise<AdminSettingsView> {
     argocdInsecureTls: read(SETTING_KEYS.ARGOCD_INSECURE_TLS) === 'true',
     kubeconfigSet: Boolean(read(SETTING_KEYS.KUBECONFIG_BASE64)),
     googleAllowedDomain: read(SETTING_KEYS.GOOGLE_ALLOWED_DOMAIN),
+    newUserAccessEnabled: read(SETTING_KEYS.NEW_USER_ACCESS_ENABLED) !== 'false',
     demoMode: read(SETTING_KEYS.DEMO_MODE) === 'true',
     redisUrl: read(SETTING_KEYS.REDIS_URL),
     apiBaseUrl: read(SETTING_KEYS.API_BASE_URL),
@@ -197,6 +207,7 @@ export interface AdminSettingsInput {
   argocdInsecureTls?: boolean;
   kubeconfigBase64?: string;
   googleAllowedDomain?: string;
+  newUserAccessEnabled?: boolean;
   demoMode?: boolean;
   redisUrl?: string;
   apiBaseUrl?: string;
@@ -246,6 +257,13 @@ export async function updateAdminSettings(
     upserts.push({
       key: SETTING_KEYS.GOOGLE_ALLOWED_DOMAIN,
       value: input.googleAllowedDomain.trim(),
+      isSecret: false,
+    });
+  }
+  if (input.newUserAccessEnabled !== undefined) {
+    upserts.push({
+      key: SETTING_KEYS.NEW_USER_ACCESS_ENABLED,
+      value: input.newUserAccessEnabled ? 'true' : 'false',
       isSecret: false,
     });
   }

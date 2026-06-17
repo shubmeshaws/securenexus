@@ -11,6 +11,7 @@ import {
   isGoogleAuthConfigured,
   validateEmailDomain,
 } from '@/lib/google-auth';
+import { getNewUserAccessEnabled } from '@/lib/settings';
 import { DEFAULT_NEW_USER_PERMISSIONS } from '@/lib/user-permissions';
 
 function getOAuthState(req: NextApiRequest): string | null {
@@ -64,13 +65,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const userCount = await prisma.user.count();
       const isFirstUser = userCount === 0;
       const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+      const newUserAccessEnabled = isFirstUser ? true : await getNewUserAccessEnabled();
       user = await prisma.user.create({
         data: {
           email,
           displayName: profile.name || profile.email,
           passwordHash,
           role: isFirstUser ? 'admin' : 'viewer',
-          active: true,
+          active: newUserAccessEnabled,
           permissions: isFirstUser ? undefined : { ...DEFAULT_NEW_USER_PERMISSIONS },
         },
       });

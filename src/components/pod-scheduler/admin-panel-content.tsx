@@ -13,6 +13,7 @@ import {
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { AdminSettingsPanel } from '@/components/pod-scheduler/admin-settings-panel';
+import { NewUserAccessSettingCard } from '@/components/pod-scheduler/new-user-access-setting';
 import { cn } from '@/lib/utils';
 import { apiFetch, type AdminUser } from '@/lib/api-client';
 import { POLL_INTERVAL } from '@/components/providers/query-provider';
@@ -169,6 +170,8 @@ export function AdminPanelContent() {
         <AdminSettingsPanel />
       ) : (
         <>
+          <NewUserAccessSettingCard />
+
           <div className="grid w-full grid-cols-3 gap-3">
             <StatCard label="Total Users" value={users.length} icon={UsersRound} accent="blue" />
             <StatCard label="Admins" value={users.filter((u) => u.role === 'admin').length} icon={ShieldCheck} accent="sky" />

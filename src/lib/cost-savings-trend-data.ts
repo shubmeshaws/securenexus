@@ -132,3 +132,30 @@ export const EMPTY_COST_SAVINGS_TREND: CostSavingsTrendResponse = {
 };
 
 export const COST_SAVINGS_TREND_PLACEHOLDER = EMPTY_COST_SAVINGS_TREND;
+
+/** Format estimated savings — keeps cents visible when totals are under $1. */
+export function formatSavingsUsd(amount: number): string {
+  const abs = Math.abs(amount);
+  if (abs === 0) return '$0';
+  if (abs < 1) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  }
+  if (abs < 100) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  }
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}

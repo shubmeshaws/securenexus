@@ -22,6 +22,7 @@ import { apiFetch } from '@/lib/api-client';
 import {
   getClusterChartStyle,
   COST_SAVINGS_TREND_PLACEHOLDER,
+  formatSavingsUsd,
   type CostSavingsTrendResponse,
 } from '@/lib/cost-savings-trend-data';
 import {
@@ -45,14 +46,6 @@ ChartJS.register(
 type ChartMode = 'line' | 'bar';
 
 const CHART_HEIGHT_PX = 260;
-
-function formatSavingsUsd(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
 
 function clusterStyle(clusterId: string) {
   return getClusterChartStyle(clusterId);
@@ -169,7 +162,7 @@ export default function CostSavingsTrend({
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (context) => ` $${context.parsed.y} saved`,
+            label: (context) => ` ${formatSavingsUsd(Number(context.parsed.y))} saved`,
           },
         },
       },
@@ -191,7 +184,7 @@ export default function CostSavingsTrend({
           ticks: {
             color: tickColor,
             font: { size: 10 },
-            callback: (value) => `$${value}`,
+            callback: (value) => formatSavingsUsd(Number(value)),
           },
         },
       },
