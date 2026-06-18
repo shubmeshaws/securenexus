@@ -10,9 +10,11 @@ import {
   Trash2,
   UsersRound,
   KeyRound,
+  Database,
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { AdminSettingsPanel } from '@/components/pod-scheduler/admin-settings-panel';
+import { AdminRetentionPanel } from '@/components/pod-scheduler/admin-retention-panel';
 import { NewUserAccessSettingCard } from '@/components/pod-scheduler/new-user-access-setting';
 import { cn } from '@/lib/utils';
 import { apiFetch, type AdminUser } from '@/lib/api-client';
@@ -43,7 +45,7 @@ const ROLE_COLORS: Record<string, 'automated' | 'manual' | 'success'> = {
   viewer: 'success',
 };
 
-type AdminTab = 'users' | 'settings';
+type AdminTab = 'users' | 'settings' | 'retention';
 
 export function AdminPanelContent() {
   const queryClient = useQueryClient();
@@ -164,10 +166,23 @@ export function AdminPanelContent() {
           <AppIcon icon={SlidersHorizontal} size="sm" />
           Settings
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('retention')}
+          className={cn(
+            'flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors',
+            tab === 'retention' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200/80 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-0' : 'text-zinc-600 hover:bg-zinc-100 dark:text-muted-foreground dark:hover:bg-accent'
+          )}
+        >
+          <AppIcon icon={Database} size="sm" />
+          Retention
+        </button>
       </div>
 
       {tab === 'settings' ? (
         <AdminSettingsPanel />
+      ) : tab === 'retention' ? (
+        <AdminRetentionPanel />
       ) : (
         <>
           <NewUserAccessSettingCard />

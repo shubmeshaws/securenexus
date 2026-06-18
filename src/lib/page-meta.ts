@@ -21,6 +21,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     iconClass: 'text-blue-700',
     accent: 'blue',
   },
+  '/dashboard/node-changes': {
+    title: 'Node changes',
+    subtitle: 'Hourly ready-node count changes',
+    icon: Icons.pages.dashboard,
+    gradient: 'from-violet-500 via-purple-600 to-indigo-600',
+    ring: 'ring-violet-500/25',
+    iconClass: 'text-violet-700',
+    accent: 'violet',
+  },
   '/infrastructure': {
     title: 'Infrastructure',
     subtitle: 'Workload control plane',
@@ -117,9 +126,13 @@ const FALLBACK_META: PageMeta = {
 export function getPageMeta(pathname: string | null): PageMeta {
   if (!pathname) return FALLBACK_META;
 
-  const match = Object.entries(PAGE_META).find(([path]) =>
-    path === '/dashboard' ? pathname === path : pathname.startsWith(path)
-  );
+  const match = Object.entries(PAGE_META)
+    .sort(([a], [b]) => b.length - a.length)
+    .find(([path]) =>
+      path === '/dashboard'
+        ? pathname === path
+        : pathname === path || pathname.startsWith(`${path}/`)
+    );
 
   return match?.[1] ?? FALLBACK_META;
 }

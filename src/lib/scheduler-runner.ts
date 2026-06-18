@@ -17,6 +17,7 @@ import type { Schedule } from '@prisma/client';
 
 import { pruneActivityLogsByRetention } from './activity';
 import { pruneResourceAuditDataByRetention } from './resource-audit-retention';
+import { pruneNodeSamplesByRetention } from './node-sample-retention';
 
 const SCHEDULER_GLOBAL_KEY = '__secureNexusSchedulerStarted__';
 const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -133,6 +134,7 @@ export function initScheduler() {
         lastRetentionPruneAt = Date.now();
         await pruneActivityLogsByRetention();
         await pruneResourceAuditDataByRetention();
+        await pruneNodeSamplesByRetention();
       }
     } catch (err) {
       console.error('[PodScheduler] Tick error:', err);

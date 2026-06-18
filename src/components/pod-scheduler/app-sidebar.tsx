@@ -13,7 +13,7 @@ import { useSession } from '@/components/auth/session-context';
 import { canAccessRoute } from '@/lib/permissions';
 
 const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: Icons.pages.dashboard, exact: true },
+  { href: '/dashboard', label: 'Dashboard', icon: Icons.pages.dashboard },
   { href: '/infrastructure', label: 'Infrastructure', icon: Icons.pages.infrastructure },
   { href: '/clusters', label: 'Clusters', icon: Icons.pages.clusters },
   { href: '/schedules', label: 'Schedules', icon: Icons.pages.schedules },
@@ -80,8 +80,11 @@ export function AppSidebar() {
             collapsed ? 'px-2 py-1' : 'px-3 py-1'
           )}
         >
-          {visibleNavItems.map(({ href, label, icon: Icon, exact, liveCount: showLiveCount }) => {
-            const active = exact ? pathname === href : (pathname?.startsWith(href) ?? false);
+          {visibleNavItems.map(({ href, label, icon: Icon, liveCount: showLiveCount }) => {
+            const active =
+              href === '/dashboard'
+                ? pathname === href || (pathname?.startsWith(`${href}/`) ?? false)
+                : (pathname?.startsWith(href) ?? false);
             const badgeCount = showLiveCount ? liveCount : 0;
             return (
               <Link

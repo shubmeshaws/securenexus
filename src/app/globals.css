@@ -224,7 +224,7 @@
   }
 
   .modern-card-header {
-    @apply flex items-center justify-between border-b px-5 py-4;
+    @apply flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-5 py-3.5;
     border-color: hsl(var(--border) / 0.6);
   }
 

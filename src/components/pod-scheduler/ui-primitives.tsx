@@ -158,7 +158,7 @@ export function PanelHeader({
 }) {
   return (
     <div className="modern-card-header">
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 shrink items-center gap-3">
         {brandIconSrc ? (
           <BrandIcon
             src={brandIconSrc}
@@ -172,7 +172,7 @@ export function PanelHeader({
         )}
         <h2 className="modern-card-title">{title}</h2>
       </div>
-      {action}
+      {action ? <div className="ml-auto flex shrink-0 items-center">{action}</div> : null}
     </div>
   );
 }

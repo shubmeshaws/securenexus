@@ -1,12 +1,12 @@
 import { format } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 import prisma from './prisma';
-import { COST_CALENDAR_TZ } from './cost-calendar';
+import { IST_TIMEZONE } from './utils';
 import { getClusterReadyNodeCount } from './k8s-client';
 
 export function getCalendarDateAndHour(
   now: Date,
-  tz: string = COST_CALENDAR_TZ
+  tz: string = IST_TIMEZONE
 ): { date: string; hour: number } {
   const zoned = toZonedTime(now, tz);
   return {

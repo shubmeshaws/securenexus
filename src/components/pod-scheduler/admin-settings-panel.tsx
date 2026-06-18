@@ -1,14 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Database,
-  Fingerprint,
   Globe2,
   Icons,
   Loader2,
-  RefreshCcw,
   Save,
   ServerCog,
   ShieldCheck,
@@ -26,13 +24,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
 const SECRET_PLACEHOLDER = '••••••••';
@@ -44,35 +35,13 @@ export interface AdminSettings {
   redisUrl: string;
   apiBaseUrl: string;
   activityLogRetentionDays: number;
+  nodeSampleRetentionDays: number;
+  nodeSampleDataStartDate: string;
+  nodeSampleDataStartTime: string;
   resourceAuditRetentionAmount: number;
   resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
   resourceAuditDataStartDate: string;
 }
-
-interface ResourceAuditRebuildStatus {
-  running: boolean;
-  phase: string;
-  message: string | null;
-  error: string | null;
-  auditBefore: number;
-  auditAfter: number;
-  linked: number;
-  unlinkedAfter: number;
-}
-
-const RESOURCE_AUDIT_RETENTION_PRESETS: {
-  label: string;
-  amount: number;
-  unit: 'weeks' | 'months' | 'years';
-}[] = [
-  { label: '1 week', amount: 1, unit: 'weeks' },
-  { label: '2 weeks', amount: 2, unit: 'weeks' },
-  { label: '1 month', amount: 1, unit: 'months' },
-  { label: '3 months', amount: 3, unit: 'months' },
-  { label: '6 months', amount: 6, unit: 'months' },
-  { label: '1 year', amount: 1, unit: 'years' },
-  { label: '2 years', amount: 2, unit: 'years' },
-];
 
 export function AdminSettingsPanel() {
   const queryClient = useQueryClient();
@@ -88,18 +57,7 @@ export function AdminSettingsPanel() {
   const [demoMode, setDemoMode] = useState(false);
   const [redisUrl, setRedisUrl] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
-  const [activityLogRetentionDays, setActivityLogRetentionDays] = useState(90);
-  const [resourceAuditRetentionAmount, setResourceAuditRetentionAmount] = useState(3);
-  const [resourceAuditRetentionUnit, setResourceAuditRetentionUnit] = useState<
-    'weeks' | 'months' | 'years'
-  >('months');
-  const [resourceAuditDataStartDate, setResourceAuditDataStartDate] = useState('2026-06-01');
   const [saveFeedback, setSaveFeedback] = useState<{ ok: boolean; message: string } | null>(null);
-  const [rebuildFeedback, setRebuildFeedback] = useState<{ ok: boolean; message: string } | null>(
-    null
-  );
-  const [rebuildRunning, setRebuildRunning] = useState(false);
-  const rebuildPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -108,16 +66,7 @@ export function AdminSettingsPanel() {
     setDemoMode(settings.demoMode);
     setRedisUrl(settings.redisUrl);
     setApiBaseUrl(settings.apiBaseUrl);
-    setActivityLogRetentionDays(settings.activityLogRetentionDays);
-    setResourceAuditRetentionAmount(settings.resourceAuditRetentionAmount);
-    setResourceAuditRetentionUnit(settings.resourceAuditRetentionUnit);
-    setResourceAuditDataStartDate(settings.resourceAuditDataStartDate);
   }, [settings]);
-
-  const retentionPresetValue = `${resourceAuditRetentionAmount}:${resourceAuditRetentionUnit}`;
-  const matchedPreset = RESOURCE_AUDIT_RETENTION_PRESETS.find(
-    (preset) => `${preset.amount}:${preset.unit}` === retentionPresetValue
-  );
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -126,10 +75,6 @@ export function AdminSettingsPanel() {
         demoMode,
         redisUrl,
         apiBaseUrl,
-        activityLogRetentionDays,
-        resourceAuditRetentionAmount,
-        resourceAuditRetentionUnit,
-        resourceAuditDataStartDate,
       };
       if (kubeconfigBase64 && kubeconfigBase64 !== SECRET_PLACEHOLDER) {
         payload.kubeconfigBase64 = kubeconfigBase64;
@@ -148,112 +93,11 @@ export function AdminSettingsPanel() {
       queryClient.invalidateQueries({ queryKey: ['argocd-apps'] });
       queryClient.invalidateQueries({ queryKey: ['infrastructure'] });
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
-      queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
-      queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
     },
     onError: (err: Error) => {
       setSaveFeedback({
         ok: false,
         message: err.message || 'Failed to save settings',
-      });
-    },
-  });
-
-  const stopRebuildPolling = () => {
-    if (rebuildPollRef.current) {
-      clearInterval(rebuildPollRef.current);
-      rebuildPollRef.current = null;
-    }
-  };
-
-  const ensureRebuildPolling = () => {
-    if (rebuildPollRef.current) return;
-    rebuildPollRef.current = setInterval(() => {
-      void pollRebuildStatus();
-    }, 3000);
-  };
-
-  const pollRebuildStatus = async () => {
-    try {
-      const data = await apiFetch<{ ok: boolean; status: ResourceAuditRebuildStatus }>(
-        '/api/admin/resource-audit/rebuild'
-      );
-      const status = data.status;
-      if (status.running) {
-        setRebuildRunning(true);
-        setRebuildFeedback({
-          ok: true,
-          message: status.message || 'Rebuilding Resource Changes…',
-        });
-        ensureRebuildPolling();
-        if (status.auditAfter > 0) {
-          queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
-          queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
-        }
-        return;
-      }
-
-      stopRebuildPolling();
-      setRebuildRunning(false);
-
-      if (status.phase === 'done') {
-        setRebuildFeedback({
-          ok: true,
-          message:
-            status.message ||
-            `Rebuild complete — ${status.auditAfter} row(s) visible`,
-        });
-        queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
-        queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
-      } else if (status.phase === 'failed') {
-        setRebuildFeedback({
-          ok: false,
-          message: status.error || status.message || 'Rebuild failed',
-        });
-      }
-    } catch (err) {
-      stopRebuildPolling();
-      setRebuildRunning(false);
-      setRebuildFeedback({
-        ok: false,
-        message: err instanceof Error ? err.message : 'Failed to check rebuild status',
-      });
-    }
-  };
-
-  const startRebuildPolling = () => {
-    setRebuildRunning(true);
-    void pollRebuildStatus();
-  };
-
-  useEffect(() => {
-    void pollRebuildStatus();
-    return () => stopRebuildPolling();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const rebuildMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{
-        ok: boolean;
-        started?: boolean;
-        alreadyRunning?: boolean;
-        message: string;
-        status: ResourceAuditRebuildStatus;
-      }>('/api/admin/resource-audit/rebuild', { method: 'POST' }),
-    onMutate: () => setRebuildFeedback(null),
-    onSuccess: (data) => {
-      setRebuildFeedback({
-        ok: true,
-        message: data.message || 'Rebuild started in the background…',
-      });
-      startRebuildPolling();
-    },
-    onError: (err: Error) => {
-      setRebuildRunning(false);
-      setRebuildFeedback({
-        ok: false,
-        message: err.message || 'Rebuild failed',
       });
     },
   });
@@ -280,7 +124,8 @@ export function AdminSettingsPanel() {
               placeholder="yourcompany.com"
             />
             <p className="text-[11px] text-muted-foreground">
-              Only users with this email domain can sign in. Google Client ID/Secret stay in <code>.env</code>.
+              Only users with this email domain can sign in. Google Client ID/Secret stay in{' '}
+              <code>.env</code>.
             </p>
           </div>
         </div>
@@ -311,20 +156,24 @@ export function AdminSettingsPanel() {
         />
         <div className="mt-4 space-y-2">
           <Label>Global kubeconfig (base64) — optional</Label>
-            <textarea
-              value={kubeconfigBase64}
-              onChange={(e) => setKubeconfigBase64(e.target.value)}
-              placeholder={settings?.kubeconfigSet ? 'Leave unchanged or paste new base64 kubeconfig' : 'Only needed if you have not added clusters under Clusters'}
-              rows={3}
-              className={cn(
-                'flex w-full rounded-xl border border-border bg-background px-4 py-2 font-mono text-xs text-foreground shadow-sm',
-                'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30'
-              )}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Not required when clusters are added via Clusters → Add Cluster. Each registered cluster stores its own kubeconfig.
-              Use this field only as a global fallback for legacy flows.
-            </p>
+          <textarea
+            value={kubeconfigBase64}
+            onChange={(e) => setKubeconfigBase64(e.target.value)}
+            placeholder={
+              settings?.kubeconfigSet
+                ? 'Leave unchanged or paste new base64 kubeconfig'
+                : 'Only needed if you have not added clusters under Clusters'
+            }
+            rows={3}
+            className={cn(
+              'flex w-full rounded-xl border border-border bg-background px-4 py-2 font-mono text-xs text-foreground shadow-sm',
+              'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30'
+            )}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Not required when clusters are added via Clusters → Add Cluster. Each registered cluster
+            stores its own kubeconfig. Use this field only as a global fallback for legacy flows.
+          </p>
         </div>
       </GlassPanel>
 
@@ -334,7 +183,9 @@ export function AdminSettingsPanel() {
           <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3 sm:col-span-2">
             <div>
               <p className="text-sm font-medium text-foreground">Demo mode</p>
-              <p className="text-xs text-muted-foreground">Uses mock data and bypasses Google login — off by default</p>
+              <p className="text-xs text-muted-foreground">
+                Uses mock data and bypasses Google login — off by default
+              </p>
             </div>
             <Switch checked={demoMode} onCheckedChange={setDemoMode} />
           </div>
@@ -357,140 +208,6 @@ export function AdminSettingsPanel() {
               onChange={(e) => setApiBaseUrl(e.target.value)}
               placeholder="Leave empty for same host"
             />
-          </div>
-        </div>
-      </GlassPanel>
-
-      <GlassPanel className="p-5">
-        <PanelHeader title="Activity Logs" icon={Database} />
-        <div className="mt-4 space-y-2">
-          <Label>Retention period (days)</Label>
-          <Input
-            type="number"
-            min={1}
-            max={3650}
-            value={activityLogRetentionDays}
-            onChange={(e) => setActivityLogRetentionDays(parseInt(e.target.value, 10) || 90)}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Activity logs older than this are removed automatically. Users only see logs within this window.
-          </p>
-        </div>
-      </GlassPanel>
-
-      <GlassPanel className="p-5">
-        <PanelHeader title="Resource Changes" icon={Fingerprint} />
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2 sm:col-span-2">
-            <Label>Retention period</Label>
-            <Select
-              value={matchedPreset ? retentionPresetValue : 'custom'}
-              onValueChange={(value) => {
-                if (value === 'custom') return;
-                const [amount, unit] = value.split(':');
-                setResourceAuditRetentionAmount(parseInt(amount, 10) || 3);
-                setResourceAuditRetentionUnit(unit as 'weeks' | 'months' | 'years');
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select retention" />
-              </SelectTrigger>
-              <SelectContent>
-                {RESOURCE_AUDIT_RETENTION_PRESETS.map((preset) => (
-                  <SelectItem key={preset.label} value={`${preset.amount}:${preset.unit}`}>
-                    {preset.label}
-                  </SelectItem>
-                ))}
-                {!matchedPreset && (
-                  <SelectItem value="custom">
-                    Custom ({resourceAuditRetentionAmount}{' '}
-                    {resourceAuditRetentionAmount === 1
-                      ? resourceAuditRetentionUnit.slice(0, -1)
-                      : resourceAuditRetentionUnit}
-                    )
-                  </SelectItem>
-                )}
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] text-muted-foreground">
-              Data older than this window is removed automatically from Resource Changes and git
-              history.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label>Custom amount</Label>
-            <Input
-              type="number"
-              min={1}
-              max={resourceAuditRetentionUnit === 'weeks' ? 52 : resourceAuditRetentionUnit === 'months' ? 36 : 10}
-              value={resourceAuditRetentionAmount}
-              onChange={(e) =>
-                setResourceAuditRetentionAmount(parseInt(e.target.value, 10) || 1)
-              }
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Custom unit</Label>
-            <Select
-              value={resourceAuditRetentionUnit}
-              onValueChange={(value) =>
-                setResourceAuditRetentionUnit(value as 'weeks' | 'months' | 'years')
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="weeks">Weeks</SelectItem>
-                <SelectItem value="months">Months</SelectItem>
-                <SelectItem value="years">Years</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2 sm:col-span-2">
-            <Label>Earliest data date</Label>
-            <Input
-              type="date"
-              value={resourceAuditDataStartDate}
-              onChange={(e) => setResourceAuditDataStartDate(e.target.value)}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Resource Changes never shows or keeps data before this date. Default: 1 June 2026.
-            </p>
-          </div>
-          <div className="space-y-2 sm:col-span-2">
-            <Label>Rebuild from git history</Label>
-            <p className="text-[11px] text-muted-foreground">
-              Re-link Resource Changes from cloned Bitbucket repos. Runs in the background and may
-              take several minutes on EC2 — keep this page open to see progress.
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
-              {rebuildFeedback && (
-                <p
-                  className={cn(
-                    'text-xs',
-                    rebuildFeedback.ok
-                      ? 'text-emerald-700 dark:text-emerald-400'
-                      : 'text-red-700 dark:text-red-400'
-                  )}
-                >
-                  {rebuildFeedback.message}
-                </p>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => rebuildMutation.mutate()}
-                disabled={rebuildRunning || rebuildMutation.isPending}
-              >
-                {rebuildRunning || rebuildMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCcw className="h-4 w-4" />
-                )}
-                Rebuild Resource Changes
-              </Button>
-            </div>
           </div>
         </div>
       </GlassPanel>

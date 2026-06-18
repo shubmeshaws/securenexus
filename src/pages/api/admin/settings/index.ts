@@ -4,6 +4,9 @@ import { getAdminSettings, updateAdminSettings } from '@/lib/settings';
 import { invalidateKubeConfigCache } from '@/lib/k8s-client';
 import { invalidateWorkloadCache } from '@/lib/workload-scan';
 import { pruneResourceAuditDataByRetention } from '@/lib/resource-audit-retention';
+import { pruneActivityLogsByRetention } from '@/lib/activity';
+import { pruneNodeSamplesByRetention, pruneNodeSamplesBeforeCaptureStart } from '@/lib/node-sample-retention';
+import { invalidateNodeChangesCache } from '@/lib/node-changes-service';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -17,6 +20,9 @@ const updateSchema = z.object({
   redisUrl: z.string().optional(),
   apiBaseUrl: z.string().optional(),
   activityLogRetentionDays: z.number().int().min(1).max(3650).optional(),
+  nodeSampleRetentionDays: z.number().int().min(7).max(3650).optional(),
+  nodeSampleDataStartDate: z.string().optional(),
+  nodeSampleDataStartTime: z.string().optional(),
   resourceAuditRetentionAmount: z.number().int().min(1).max(52).optional(),
   resourceAuditRetentionUnit: z.enum(['weeks', 'months', 'years']).optional(),
   resourceAuditDataStartDate: z
@@ -38,6 +44,11 @@ async function putHandler(req: AuthenticatedRequest, res: NextApiResponse) {
     parsed.data.resourceAuditRetentionAmount !== undefined ||
     parsed.data.resourceAuditRetentionUnit !== undefined ||
     parsed.data.resourceAuditDataStartDate !== undefined;
+  const activityRetentionTouched = parsed.data.activityLogRetentionDays !== undefined;
+  const nodeSampleRetentionTouched = parsed.data.nodeSampleRetentionDays !== undefined;
+  const nodeSampleStartTouched =
+    parsed.data.nodeSampleDataStartDate !== undefined ||
+    parsed.data.nodeSampleDataStartTime !== undefined;
 
   let settings;
   try {
@@ -53,6 +64,26 @@ async function putHandler(req: AuthenticatedRequest, res: NextApiResponse) {
       console.log(
         `[ResourceAudit] Retention prune: ${pruned.auditDeleted} audit rows, ${pruned.gitDeleted} git rows removed`
       );
+    }
+  }
+
+  if (activityRetentionTouched) {
+    await pruneActivityLogsByRetention();
+  }
+
+  if (nodeSampleRetentionTouched) {
+    const deleted = await pruneNodeSamplesByRetention();
+    invalidateNodeChangesCache();
+    if (deleted > 0) {
+      console.log(`[NodeCount] Retention prune: ${deleted} hourly samples removed`);
+    }
+  }
+
+  if (nodeSampleStartTouched) {
+    const deleted = await pruneNodeSamplesBeforeCaptureStart();
+    invalidateNodeChangesCache();
+    if (deleted > 0) {
+      console.log(`[NodeCount] Capture start prune: ${deleted} hourly samples removed`);
     }
   }
 

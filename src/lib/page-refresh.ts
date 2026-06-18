@@ -5,6 +5,7 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
     ['dashboard-insights'],
     ['node-count-trend'],
     ['schedule-actions'],
+    ['node-changes'],
   ],
   '/infrastructure': [
     ['infrastructure'],
@@ -36,9 +37,11 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
 export function getPageRefreshQueryKeys(pathname: string | null): readonly (readonly string[])[] {
   if (!pathname) return [];
 
-  const match = Object.entries(PAGE_REFRESH_QUERY_KEYS).find(([path]) =>
-    path === '/dashboard' ? pathname === path : pathname.startsWith(path)
-  );
+  const match = Object.entries(PAGE_REFRESH_QUERY_KEYS)
+    .sort(([a], [b]) => b.length - a.length)
+    .find(([path]) =>
+      path === '/dashboard' ? pathname === path || pathname.startsWith(`${path}/`) : pathname.startsWith(path)
+    );
 
   return match?.[1] ?? [];
 }

@@ -15,6 +15,7 @@ import {
   listRegisteredClusterNames,
   sampleRegisteredClusters,
 } from './node-count-sampler';
+import { getNodeSampleCaptureStartAt } from './node-sample-retention';
 import prisma from './prisma';
 
 const CACHE_TTL_MS = 30_000;
@@ -270,12 +271,15 @@ export async function getNodeCountTrendData(
   const calendarDates = buckets.map((bucket) => bucket.date);
   const lookbackStart = subDays(buckets[0].start, 1);
   const rangeEnd = buckets[buckets.length - 1].end;
+  const captureStart = await getNodeSampleCaptureStartAt();
+  const sampleTimeFilter = captureStart ? { sampledAt: { gte: captureStart } } : {};
 
   const [samples, shutdownLogs] = await Promise.all([
     prisma.clusterNodeHourlySample.findMany({
       where: {
         clusterName: selectedCluster,
         calendarDate: { in: calendarDates },
+        ...sampleTimeFilter,
       },
       select: {
         clusterName: true,
@@ -305,6 +309,7 @@ export async function getNodeCountTrendData(
           where: {
             clusterName: selectedCluster,
             calendarDate: { in: prevDates },
+            ...sampleTimeFilter,
           },
           select: {
             clusterName: true,

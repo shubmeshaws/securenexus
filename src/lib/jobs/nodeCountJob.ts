@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import { invalidateNodeChangesCache } from '../node-changes-service';
 import { sampleRegisteredClusters } from '../node-count-sampler';
 
 const NODE_COUNT_JOB_KEY = '__secureNexusNodeCountJobStarted__';
@@ -13,7 +14,9 @@ export function initNodeCountJob(): void {
   console.log('[NodeCount] Initializing hourly node count sampler…');
 
   hourlyJob = cron.schedule('5 * * * *', () => {
-    void sampleRegisteredClusters().catch((err) => {
+    void sampleRegisteredClusters()
+      .then(() => invalidateNodeChangesCache())
+      .catch((err) => {
       console.error('[NodeCount] Hourly sample failed:', err);
     });
   });

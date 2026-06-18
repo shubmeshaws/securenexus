@@ -16,8 +16,19 @@ export const DEFAULT_DASHBOARD_DATE_RANGE: DashboardDateRange = {
   customTo: '',
 };
 
-export const DASHBOARD_DATE_SELECT_CLASS =
-  'h-8 w-full min-w-0 rounded-lg border border-border bg-background px-2 text-[11px] text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/30';
+const DASHBOARD_SELECT_CHEVRON =
+  "bg-[length:0.75rem] bg-[position:right_0.625rem_center] bg-no-repeat [background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")]";
+
+const DASHBOARD_FILTER_BASE =
+  'h-8 min-w-0 rounded-lg border border-border bg-background text-[11px] text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/30';
+
+export const DASHBOARD_FILTER_INPUT_CLASS = `${DASHBOARD_FILTER_BASE} px-2.5`;
+
+export const DASHBOARD_DATE_SELECT_CLASS = [
+  DASHBOARD_FILTER_BASE,
+  'w-auto appearance-none pl-2.5 pr-7',
+  DASHBOARD_SELECT_CHEVRON,
+].join(' ');
 
 export function isDashboardDateRangeReady(range: DashboardDateRange): boolean {
   if (range.preset !== 'custom') return true;

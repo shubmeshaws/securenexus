@@ -34,8 +34,12 @@ import {
   isDashboardDateRangeReady,
   type DashboardDateRange,
 } from '@/lib/dashboard-date-range';
-import { DASHBOARD_DATE_SELECT_CLASS } from '@/lib/dashboard-date-range';
-import { parseClusterDisplay, cn } from '@/lib/utils';
+import {
+  DashboardFilterBar,
+  DashboardFilterSelect,
+  DashboardToggleGroup,
+} from '@/components/dashboard/dashboard-filters';
+import { cn } from '@/lib/utils';
 
 ChartJS.register(
   CategoryScale,
@@ -50,72 +54,6 @@ ChartJS.register(
 type ChartMode = 'line' | 'bar';
 
 const CHART_HEIGHT_PX = 260;
-
-function ChartToggle({
-  chartMode,
-  onChange,
-}: {
-  chartMode: ChartMode;
-  onChange: (mode: ChartMode) => void;
-}) {
-  return (
-    <div className="flex shrink-0 rounded-lg bg-muted p-0.5">
-      {(['line', 'bar'] as const).map((mode) => (
-        <button
-          key={mode}
-          type="button"
-          onClick={() => onChange(mode)}
-          className={cn(
-            'rounded-md px-2.5 py-1 text-[10px] capitalize transition-colors',
-            chartMode === mode
-              ? 'border border-border bg-background font-medium text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          {mode}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function MetricToggle({
-  metric,
-  onChange,
-}: {
-  metric: NodeCountMetric;
-  onChange: (metric: NodeCountMetric) => void;
-}) {
-  return (
-    <div className="flex shrink-0 rounded-lg bg-muted p-0.5">
-      {(
-        [
-          { id: 'average' as const, label: 'Average' },
-          { id: 'max' as const, label: 'Max' },
-        ] as const
-      ).map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          onClick={() => onChange(option.id)}
-          className={cn(
-            'rounded-md px-2.5 py-1 text-[10px] transition-colors',
-            metric === option.id
-              ? 'border border-border bg-background font-medium text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function formatClusterOption(cluster: string): string {
-  const { clusterName, accountId } = parseClusterDisplay(cluster);
-  return accountId ? `${clusterName} (${accountId})` : clusterName;
-}
 
 function DeltaBadge({ delta }: { delta: number }) {
   return (
@@ -286,24 +224,40 @@ export default function NodeCountTrend({
         icon={Boxes}
         accent="violet"
         action={
-          <div className="flex h-8 items-center gap-2">
+          <DashboardFilterBar className="justify-end">
             {availableClusters.length > 0 ? (
-              <select
-                className={cn(DASHBOARD_DATE_SELECT_CLASS, 'h-8 max-w-[11rem] truncate text-[10px]')}
+              <DashboardFilterSelect
+                width="lg"
                 value={cluster || chartData.cluster}
                 onChange={(e) => setCluster(e.target.value)}
                 aria-label="Cluster filter"
+                title={cluster || chartData.cluster}
               >
                 {availableClusters.map((option) => (
                   <option key={option} value={option}>
-                    {formatClusterOption(option)}
+                    {option}
                   </option>
                 ))}
-              </select>
+              </DashboardFilterSelect>
             ) : null}
-            <MetricToggle metric={metric} onChange={setMetric} />
-            <ChartToggle chartMode={chartMode} onChange={setChartMode} />
-          </div>
+            <DashboardToggleGroup
+              value={metric}
+              onChange={setMetric}
+              options={[
+                { id: 'average' as const, label: 'Average' },
+                { id: 'max' as const, label: 'Max' },
+              ]}
+            />
+            <DashboardToggleGroup
+              value={chartMode}
+              onChange={setChartMode}
+              capitalize
+              options={[
+                { id: 'line' as const, label: 'line' },
+                { id: 'bar' as const, label: 'bar' },
+              ]}
+            />
+          </DashboardFilterBar>
         }
       />
       <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Loader2,
@@ -21,6 +21,12 @@ import {
 import NodeCountTrend from '@/components/dashboard/node-count-trend';
 import ScheduleActionsChart from '@/components/dashboard/schedule-actions-chart';
 import DashboardDateFilter from '@/components/dashboard/dashboard-date-filter';
+import { DashboardTabs, type DashboardTab } from '@/components/dashboard/dashboard-tabs';
+import { DashboardNodeChanges } from '@/components/dashboard/dashboard-node-changes';
+import {
+  DashboardFilterBar,
+  DashboardFilterSelect,
+} from '@/components/dashboard/dashboard-filters';
 import { StoppedDurationBar } from '@/components/dashboard/stopped-duration-bar';
 import {
   appendDashboardDateQuery,
@@ -36,14 +42,17 @@ const VISIBLE_ROWS = 5;
 function RowCountBadge({ shown, total }: { shown: number; total: number }) {
   if (total <= VISIBLE_ROWS) return null;
   return (
-    <Badge variant="secondary" className="text-[10px] font-normal">
+    <Badge variant="secondary" className="h-8 shrink-0 px-2 text-[10px] font-normal leading-none">
       {shown} of {total} · scroll for more
     </Badge>
   );
 }
 
 export default function PodSchedulerOverviewPage() {
+  const [tab, setTab] = useState<DashboardTab>('overview');
   const [dateRange, setDateRange] = useState<DashboardDateRange>(DEFAULT_DASHBOARD_DATE_RANGE);
+  const [eksClusterFilter, setEksClusterFilter] = useState('');
+  const [eksNamespaceFilter, setEksNamespaceFilter] = useState('');
   const rangeReady = isDashboardDateRangeReady(dateRange);
   const periodLabel = getDashboardPeriodLabel(dateRange);
 
@@ -115,9 +124,40 @@ export default function PodSchedulerOverviewPage() {
   const insightsTotals = insights?.totals;
   const periodSuffix = isInsightsFetching ? ' · updating…' : '';
 
-  const maxEksStoppedMs = useMemo(
-    () => Math.max(...namespaceStopped.map((row) => row.stoppedMs), 0),
+  const eksClusterOptions = useMemo(
+    () => Array.from(new Set(namespaceStopped.map((row) => row.cluster))).sort(),
     [namespaceStopped]
+  );
+
+  const eksNamespaceOptions = useMemo(() => {
+    const rows = eksClusterFilter
+      ? namespaceStopped.filter((row) => row.cluster === eksClusterFilter)
+      : namespaceStopped;
+    return Array.from(new Set(rows.map((row) => row.namespace))).sort();
+  }, [namespaceStopped, eksClusterFilter]);
+
+  useEffect(() => {
+    if (eksNamespaceFilter && !eksNamespaceOptions.includes(eksNamespaceFilter)) {
+      setEksNamespaceFilter('');
+    }
+  }, [eksNamespaceFilter, eksNamespaceOptions]);
+
+  const filteredNamespaceStopped = useMemo(() => {
+    return namespaceStopped.filter((row) => {
+      if (eksClusterFilter && row.cluster !== eksClusterFilter) return false;
+      if (eksNamespaceFilter && row.namespace !== eksNamespaceFilter) return false;
+      return true;
+    });
+  }, [namespaceStopped, eksClusterFilter, eksNamespaceFilter]);
+
+  const filteredEksStoppedMs = useMemo(
+    () => filteredNamespaceStopped.reduce((sum, row) => sum + row.stoppedMs, 0),
+    [filteredNamespaceStopped]
+  );
+
+  const maxEksStoppedMs = useMemo(
+    () => Math.max(...filteredNamespaceStopped.map((row) => row.stoppedMs), 0),
+    [filteredNamespaceStopped]
   );
   const maxStandaloneStoppedMs = useMemo(
     () => Math.max(...standaloneStopped.map((row) => row.stoppedMs), 0),
@@ -126,6 +166,9 @@ export default function PodSchedulerOverviewPage() {
 
   return (
     <div className="space-y-5">
+      <DashboardTabs active={tab} onChange={setTab} />
+
+      <div className={tab === 'overview' ? 'space-y-5' : 'hidden'} aria-hidden={tab !== 'overview'}>
       <PageHeader
         title="Dashboard"
         titleMeta={uptimeTitleMeta}
@@ -185,7 +228,44 @@ export default function PodSchedulerOverviewPage() {
                 title="Kubernetes workload stop time"
                 icon={TrendingDown}
                 accent="red"
-                action={<RowCountBadge shown={Math.min(namespaceStopped.length, VISIBLE_ROWS)} total={namespaceStopped.length} />}
+                action={
+                  <DashboardFilterBar className="justify-end">
+                    {eksClusterOptions.length > 0 ? (
+                      <>
+                        <DashboardFilterSelect
+                          width="md"
+                          value={eksClusterFilter}
+                          onChange={(e) => setEksClusterFilter(e.target.value)}
+                          aria-label="Filter by cluster"
+                        >
+                          <option value="">All clusters</option>
+                          {eksClusterOptions.map((cluster) => (
+                            <option key={cluster} value={cluster}>
+                              {cluster}
+                            </option>
+                          ))}
+                        </DashboardFilterSelect>
+                        <DashboardFilterSelect
+                          width="sm"
+                          value={eksNamespaceFilter}
+                          onChange={(e) => setEksNamespaceFilter(e.target.value)}
+                          aria-label="Filter by namespace"
+                        >
+                          <option value="">All namespaces</option>
+                          {eksNamespaceOptions.map((namespace) => (
+                            <option key={namespace} value={namespace}>
+                              {namespace}
+                            </option>
+                          ))}
+                        </DashboardFilterSelect>
+                      </>
+                    ) : null}
+                    <RowCountBadge
+                      shown={Math.min(filteredNamespaceStopped.length, VISIBLE_ROWS)}
+                      total={filteredNamespaceStopped.length}
+                    />
+                  </DashboardFilterBar>
+                }
               />
               <p className="min-h-[4.25rem] border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
                 EKS only — counts actual stop→start windows from schedules, manual runs, and infrastructure actions.
@@ -204,15 +284,23 @@ export default function PodSchedulerOverviewPage() {
                 <p className="p-8 text-center text-sm text-muted-foreground">
                   No Kubernetes workload stop-time data yet.
                 </p>
+              ) : !filteredNamespaceStopped.length ? (
+                <p className="p-8 text-center text-sm text-muted-foreground">
+                  No stop-time data matches the selected cluster or namespace filters.
+                </p>
               ) : (
                 <ScrollTable
                   maxRows={VISIBLE_ROWS}
                   footer={
-                    insightsTotals && insightsTotals.eksStoppedMs > 0 ? (
+                    filteredEksStoppedMs > 0 ? (
                       <div className="flex items-center justify-between border-t border-border bg-muted/30 px-5 py-3">
-                        <span className="text-xs font-medium text-muted-foreground">Total across EKS namespaces</span>
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {eksClusterFilter || eksNamespaceFilter
+                            ? 'Total for selected filters'
+                            : 'Total across EKS namespaces'}
+                        </span>
                         <span className="text-sm font-semibold text-foreground">
-                          {formatStoppedDuration(insightsTotals.eksStoppedMs)}
+                          {formatStoppedDuration(filteredEksStoppedMs)}
                         </span>
                       </div>
                     ) : undefined
@@ -230,7 +318,7 @@ export default function PodSchedulerOverviewPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {namespaceStopped.map((row) => {
+                      {filteredNamespaceStopped.map((row) => {
                         const { clusterName } = parseClusterDisplay(row.cluster);
                         return (
                           <tr key={`${row.cluster}-${row.namespace}`} className="border-b border-border">
@@ -333,6 +421,11 @@ export default function PodSchedulerOverviewPage() {
               )}
             </GlassPanel>
           </div>
+      </div>
+
+      <div className={tab === 'node-changes' ? undefined : 'hidden'} aria-hidden={tab !== 'node-changes'}>
+        <DashboardNodeChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
+      </div>
     </div>
   );
 }

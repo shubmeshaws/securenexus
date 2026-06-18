@@ -20,6 +20,9 @@ export const SETTING_KEYS = {
   ARGOCD_INSECURE_TLS: 'argocd_insecure_tls',
   SETUP_COMPLETE: 'setup_complete',
   ACTIVITY_LOG_RETENTION_DAYS: 'activity_log_retention_days',
+  NODE_SAMPLE_RETENTION_DAYS: 'node_sample_retention_days',
+  NODE_SAMPLE_DATA_START_DATE: 'node_sample_data_start_date',
+  NODE_SAMPLE_DATA_START_TIME: 'node_sample_data_start_time',
   RESOURCE_AUDIT_RETENTION_AMOUNT: 'resource_audit_retention_amount',
   RESOURCE_AUDIT_RETENTION_UNIT: 'resource_audit_retention_unit',
   RESOURCE_AUDIT_DATA_START_DATE: 'resource_audit_data_start_date',
@@ -56,6 +59,9 @@ const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
     process.env.ARGOCD_INSECURE_TLS === 'true' ? 'true' : undefined,
   [SETTING_KEYS.SETUP_COMPLETE]: () => undefined,
   [SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS]: () => '90',
+  [SETTING_KEYS.NODE_SAMPLE_RETENTION_DAYS]: () => '90',
+  [SETTING_KEYS.NODE_SAMPLE_DATA_START_DATE]: () => undefined,
+  [SETTING_KEYS.NODE_SAMPLE_DATA_START_TIME]: () => '00:00',
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT]: () => '3',
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT]: () => 'months',
   [SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE]: () => '2026-06-01',
@@ -156,6 +162,9 @@ export interface AdminSettingsView {
   redisUrl: string;
   apiBaseUrl: string;
   activityLogRetentionDays: number;
+  nodeSampleRetentionDays: number;
+  nodeSampleDataStartDate: string;
+  nodeSampleDataStartTime: string;
   resourceAuditRetentionAmount: number;
   resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
   resourceAuditDataStartDate: string;
@@ -183,6 +192,18 @@ export async function getAdminSettings(): Promise<AdminSettingsView> {
       1,
       parseInt(read(SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS) || '90', 10) || 90
     ),
+    nodeSampleRetentionDays: Math.max(
+      7,
+      parseInt(read(SETTING_KEYS.NODE_SAMPLE_RETENTION_DAYS) || '90', 10) || 90
+    ),
+    nodeSampleDataStartDate: (() => {
+      const value = read(SETTING_KEYS.NODE_SAMPLE_DATA_START_DATE).trim();
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+    })(),
+    nodeSampleDataStartTime: (() => {
+      const value = read(SETTING_KEYS.NODE_SAMPLE_DATA_START_TIME).trim();
+      return /^\d{2}:\d{2}$/.test(value) ? value : '00:00';
+    })(),
     resourceAuditRetentionAmount: Math.max(
       1,
       parseInt(read(SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT) || String(DEFAULT_RESOURCE_AUDIT_RETENTION_AMOUNT), 10) ||
@@ -212,6 +233,9 @@ export interface AdminSettingsInput {
   redisUrl?: string;
   apiBaseUrl?: string;
   activityLogRetentionDays?: number;
+  nodeSampleRetentionDays?: number;
+  nodeSampleDataStartDate?: string;
+  nodeSampleDataStartTime?: string;
   resourceAuditRetentionAmount?: number;
   resourceAuditRetentionUnit?: ResourceAuditRetentionUnit;
   resourceAuditDataStartDate?: string;
@@ -293,6 +317,36 @@ export async function updateAdminSettings(
     upserts.push({
       key: SETTING_KEYS.ACTIVITY_LOG_RETENTION_DAYS,
       value: String(days),
+      isSecret: false,
+    });
+  }
+  if (input.nodeSampleRetentionDays !== undefined) {
+    const days = Math.min(3650, Math.max(7, Math.round(input.nodeSampleRetentionDays)));
+    upserts.push({
+      key: SETTING_KEYS.NODE_SAMPLE_RETENTION_DAYS,
+      value: String(days),
+      isSecret: false,
+    });
+  }
+  if (input.nodeSampleDataStartDate !== undefined) {
+    const value = input.nodeSampleDataStartDate.trim();
+    if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error('Invalid node sample data start date');
+    }
+    upserts.push({
+      key: SETTING_KEYS.NODE_SAMPLE_DATA_START_DATE,
+      value,
+      isSecret: false,
+    });
+  }
+  if (input.nodeSampleDataStartTime !== undefined) {
+    const value = input.nodeSampleDataStartTime.trim();
+    if (!/^\d{2}:\d{2}$/.test(value)) {
+      throw new Error('Invalid node sample data start time');
+    }
+    upserts.push({
+      key: SETTING_KEYS.NODE_SAMPLE_DATA_START_TIME,
+      value,
       isSecret: false,
     });
   }
