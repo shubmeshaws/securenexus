@@ -2,12 +2,14 @@ import argocdClient, { appMatchesK8sCluster } from './argocd-client';
 import { instanceMatchesCluster, listEnabledArgoCDInstances } from './argocd-instances';
 import type { ArgoCDAppSummary } from './argocd-client';
 import {
+  getClusterReadyNodeCount,
   getWorkloadDesiredReplicas,
   listWorkloads,
   scaleWorkload,
   type WorkloadKind,
 } from './k8s-client';
 import { logActivity } from './activity';
+import { buildShutdownActivityDetails } from './shutdown-node-count';
 import prisma from './prisma';
 import { computeCurrentLiveStartupAt, computeNextRun, formatScheduleStartupLabel } from './scheduler-utils';
 import {
@@ -290,6 +292,7 @@ export async function executeShutdown(
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
 
   try {
+    const nodeCount = await getClusterReadyNodeCount(schedule.cluster);
     const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
     const priorWorkloadSaves = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
 
@@ -382,13 +385,16 @@ export async function executeShutdown(
       ? `Scaled ${targets.length} workload(s) to 0 in ${schedule.namespace}${argoNote}`
       : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
 
-    const activityDetails = isNamespace
-      ? JSON.stringify({
-          scope: 'namespace',
-          workloads: targets.map((t) => workloadKey(t.kind, t.name)),
-          count: targets.length,
-        })
-      : undefined;
+    const activityDetails = buildShutdownActivityDetails(
+      isNamespace
+        ? {
+            scope: 'namespace',
+            workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+            count: targets.length,
+          }
+        : undefined,
+      nodeCount
+    );
 
     await logActivity({
       action: 'schedule-shutdown',
@@ -411,13 +417,16 @@ export async function executeShutdown(
       triggeredBy,
       status: 'failed',
       message: err instanceof Error ? err.message : 'Shutdown failed',
-      details: isNamespace
-        ? JSON.stringify({
-            scope: 'namespace',
-            workloads: targets.map((t) => workloadKey(t.kind, t.name)),
-            count: targets.length,
-          })
-        : undefined,
+      details: buildShutdownActivityDetails(
+        isNamespace
+          ? {
+              scope: 'namespace',
+              workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+              count: targets.length,
+            }
+          : undefined,
+        null
+      ),
       ...scheduleTeamsAlertFlag(schedule),
     });
     throw err;

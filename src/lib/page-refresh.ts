@@ -3,7 +3,7 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
   '/dashboard': [
     ['overview'],
     ['dashboard-insights'],
-    ['cost-savings-trend'],
+    ['node-count-trend'],
     ['schedule-actions'],
   ],
   '/infrastructure': [

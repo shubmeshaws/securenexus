@@ -438,6 +438,25 @@ export async function listClusterInstanceTypes(cluster: string): Promise<Instanc
     .sort((a, b) => b.count - a.count);
 }
 
+/** Ready Kubernetes nodes in a cluster (captured before workload shutdown). */
+export async function getClusterReadyNodeCount(cluster: string): Promise<number | null> {
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.CoreV1Api);
+    const res = await api.listNode();
+    let ready = 0;
+    for (const node of res.body.items ?? []) {
+      const isReady = (node.status?.conditions ?? []).some(
+        (condition) => condition.type === 'Ready' && condition.status === 'True'
+      );
+      if (isReady) ready += 1;
+    }
+    return ready;
+  } catch {
+    return null;
+  }
+}
+
 export async function getWorkloadDesiredReplicas(
   cluster: string,
   namespace: string,

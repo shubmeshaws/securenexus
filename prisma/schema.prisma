@@ -127,6 +127,18 @@ model Cluster {
   @@index([status])
 }
 
+model ClusterNodeHourlySample {
+  id           String   @id @default(cuid())
+  clusterName  String
+  calendarDate String   // yyyy-MM-dd in COST_CALENDAR_TZ
+  hour         Int      // 0–23 local calendar hour
+  nodeCount    Int
+  sampledAt    DateTime @default(now())
+
+  @@unique([clusterName, calendarDate, hour])
+  @@index([clusterName, calendarDate])
+}
+
 model EnvironmentMetrics {
   id             String   @id @default("global")
   state          String   @default("running") // running | stopped

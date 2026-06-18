@@ -1,8 +1,9 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
-import { listClusters, listNamespaces, listDeployments, scaleDeployment } from '@/lib/k8s-client';
+import { listClusters, listNamespaces, listDeployments, scaleDeployment, getClusterReadyNodeCount } from '@/lib/k8s-client';
 import argocdClient from '@/lib/argocd-client';
 import { logActivityFromRequest } from '@/lib/activity';
+import { buildShutdownActivityDetails } from '@/lib/shutdown-node-count';
 import { setEnvironmentState } from '@/lib/environment-metrics';
 import { invalidateWorkloadCache } from '@/lib/workload-scan';
 
@@ -29,6 +30,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
     }
 
     const cluster = clusters[0];
+    const nodeCount = action === 'stop' ? await getClusterReadyNodeCount(cluster.name) : null;
     let namespaces: string[] = [];
     try {
       namespaces = await listNamespaces(cluster.name);
@@ -67,6 +69,10 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
             triggeredBy: req.user?.email ?? 'infra-control',
             status: 'success',
             message: `Infrastructure ${action}: scaled ${dep.name} to ${replicas}`,
+            details:
+              action === 'stop'
+                ? buildShutdownActivityDetails(undefined, nodeCount)
+                : undefined,
           });
 
           results.push({ namespace: ns, app: dep.name, status: 'success' });

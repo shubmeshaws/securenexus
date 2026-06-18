@@ -1,9 +1,10 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
-import { scaleDeployment, listPods } from '@/lib/k8s-client';
+import { scaleDeployment, listPods, getClusterReadyNodeCount } from '@/lib/k8s-client';
 import { invalidateWorkloadCache } from '@/lib/workload-scan';
 import { scaleDeploymentSchema } from '@/lib/validation';
 import { logActivityFromRequest } from '@/lib/activity';
+import { buildShutdownActivityDetails } from '@/lib/shutdown-node-count';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   const { cluster, ns, name } = req.query;
@@ -19,6 +20,8 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   }
 
   try {
+    const nodeCount =
+      parsed.data.replicas === 0 ? await getClusterReadyNodeCount(cluster) : null;
     const deployment = await scaleDeployment(cluster, ns, name, parsed.data.replicas);
     const pods = await listPods(cluster, ns, name);
 
@@ -30,6 +33,10 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
       triggeredBy: req.user?.email ?? 'manual',
       status: 'success',
       message: `Scaled to ${parsed.data.replicas} replicas`,
+      details:
+        parsed.data.replicas === 0
+          ? buildShutdownActivityDetails(undefined, nodeCount)
+          : undefined,
     });
 
     invalidateWorkloadCache();

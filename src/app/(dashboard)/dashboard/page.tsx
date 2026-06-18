@@ -18,7 +18,7 @@ import {
   PanelHeader,
   ScrollTable,
 } from '@/components/pod-scheduler/ui-primitives';
-import CostSavingsTrend from '@/components/dashboard/cost-savings-trend';
+import NodeCountTrend from '@/components/dashboard/node-count-trend';
 import ScheduleActionsChart from '@/components/dashboard/schedule-actions-chart';
 import DashboardDateFilter from '@/components/dashboard/dashboard-date-filter';
 import { StoppedDurationBar } from '@/components/dashboard/stopped-duration-bar';
@@ -170,7 +170,7 @@ export default function PodSchedulerOverviewPage() {
       )}
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <CostSavingsTrend dateRange={dateRange} />
+        <NodeCountTrend dateRange={dateRange} />
         <ScheduleActionsChart dateRange={dateRange} />
       </div>
 
