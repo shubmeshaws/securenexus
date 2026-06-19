@@ -106,6 +106,7 @@ export function AdminRetentionPanel() {
       queryClient.invalidateQueries({ queryKey: ['resource-audit'] });
       queryClient.invalidateQueries({ queryKey: ['resource-audit-summary'] });
       queryClient.invalidateQueries({ queryKey: ['node-changes'] });
+      queryClient.invalidateQueries({ queryKey: ['pod-changes'] });
       queryClient.invalidateQueries({ queryKey: ['node-count-trend'] });
     },
     onError: (err: Error) => {
@@ -237,7 +238,7 @@ export function AdminRetentionPanel() {
       </GlassPanel>
 
       <GlassPanel className="p-5">
-        <PanelHeader title="Node count samples" icon={Boxes} accent="violet" />
+        <PanelHeader title="Node & pod count samples" icon={Boxes} accent="violet" />
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label>Retention period (days)</Label>
@@ -249,8 +250,8 @@ export function AdminRetentionPanel() {
               onChange={(e) => setNodeSampleRetentionDays(parseInt(e.target.value, 10) || 90)}
             />
             <p className="text-[11px] text-muted-foreground">
-              Hourly ready-node samples for Node count trend and Node changes are kept for this many days.
-              Minimum 7 days.
+              Hourly node and pod count samples for Node count trend, Node changes, and Pod changes are
+              kept for this many days. Minimum 7 days.
             </p>
           </div>
           <div className="space-y-2">
@@ -261,7 +262,7 @@ export function AdminRetentionPanel() {
               onChange={(e) => setNodeSampleDataStartDate(e.target.value)}
             />
             <p className="text-[11px] text-muted-foreground">
-              Node count capture begins on this date. Leave empty to use retention window only.
+              Node and pod count capture begins on this date. Leave empty to use retention window only.
             </p>
           </div>
           <div className="space-y-2 sm:col-span-2">

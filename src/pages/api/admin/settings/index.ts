@@ -7,6 +7,7 @@ import { pruneResourceAuditDataByRetention } from '@/lib/resource-audit-retentio
 import { pruneActivityLogsByRetention } from '@/lib/activity';
 import { pruneNodeSamplesByRetention, pruneNodeSamplesBeforeCaptureStart } from '@/lib/node-sample-retention';
 import { invalidateNodeChangesCache } from '@/lib/node-changes-service';
+import { invalidatePodChangesCache } from '@/lib/pod-changes-service';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -74,6 +75,7 @@ async function putHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (nodeSampleRetentionTouched) {
     const deleted = await pruneNodeSamplesByRetention();
     invalidateNodeChangesCache();
+    invalidatePodChangesCache();
     if (deleted > 0) {
       console.log(`[NodeCount] Retention prune: ${deleted} hourly samples removed`);
     }
@@ -82,6 +84,7 @@ async function putHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (nodeSampleStartTouched) {
     const deleted = await pruneNodeSamplesBeforeCaptureStart();
     invalidateNodeChangesCache();
+    invalidatePodChangesCache();
     if (deleted > 0) {
       console.log(`[NodeCount] Capture start prune: ${deleted} hourly samples removed`);
     }

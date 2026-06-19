@@ -23,6 +23,7 @@ import ScheduleActionsChart from '@/components/dashboard/schedule-actions-chart'
 import DashboardDateFilter from '@/components/dashboard/dashboard-date-filter';
 import { DashboardTabs, type DashboardTab } from '@/components/dashboard/dashboard-tabs';
 import { DashboardNodeChanges } from '@/components/dashboard/dashboard-node-changes';
+import { DashboardPodChanges } from '@/components/dashboard/dashboard-pod-changes';
 import {
   DashboardFilterBar,
   DashboardFilterSelect,
@@ -425,6 +426,10 @@ export default function PodSchedulerOverviewPage() {
 
       <div className={tab === 'node-changes' ? undefined : 'hidden'} aria-hidden={tab !== 'node-changes'}>
         <DashboardNodeChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
+      </div>
+
+      <div className={tab === 'pod-changes' ? undefined : 'hidden'} aria-hidden={tab !== 'pod-changes'}>
+        <DashboardPodChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
       </div>
     </div>
   );

@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 
-export type DashboardTab = 'overview' | 'node-changes';
+export type DashboardTab = 'overview' | 'node-changes' | 'pod-changes';
 
 export function DashboardTabs({
   active,
@@ -14,6 +14,7 @@ export function DashboardTabs({
   const tabs: { id: DashboardTab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'node-changes', label: 'Node changes' },
+    { id: 'pod-changes', label: 'Pod changes' },
   ];
 
   return (

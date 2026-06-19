@@ -261,8 +261,8 @@ export default function NodeCountTrend({
         }
       />
       <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
-        {nodeCountMetricLabel(metric)} before and after the first EKS shutdown each day · hourly ready-node
-        samples · {periodLabel}
+        {nodeCountMetricLabel(metric)} during daytime (after startup, before shutdown) vs stopped hours · hourly
+        ready-node samples · {periodLabel}
         {chartData.isTodayLive ? ' · today live until midnight' : ''}
         {isFetching ? ' · updating…' : ''}
       </p>

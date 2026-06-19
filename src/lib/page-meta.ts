@@ -30,6 +30,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     iconClass: 'text-violet-700',
     accent: 'violet',
   },
+  '/dashboard/pod-changes': {
+    title: 'Pod changes',
+    subtitle: 'Hourly running pod count changes',
+    icon: Icons.pages.dashboard,
+    gradient: 'from-sky-500 via-cyan-600 to-teal-600',
+    ring: 'ring-sky-500/25',
+    iconClass: 'text-sky-700',
+    accent: 'sky',
+  },
   '/infrastructure': {
     title: 'Infrastructure',
     subtitle: 'Workload control plane',

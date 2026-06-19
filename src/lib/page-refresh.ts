@@ -6,6 +6,7 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
     ['node-count-trend'],
     ['schedule-actions'],
     ['node-changes'],
+    ['pod-changes'],
   ],
   '/infrastructure': [
     ['infrastructure'],

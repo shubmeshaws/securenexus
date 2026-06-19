@@ -85,17 +85,27 @@ export async function pruneNodeSamplesByRetention(now: Date = new Date()): Promi
   const effectiveCutoff =
     captureStart && captureStart > retentionCutoff ? captureStart : retentionCutoff;
 
-  const result = await prisma.clusterNodeHourlySample.deleteMany({
-    where: { sampledAt: { lt: effectiveCutoff } },
-  });
-  return result.count;
+  const [nodeResult, podResult] = await Promise.all([
+    prisma.clusterNodeHourlySample.deleteMany({
+      where: { sampledAt: { lt: effectiveCutoff } },
+    }),
+    prisma.clusterPodHourlySample.deleteMany({
+      where: { sampledAt: { lt: effectiveCutoff } },
+    }),
+  ]);
+  return nodeResult.count + podResult.count;
 }
 
 export async function pruneNodeSamplesBeforeCaptureStart(): Promise<number> {
   const captureStart = await getNodeSampleCaptureStartAt();
   if (!captureStart) return 0;
-  const result = await prisma.clusterNodeHourlySample.deleteMany({
-    where: { sampledAt: { lt: captureStart } },
-  });
-  return result.count;
+  const [nodeResult, podResult] = await Promise.all([
+    prisma.clusterNodeHourlySample.deleteMany({
+      where: { sampledAt: { lt: captureStart } },
+    }),
+    prisma.clusterPodHourlySample.deleteMany({
+      where: { sampledAt: { lt: captureStart } },
+    }),
+  ]);
+  return nodeResult.count + podResult.count;
 }

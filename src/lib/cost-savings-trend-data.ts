@@ -68,8 +68,10 @@ function dayBounds(day: Date, tz: string): { start: Date; end: Date } {
   };
 }
 
-export function resolveCostTrendBuckets(query: CostTrendQuery = {}): DayBucket[] {
-  const tz = COST_CALENDAR_TZ;
+export function resolveCostTrendBuckets(
+  query: CostTrendQuery = {},
+  tz: string = COST_CALENDAR_TZ
+): DayBucket[] {
   const now = new Date();
 
   if (query.from && query.to) {
@@ -103,9 +105,11 @@ export function resolveCostTrendBuckets(query: CostTrendQuery = {}): DayBucket[]
   });
 }
 
-export function previousPeriodBuckets(buckets: DayBucket[]): DayBucket[] {
+export function previousPeriodBuckets(
+  buckets: DayBucket[],
+  tz: string = COST_CALENDAR_TZ
+): DayBucket[] {
   if (!buckets.length) return [];
-  const tz = COST_CALENDAR_TZ;
   const firstDay = toZonedTime(buckets[0].start, tz);
   const count = buckets.length;
   return Array.from({ length: count }, (_, index) => {

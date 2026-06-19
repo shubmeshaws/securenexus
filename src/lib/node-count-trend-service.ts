@@ -1,5 +1,6 @@
-import { subDays } from 'date-fns';
-import { SHUTDOWN_ACTIONS } from './dashboard-schedule-actions';
+import { max as maxDate, subDays } from 'date-fns';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { SHUTDOWN_ACTIONS, STARTUP_ACTIONS } from './dashboard-schedule-actions';
 import { isEksShutdownLog } from './shutdown-node-count';
 import {
   previousPeriodBuckets,
@@ -10,29 +11,24 @@ import {
   type NodeCountTrendQuery,
   type NodeCountTrendResponse,
 } from './node-count-trend-data';
-import {
-  getCalendarDateAndHour,
-  listRegisteredClusterNames,
-  sampleRegisteredClusters,
-} from './node-count-sampler';
+import { listRegisteredClusterNames, sampleRegisteredClusters } from './node-count-sampler';
 import { getNodeSampleCaptureStartAt } from './node-sample-retention';
+import { IST_TIMEZONE } from './utils';
 import prisma from './prisma';
 
 const CACHE_TTL_MS = 30_000;
 let trendCache: { key: string; at: number; data: NodeCountTrendResponse } | null = null;
 
 interface HourlySampleRow {
-  clusterName: string;
-  calendarDate: string;
-  hour: number;
   nodeCount: number;
   sampledAt: Date;
 }
 
-interface ShutdownLogRow {
+interface ScheduleEventLogRow {
   cluster: string;
   timestamp: Date;
   details: string | null;
+  action: string;
 }
 
 interface HourlyPoint {
@@ -58,64 +54,111 @@ function clusterMatches(logCluster: string, selectedCluster: string): boolean {
   return logCluster === selectedCluster || logCluster.endsWith(`/${selectedCluster}`);
 }
 
+function istCalendarDate(sampledAt: Date): string {
+  return formatInTimeZone(sampledAt, IST_TIMEZONE, 'yyyy-MM-dd');
+}
+
+function istDayBounds(calendarDate: string): { start: Date; end: Date } {
+  return {
+    start: fromZonedTime(`${calendarDate}T00:00:00`, IST_TIMEZONE),
+    end: fromZonedTime(`${calendarDate}T23:59:59.999`, IST_TIMEZONE),
+  };
+}
+
 function buildHourlyIndex(
-  samples: HourlySampleRow[]
-): Map<string, Map<string, HourlyPoint[]>> {
-  const index = new Map<string, Map<string, HourlyPoint[]>>();
+  samples: HourlySampleRow[],
+  calendarDates: Set<string>
+): Map<string, HourlyPoint[]> {
+  const index = new Map<string, HourlyPoint[]>();
+
   for (const row of samples) {
-    if (!index.has(row.clusterName)) index.set(row.clusterName, new Map());
-    const byDate = index.get(row.clusterName)!;
-    if (!byDate.has(row.calendarDate)) byDate.set(row.calendarDate, []);
-    byDate.get(row.calendarDate)!.push({
+    const date = istCalendarDate(row.sampledAt);
+    if (!calendarDates.has(date)) continue;
+
+    if (!index.has(date)) index.set(date, []);
+    index.get(date)!.push({
       nodeCount: row.nodeCount,
       sampledAt: row.sampledAt,
     });
   }
-  for (const byDate of Array.from(index.values())) {
-    for (const points of Array.from(byDate.values())) {
-      points.sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
-    }
+
+  for (const points of Array.from(index.values())) {
+    points.sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
   }
+
   return index;
 }
 
-function firstShutdownOnDay(
-  logs: ShutdownLogRow[],
+function isScheduleEventLog(details: string | null): boolean {
+  return isEksShutdownLog(details);
+}
+
+function firstEventOnDay(
+  logs: ScheduleEventLogRow[],
   clusterName: string,
-  calendarDate: string
+  calendarDate: string,
+  actions: readonly string[]
 ): Date | null {
   const matches = logs
     .filter((log) => {
       if (!clusterMatches(log.cluster, clusterName)) return false;
-      if (!isEksShutdownLog(log.details)) return false;
-      const { date } = getCalendarDateAndHour(log.timestamp);
-      return date === calendarDate;
+      if (!isScheduleEventLog(log.details)) return false;
+      if (!actions.includes(log.action)) return false;
+      return istCalendarDate(log.timestamp) === calendarDate;
     })
     .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   return matches[0]?.timestamp ?? null;
 }
 
+function isBeforeStopSample(
+  sampledAt: Date,
+  startupAt: Date | null,
+  shutdownAt: Date | null
+): boolean {
+  const t = sampledAt.getTime();
+
+  if (startupAt && shutdownAt) {
+    const startupMs = startupAt.getTime();
+    const shutdownMs = shutdownAt.getTime();
+    if (startupMs < shutdownMs) {
+      return t >= startupMs && t < shutdownMs;
+    }
+    if (shutdownMs < startupMs) {
+      return t >= startupMs;
+    }
+    return false;
+  }
+
+  if (startupAt) {
+    return t >= startupAt.getTime();
+  }
+
+  if (shutdownAt) {
+    return t < shutdownAt.getTime();
+  }
+
+  return true;
+}
+
 function splitBeforeAfter(
   points: HourlyPoint[],
+  startupAt: Date | null,
   shutdownAt: Date | null,
   metric: NodeCountMetric
 ): { before: number; after: number } {
   if (!points.length) return { before: 0, after: 0 };
-  if (!shutdownAt) {
-    return {
-      before: aggregateValues(
-        points.map((point) => point.nodeCount),
-        metric
-      ),
-      after: 0,
-    };
+
+  const beforeValues: number[] = [];
+  const afterValues: number[] = [];
+
+  for (const point of points) {
+    if (isBeforeStopSample(point.sampledAt, startupAt, shutdownAt)) {
+      beforeValues.push(point.nodeCount);
+    } else {
+      afterValues.push(point.nodeCount);
+    }
   }
-  const beforeValues = points
-    .filter((point) => point.sampledAt < shutdownAt)
-    .map((point) => point.nodeCount);
-  const afterValues = points
-    .filter((point) => point.sampledAt >= shutdownAt)
-    .map((point) => point.nodeCount);
+
   return {
     before: aggregateValues(beforeValues, metric),
     after: aggregateValues(afterValues, metric),
@@ -125,18 +168,18 @@ function splitBeforeAfter(
 function dailyBeforeAfterForCluster(
   clusterName: string,
   buckets: DayBucket[],
-  hourlyIndex: Map<string, Map<string, HourlyPoint[]>>,
-  shutdownLogs: ShutdownLogRow[],
+  hourlyIndex: Map<string, HourlyPoint[]>,
+  scheduleLogs: ScheduleEventLogRow[],
   metric: NodeCountMetric
 ): { before: number[]; after: number[] } {
-  const byDate = hourlyIndex.get(clusterName);
   const before: number[] = [];
   const after: number[] = [];
 
   for (const bucket of buckets) {
-    const points = byDate?.get(bucket.date) ?? [];
-    const shutdownAt = firstShutdownOnDay(shutdownLogs, clusterName, bucket.date);
-    const split = splitBeforeAfter(points, shutdownAt, metric);
+    const points = hourlyIndex.get(bucket.date) ?? [];
+    const startupAt = firstEventOnDay(scheduleLogs, clusterName, bucket.date, STARTUP_ACTIONS);
+    const shutdownAt = firstEventOnDay(scheduleLogs, clusterName, bucket.date, SHUTDOWN_ACTIONS);
+    const split = splitBeforeAfter(points, startupAt, shutdownAt, metric);
     before.push(split.before);
     after.push(split.after);
   }
@@ -222,10 +265,10 @@ function cacheKey(query: NodeCountTrendQuery): string {
   return JSON.stringify(query);
 }
 
-async function fetchShutdownLogs(since: Date, until: Date): Promise<ShutdownLogRow[]> {
+async function fetchScheduleEventLogs(since: Date, until: Date): Promise<ScheduleEventLogRow[]> {
   return prisma.activityLog.findMany({
     where: {
-      action: { in: [...SHUTDOWN_ACTIONS] },
+      action: { in: [...SHUTDOWN_ACTIONS, ...STARTUP_ACTIONS] },
       status: 'success',
       timestamp: { gte: since, lte: until },
     },
@@ -235,6 +278,30 @@ async function fetchShutdownLogs(since: Date, until: Date): Promise<ShutdownLogR
       cluster: true,
       timestamp: true,
       details: true,
+      action: true,
+    },
+  });
+}
+
+async function fetchSamplesForRange(
+  clusterName: string,
+  startDate: string,
+  endDate: string,
+  captureStart: Date | null
+): Promise<HourlySampleRow[]> {
+  const { start: rangeStart } = istDayBounds(startDate);
+  const { end: rangeEnd } = istDayBounds(endDate);
+  const sampleStart = maxDate([rangeStart, captureStart ?? rangeStart]);
+
+  return prisma.clusterNodeHourlySample.findMany({
+    where: {
+      clusterName,
+      sampledAt: { gte: sampleStart, lte: rangeEnd },
+    },
+    orderBy: { sampledAt: 'asc' },
+    select: {
+      nodeCount: true,
+      sampledAt: true,
     },
   });
 }
@@ -262,71 +329,54 @@ export async function getNodeCountTrendData(
   await sampleRegisteredClusters();
 
   const now = new Date();
-  const { date: todayDate } = getCalendarDateAndHour(now);
-  const buckets = resolveCostTrendBuckets(query);
+  const todayDate = formatInTimeZone(now, IST_TIMEZONE, 'yyyy-MM-dd');
+  const buckets = resolveCostTrendBuckets(query, IST_TIMEZONE);
   if (!buckets.length) {
     return emptyResponse(metric, selectedCluster, availableClusters);
   }
 
-  const calendarDates = buckets.map((bucket) => bucket.date);
+  const calendarDates = new Set(buckets.map((bucket) => bucket.date));
   const lookbackStart = subDays(buckets[0].start, 1);
   const rangeEnd = buckets[buckets.length - 1].end;
   const captureStart = await getNodeSampleCaptureStartAt();
-  const sampleTimeFilter = captureStart ? { sampledAt: { gte: captureStart } } : {};
 
-  const [samples, shutdownLogs] = await Promise.all([
-    prisma.clusterNodeHourlySample.findMany({
-      where: {
-        clusterName: selectedCluster,
-        calendarDate: { in: calendarDates },
-        ...sampleTimeFilter,
-      },
-      select: {
-        clusterName: true,
-        calendarDate: true,
-        hour: true,
-        nodeCount: true,
-        sampledAt: true,
-      },
-    }),
-    fetchShutdownLogs(lookbackStart, rangeEnd),
+  const [samples, scheduleLogs] = await Promise.all([
+    fetchSamplesForRange(
+      selectedCluster,
+      buckets[0].date,
+      buckets[buckets.length - 1].date,
+      captureStart
+    ),
+    fetchScheduleEventLogs(lookbackStart, rangeEnd),
   ]);
 
-  const hourlyIndex = buildHourlyIndex(samples);
+  const hourlyIndex = buildHourlyIndex(samples, calendarDates);
   const { before, after } = dailyBeforeAfterForCluster(
     selectedCluster,
     buckets,
     hourlyIndex,
-    shutdownLogs,
+    scheduleLogs,
     metric
   );
 
-  const prevBuckets = previousPeriodBuckets(buckets);
-  const prevDates = prevBuckets.map((bucket) => bucket.date);
+  const prevBuckets = previousPeriodBuckets(buckets, IST_TIMEZONE);
+  const prevDates = new Set(prevBuckets.map((bucket) => bucket.date));
   const prevSamples =
-    prevDates.length > 0
-      ? await prisma.clusterNodeHourlySample.findMany({
-          where: {
-            clusterName: selectedCluster,
-            calendarDate: { in: prevDates },
-            ...sampleTimeFilter,
-          },
-          select: {
-            clusterName: true,
-            calendarDate: true,
-            hour: true,
-            nodeCount: true,
-            sampledAt: true,
-          },
-        })
+    prevBuckets.length > 0
+      ? await fetchSamplesForRange(
+          selectedCluster,
+          prevBuckets[0].date,
+          prevBuckets[prevBuckets.length - 1].date,
+          captureStart
+        )
       : [];
-  const prevIndex = buildHourlyIndex(prevSamples);
+  const prevIndex = buildHourlyIndex(prevSamples, prevDates);
   const prevRange = prevBuckets.length
     ? dailyBeforeAfterForCluster(
         selectedCluster,
         prevBuckets,
         prevIndex,
-        shutdownLogs,
+        scheduleLogs,
         metric
       )
     : { before: [], after: [] };

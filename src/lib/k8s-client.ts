@@ -457,6 +457,22 @@ export async function getClusterReadyNodeCount(cluster: string): Promise<number 
   }
 }
 
+/** Running pods across all namespaces in a cluster. */
+export async function getClusterRunningPodCount(cluster: string): Promise<number | null> {
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.CoreV1Api);
+    const res = await api.listPodForAllNamespaces();
+    let running = 0;
+    for (const pod of res.body.items ?? []) {
+      if (pod.status?.phase === 'Running') running += 1;
+    }
+    return running;
+  } catch {
+    return null;
+  }
+}
+
 export async function getWorkloadDesiredReplicas(
   cluster: string,
   namespace: string,
