@@ -21,6 +21,7 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
   '/resource-audit': [['resource-audit'], ['resource-audit-summary']],
   '/activity': [['activity']],
   '/alerts': [['alert-settings'], ['notifications']],
+  '/security': [['security-resources'], ['security-tools'], ['security-reports'], ['security-scan-jobs']],
   '/admin': [
     ['admin-users'],
     ['admin-settings'],

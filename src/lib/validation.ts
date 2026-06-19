@@ -16,7 +16,7 @@ export const scaleDeploymentSchema = z.object({
 
 const workloadKeySchema = z
   .string()
-  .regex(/^(Deployment|StatefulSet|DaemonSet)::.+$/);
+  .regex(/^(Deployment|StatefulSet|DaemonSet|CronJob|ScaledJob)::.+$/);
 
 const scheduleIdentitySchema = z.object({
   name: z.string().min(1).max(100),
@@ -26,7 +26,7 @@ const scheduleIdentitySchema = z.object({
   scope: z.enum(['workload', 'namespace']).optional().default('workload'),
   appName: z.string().optional(),
   workloadKind: z
-    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace', 'EC2'])
+    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'Namespace', 'EC2'])
     .optional()
     .default('Deployment'),
   excludedWorkloads: z.array(workloadKeySchema).optional().default([]),
@@ -180,7 +180,7 @@ export const updateScheduleBodySchema = z
     scope: z.enum(['workload', 'namespace']).optional(),
     appName: z.string().optional(),
     workloadKind: z
-      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'Namespace', 'EC2'])
+      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'Namespace', 'EC2'])
       .optional(),
     excludedWorkloads: z.array(workloadKeySchema).optional(),
     awsCredentialId: z.union([z.string().min(1), z.null()]).optional(),

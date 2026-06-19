@@ -60,8 +60,10 @@ export async function resolveAuthUserFromToken(
   }
 }
 
+type HandlerReturn = void | NextApiResponse;
+
 export function requireAuth(
-  handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<void> | void
+  handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<HandlerReturn> | HandlerReturn
 ) {
   return async (req: AuthenticatedRequest, res: NextApiResponse) => {
     const token = getTokenFromRequest(req);
@@ -84,7 +86,7 @@ export function requireAuth(
 }
 
 export function requireAdmin(
-  handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<void> | void
+  handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<HandlerReturn> | HandlerReturn
 ) {
   return requireAuth(async (req, res) => {
     if (!req.user || req.user.role !== 'admin') {
@@ -94,7 +96,10 @@ export function requireAdmin(
   });
 }
 
-export type ApiHandler = (req: AuthenticatedRequest, res: NextApiResponse) => Promise<void> | void;
+export type ApiHandler = (
+  req: AuthenticatedRequest,
+  res: NextApiResponse
+) => Promise<HandlerReturn> | HandlerReturn;
 
 export function methodNotAllowed(res: NextApiResponse, allowed: string[]) {
   res.setHeader('Allow', allowed);

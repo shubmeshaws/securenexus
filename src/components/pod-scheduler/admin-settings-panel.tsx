@@ -19,6 +19,7 @@ import { AwsCredentialsPanel } from '@/components/pod-scheduler/aws-credentials-
 import { BitbucketIntegrationPanel } from '@/components/pod-scheduler/bitbucket-integration-panel';
 import { DevOpsContactsPanel } from '@/components/pod-scheduler/devops-contacts-panel';
 import { NewUserAccessSettingCard } from '@/components/pod-scheduler/new-user-access-setting';
+import { SecurityModuleSettingCard } from '@/components/pod-scheduler/security-module-setting';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,6 +42,7 @@ export interface AdminSettings {
   resourceAuditRetentionAmount: number;
   resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
   resourceAuditDataStartDate: string;
+  securityModuleEnabled: boolean;
 }
 
 export function AdminSettingsPanel() {
@@ -88,6 +90,7 @@ export function AdminSettingsPanel() {
     onSuccess: () => {
       setSaveFeedback({ ok: true, message: 'Changes saved' });
       queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['public-settings'] });
       queryClient.invalidateQueries({ queryKey: ['public-settings'] });
       queryClient.invalidateQueries({ queryKey: ['overview'] });
       queryClient.invalidateQueries({ queryKey: ['argocd-apps'] });
@@ -189,6 +192,7 @@ export function AdminSettingsPanel() {
             </div>
             <Switch checked={demoMode} onCheckedChange={setDemoMode} />
           </div>
+          <SecurityModuleSettingCard />
           <div className="space-y-2">
             <Label className="flex items-center gap-1.5">
               <AppIcon icon={Database} size="sm" /> Redis URL

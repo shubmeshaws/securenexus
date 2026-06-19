@@ -25,6 +25,33 @@ function scheduleTeamsAlertFlag(schedule: Schedule) {
   return { teamsAlertEnabled: schedule.teamsAlertEnabled };
 }
 
+/** CronJobs/ScaledJobs are often managed via Argo apps with different names — pause whole namespace. */
+function shouldPauseNamespaceArgoSync(schedule: Schedule): boolean {
+  if (isNamespaceSchedule(schedule)) return true;
+  return schedule.workloadKind === 'CronJob' || schedule.workloadKind === 'ScaledJob';
+}
+
+async function pauseArgoForSchedule(schedule: Schedule): Promise<string> {
+  if (shouldPauseNamespaceArgoSync(schedule)) {
+    const paused = await pauseArgoSyncForNamespace(schedule);
+    if (paused.length) return ` · ArgoCD sync paused (${paused.length} apps)`;
+    return '';
+  }
+  const argoApp = await pauseArgoSync(schedule);
+  return argoApp ? ` · ArgoCD sync paused (${argoApp})` : '';
+}
+
+async function resumeArgoForSchedule(schedule: Schedule): Promise<string> {
+  if (schedule.syncPolicy !== 'automated') return '';
+  if (shouldPauseNamespaceArgoSync(schedule)) {
+    const resumed = await resumeArgoSyncForNamespace(schedule);
+    if (resumed.length) return ` · ArgoCD sync restored (${resumed.length} apps)`;
+    return '';
+  }
+  const argoApp = await resumeArgoSync(schedule);
+  return argoApp ? ` · ArgoCD sync restored (${argoApp})` : '';
+}
+
 interface WorkloadTarget {
   name: string;
   kind: WorkloadKind;
@@ -295,6 +322,7 @@ export async function executeShutdown(
     const nodeCount = await getClusterReadyNodeCount(schedule.cluster);
     const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
     const priorWorkloadSaves = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
+    const alertSchedule = fresh ?? schedule;
 
     const liveUpdate = options?.clearLive
       ? { liveActive: false, liveStartupAt: null }
@@ -304,6 +332,13 @@ export async function executeShutdown(
             liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
           }
         : {};
+
+    let argoNote = '';
+    try {
+      argoNote = await pauseArgoForSchedule(schedule);
+    } catch (err) {
+      argoNote = ` · ArgoCD sync pause failed: ${err instanceof Error ? err.message : 'unknown'}`;
+    }
 
     if (isNamespace) {
       const replicasMap: Record<string, number> = {};
@@ -364,26 +399,19 @@ export async function executeShutdown(
       await scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0);
     }
 
-    let argoNote = '';
-    try {
-      if (isNamespace) {
-        const paused = await pauseArgoSyncForNamespace(schedule);
-        if (paused.length) argoNote = ` · ArgoCD sync paused (${paused.length} apps)`;
-      } else {
-        const argoApp = await pauseArgoSync(schedule);
-        if (argoApp) argoNote = ` · ArgoCD sync paused (${argoApp})`;
-      }
-    } catch (err) {
-      argoNote = ` · ArgoCD sync pause failed: ${err instanceof Error ? err.message : 'unknown'}`;
-    }
-
     const savedForMessage = isNamespace
       ? null
       : (await prisma.schedule.findUnique({ where: { id: schedule.id } }))?.savedReplicas;
 
+    const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
+    const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
     const message = isNamespace
       ? `Scaled ${targets.length} workload(s) to 0 in ${schedule.namespace}${argoNote}`
-      : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
+      : isCronJobSchedule
+        ? `Suspended CronJob ${schedule.appName} and removed active jobs${argoNote}`
+        : isScaledJobSchedule
+          ? `Paused ScaledJob ${schedule.appName} and removed active jobs${argoNote}`
+          : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
 
     const activityDetails = buildShutdownActivityDetails(
       isNamespace
@@ -406,9 +434,11 @@ export async function executeShutdown(
       message,
       details: activityDetails,
       startTime: formatScheduleStartupLabel(schedule),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...scheduleTeamsAlertFlag(alertSchedule),
     });
   } catch (err) {
+    const alertSchedule =
+      (await prisma.schedule.findUnique({ where: { id: schedule.id } })) ?? schedule;
     await logActivity({
       action: 'schedule-shutdown',
       cluster: schedule.cluster,
@@ -427,7 +457,7 @@ export async function executeShutdown(
           : undefined,
         null
       ),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...scheduleTeamsAlertFlag(alertSchedule),
     });
     throw err;
   }
@@ -444,6 +474,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
   try {
     const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
+    const alertSchedule = fresh ?? schedule;
 
     if (isNamespace) {
       const savedMap = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
@@ -467,13 +498,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
     let argoNote = '';
     try {
-      if (isNamespace) {
-        const resumed = await resumeArgoSyncForNamespace(schedule);
-        if (resumed.length) argoNote = ` · ArgoCD sync restored (${resumed.length} apps)`;
-      } else {
-        const argoApp = await resumeArgoSync(schedule);
-        if (argoApp) argoNote = ` · ArgoCD sync restored (${argoApp})`;
-      }
+      argoNote = await resumeArgoForSchedule(schedule);
     } catch (err) {
       argoNote = ` · ArgoCD sync restore failed: ${err instanceof Error ? err.message : 'unknown'}`;
     }
@@ -482,9 +507,15 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       ? null
       : resolveStartupReplicas(schedule, fresh?.savedReplicas);
 
+    const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
+    const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
     const message = isNamespace
       ? `Restored ${targets.length} workload(s) in ${schedule.namespace}${argoNote}`
-      : `Scaled to ${restoredReplicas} replicas${argoNote}`;
+      : isCronJobSchedule
+        ? `Resumed CronJob ${schedule.appName}${argoNote}`
+        : isScaledJobSchedule
+          ? `Resumed ScaledJob ${schedule.appName}${argoNote}`
+          : `Scaled to ${restoredReplicas} replicas${argoNote}`;
 
     const startupDetails = isNamespace
       ? JSON.stringify({
@@ -503,9 +534,11 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       status: 'success',
       message,
       details: startupDetails,
-      ...scheduleTeamsAlertFlag(schedule),
+      ...scheduleTeamsAlertFlag(alertSchedule),
     });
   } catch (err) {
+    const alertSchedule =
+      (await prisma.schedule.findUnique({ where: { id: schedule.id } })) ?? schedule;
     await logActivity({
       action: 'schedule-startup',
       cluster: schedule.cluster,
@@ -521,7 +554,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
             count: targets.length,
           })
         : undefined,
-      ...scheduleTeamsAlertFlag(schedule),
+      ...scheduleTeamsAlertFlag(alertSchedule),
     });
     throw err;
   }

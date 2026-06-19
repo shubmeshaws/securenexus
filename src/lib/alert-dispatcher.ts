@@ -27,6 +27,28 @@ export interface AlertDispatchInput extends LogActivityParams {
   logId?: string;
 }
 
+const SCHEDULE_ALERT_ACTIONS = new Set<ActivityAction>([
+  'schedule-shutdown',
+  'schedule-startup',
+  'schedule-run',
+]);
+
+function shouldSendTeamsAlert(input: AlertDispatchInput, configTeamsEnabled: boolean): boolean {
+  if (!configTeamsEnabled) return false;
+  if (SCHEDULE_ALERT_ACTIONS.has(input.action)) {
+    return input.teamsAlertEnabled === true;
+  }
+  return input.teamsAlertEnabled !== false;
+}
+
+function shouldSendEmailAlert(input: AlertDispatchInput, configEmailEnabled: boolean): boolean {
+  if (!configEmailEnabled) return false;
+  if (SCHEDULE_ALERT_ACTIONS.has(input.action)) {
+    return input.teamsAlertEnabled === true;
+  }
+  return true;
+}
+
 function buildPayload(input: AlertDispatchInput) {
   return {
     title: ACTION_TITLES[input.action] ?? input.action,
@@ -73,14 +95,14 @@ export async function dispatchAlerts(input: AlertDispatchInput): Promise<void> {
     const payload = buildPayload(input);
     const tasks: Promise<unknown>[] = [];
 
-    if (config.teamsEnabled && input.teamsAlertEnabled !== false) {
+    if (shouldSendTeamsAlert(input, config.teamsEnabled)) {
       const webhookUrl = await getTeamsWebhookUrl();
       if (webhookUrl) {
         tasks.push(sendTeamsWebhook(webhookUrl, payload));
       }
     }
 
-    if (config.emailEnabled) {
+    if (shouldSendEmailAlert(input, config.emailEnabled)) {
       tasks.push(sendEmailAlert(config, payload));
     }
 

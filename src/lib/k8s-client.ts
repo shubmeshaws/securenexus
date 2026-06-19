@@ -9,7 +9,10 @@ export interface ClusterInfo {
   current: boolean;
 }
 
-export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet';
+export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet' | 'CronJob' | 'ScaledJob';
+
+/** KEDA annotation that pauses/resumes a ScaledJob's scale loop. */
+const KEDA_PAUSED_ANNOTATION = 'autoscaling.keda.sh/paused';
 
 export interface WorkloadInfo {
   name: string;
@@ -201,13 +204,23 @@ export async function listDeployments(cluster: string, namespace: string): Promi
 
 export async function listWorkloads(cluster: string, namespace: string): Promise<WorkloadInfo[]> {
   const kc = await getConfigForCluster(cluster);
-  const api = kc.makeApiClient(k8s.AppsV1Api);
+  const appsApi = kc.makeApiClient(k8s.AppsV1Api);
+  const batchApi = kc.makeApiClient(k8s.BatchV1Api);
+  const customApi = kc.makeApiClient(k8s.CustomObjectsApi);
 
-  const [deployments, statefulSets, daemonSets] = await Promise.all([
-    api.listNamespacedDeployment(namespace).catch(() => ({ body: { items: [] as k8s.V1Deployment[] } })),
-    api.listNamespacedStatefulSet(namespace).catch(() => ({ body: { items: [] as k8s.V1StatefulSet[] } })),
-    api.listNamespacedDaemonSet(namespace).catch(() => ({ body: { items: [] as k8s.V1DaemonSet[] } })),
+  const [deployments, statefulSets, daemonSets, cronJobs, scaledJobsRes] = await Promise.all([
+    appsApi.listNamespacedDeployment(namespace).catch(() => ({ body: { items: [] as k8s.V1Deployment[] } })),
+    appsApi.listNamespacedStatefulSet(namespace).catch(() => ({ body: { items: [] as k8s.V1StatefulSet[] } })),
+    appsApi.listNamespacedDaemonSet(namespace).catch(() => ({ body: { items: [] as k8s.V1DaemonSet[] } })),
+    batchApi.listNamespacedCronJob(namespace).catch(() => ({ body: { items: [] as k8s.V1CronJob[] } })),
+    customApi
+      .listNamespacedCustomObject('keda.sh', 'v1alpha1', namespace, 'scaledjobs')
+      .catch(() => null),
   ]);
+
+  const scaledJobItems =
+    (scaledJobsRes?.body as { items?: Array<{ metadata?: { name?: string } }> } | undefined)?.items ??
+    [];
 
   const workloads: WorkloadInfo[] = [];
 
@@ -222,6 +235,14 @@ export async function listWorkloads(cluster: string, namespace: string): Promise
   for (const ds of daemonSets.body.items ?? []) {
     const name = ds.metadata?.name;
     if (name) workloads.push({ name, kind: 'DaemonSet', namespace, cluster });
+  }
+  for (const cj of cronJobs.body.items ?? []) {
+    const name = cj.metadata?.name;
+    if (name) workloads.push({ name, kind: 'CronJob', namespace, cluster });
+  }
+  for (const sj of scaledJobItems) {
+    const name = sj.metadata?.name;
+    if (name) workloads.push({ name, kind: 'ScaledJob', namespace, cluster });
   }
 
   return workloads.sort((a, b) => a.name.localeCompare(b.name));
@@ -480,16 +501,39 @@ export async function getWorkloadDesiredReplicas(
   name: string
 ): Promise<number> {
   const kc = await getConfigForCluster(cluster);
-  const api = kc.makeApiClient(k8s.AppsV1Api);
 
   if (kind === 'Deployment') {
+    const api = kc.makeApiClient(k8s.AppsV1Api);
     const res = await api.readNamespacedDeployment(name, namespace);
     return res.body.spec?.replicas ?? 0;
   }
 
   if (kind === 'StatefulSet') {
+    const api = kc.makeApiClient(k8s.AppsV1Api);
     const res = await api.readNamespacedStatefulSet(name, namespace);
     return res.body.spec?.replicas ?? 0;
+  }
+
+  if (kind === 'CronJob') {
+    const api = kc.makeApiClient(k8s.BatchV1Api);
+    const res = await api.readNamespacedCronJob(name, namespace);
+    return res.body.spec?.suspend ? 0 : 1;
+  }
+
+  if (kind === 'ScaledJob') {
+    const api = kc.makeApiClient(k8s.CustomObjectsApi);
+    const res = await api.getNamespacedCustomObject(
+      'keda.sh',
+      'v1alpha1',
+      namespace,
+      'scaledjobs',
+      name
+    );
+    const body = res.body as {
+      metadata?: { annotations?: Record<string, string> };
+    };
+    const paused = body.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
+    return paused === 'true' ? 0 : 1;
   }
 
   return 0;
@@ -518,6 +562,195 @@ export async function scaleStatefulSet(
   );
 }
 
+async function setCronJobSuspended(
+  cluster: string,
+  namespace: string,
+  name: string,
+  suspend: boolean
+): Promise<void> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.BatchV1Api);
+
+  await api.patchNamespacedCronJob(
+    name,
+    namespace,
+    { spec: { suspend } },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { headers: { 'Content-Type': 'application/merge-patch+json' } }
+  );
+
+  const verify = await api.readNamespacedCronJob(name, namespace);
+  const actual = verify.body.spec?.suspend ?? false;
+  if (actual !== suspend) {
+    throw new Error(
+      `Failed to ${suspend ? 'suspend' : 'resume'} CronJob "${name}" (spec.suspend is still ${actual})`
+    );
+  }
+}
+
+function cronJobOwnsJob(cronJobName: string, job: k8s.V1Job): boolean {
+  const owners = job.metadata?.ownerReferences ?? [];
+  if (owners.some((owner) => owner.kind === 'CronJob' && owner.name === cronJobName)) {
+    return true;
+  }
+  const labelName = job.metadata?.labels?.['cronjob.kubernetes.io/name'];
+  return labelName === cronJobName;
+}
+
+/** Remove Jobs owned by a CronJob so scheduled pods stop running. */
+async function deleteActiveCronJobJobs(
+  cluster: string,
+  namespace: string,
+  cronJobName: string
+): Promise<number> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.BatchV1Api);
+  const res = await api.listNamespacedJob(namespace);
+  let deleted = 0;
+
+  for (const job of res.body.items ?? []) {
+    if (!cronJobOwnsJob(cronJobName, job)) continue;
+
+    const jobName = job.metadata?.name;
+    if (!jobName) continue;
+
+    try {
+      await api.deleteNamespacedJob(
+        jobName,
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'Foreground'
+      );
+      deleted += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'delete failed';
+      throw new Error(`Failed to delete Job "${jobName}" for CronJob "${cronJobName}": ${message}`);
+    }
+  }
+
+  return deleted;
+}
+
+async function suspendCronJob(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<void> {
+  await setCronJobSuspended(cluster, namespace, name, true);
+  await deleteActiveCronJobJobs(cluster, namespace, name);
+}
+
+/** Pause/resume a KEDA ScaledJob via the official annotation (stops the scale loop). */
+async function setScaledJobPaused(
+  cluster: string,
+  namespace: string,
+  name: string,
+  paused: boolean
+): Promise<void> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.CustomObjectsApi);
+
+  const body = {
+    metadata: {
+      annotations: { [KEDA_PAUSED_ANNOTATION]: paused ? 'true' : 'false' },
+    },
+  };
+
+  await api.patchNamespacedCustomObject(
+    'keda.sh',
+    'v1alpha1',
+    namespace,
+    'scaledjobs',
+    name,
+    body,
+    undefined,
+    undefined,
+    undefined,
+    { headers: { 'Content-Type': 'application/merge-patch+json' } }
+  );
+
+  const verify = await api.getNamespacedCustomObject(
+    'keda.sh',
+    'v1alpha1',
+    namespace,
+    'scaledjobs',
+    name
+  );
+  const verifyBody = verify.body as {
+    metadata?: { annotations?: Record<string, string> };
+  };
+  const actual = verifyBody.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
+  const expected = paused ? 'true' : 'false';
+  if (actual !== expected) {
+    throw new Error(
+      `Failed to ${paused ? 'pause' : 'resume'} ScaledJob "${name}" (${KEDA_PAUSED_ANNOTATION} is "${actual ?? 'unset'}")`
+    );
+  }
+}
+
+function scaledJobOwnsJob(scaledJobName: string, job: k8s.V1Job): boolean {
+  const owners = job.metadata?.ownerReferences ?? [];
+  if (owners.some((owner) => owner.kind === 'ScaledJob' && owner.name === scaledJobName)) {
+    return true;
+  }
+  return job.metadata?.labels?.['scaledjob.keda.sh/name'] === scaledJobName;
+}
+
+/** Remove Jobs owned by a ScaledJob so running pods stop after pausing. */
+async function deleteActiveScaledJobJobs(
+  cluster: string,
+  namespace: string,
+  scaledJobName: string
+): Promise<number> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.BatchV1Api);
+  const res = await api.listNamespacedJob(namespace);
+  let deleted = 0;
+
+  for (const job of res.body.items ?? []) {
+    if (!scaledJobOwnsJob(scaledJobName, job)) continue;
+
+    const jobName = job.metadata?.name;
+    if (!jobName) continue;
+
+    try {
+      await api.deleteNamespacedJob(
+        jobName,
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'Foreground'
+      );
+      deleted += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'delete failed';
+      throw new Error(
+        `Failed to delete Job "${jobName}" for ScaledJob "${scaledJobName}": ${message}`
+      );
+    }
+  }
+
+  return deleted;
+}
+
+async function pauseScaledJob(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<void> {
+  await setScaledJobPaused(cluster, namespace, name, true);
+  await deleteActiveScaledJobJobs(cluster, namespace, name);
+}
+
 export async function scaleWorkload(
   cluster: string,
   namespace: string,
@@ -527,6 +760,22 @@ export async function scaleWorkload(
 ): Promise<void> {
   if (kind === 'DaemonSet') {
     throw new Error(`DaemonSet "${name}" cannot be scaled — exclude it from namespace schedules`);
+  }
+  if (kind === 'CronJob') {
+    if (replicas === 0) {
+      await suspendCronJob(cluster, namespace, name);
+    } else {
+      await setCronJobSuspended(cluster, namespace, name, false);
+    }
+    return;
+  }
+  if (kind === 'ScaledJob') {
+    if (replicas === 0) {
+      await pauseScaledJob(cluster, namespace, name);
+    } else {
+      await setScaledJobPaused(cluster, namespace, name, false);
+    }
+    return;
   }
   if (kind === 'StatefulSet') {
     await scaleStatefulSet(cluster, namespace, name, replicas);

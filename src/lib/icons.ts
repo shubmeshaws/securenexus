@@ -149,6 +149,7 @@ export const Icons = {
     admin: ShieldCheck,
     liveSchedules: Activity,
     resourceAudit: Fingerprint,
+    security: ShieldCheck,
     alerts: BellRing,
     contact: UsersRound,
   },

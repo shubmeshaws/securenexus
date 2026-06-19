@@ -1,6 +1,6 @@
 export type AppRole = 'admin' | 'analyst' | 'viewer';
 
-export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin'] as const;
+export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin', '/security'] as const;
 
 export const VIEWER_ROUTES = ['/dashboard', '/schedules', '/active-schedules', '/contact'] as const;
 
@@ -43,6 +43,7 @@ export function getVisibleNavHrefs(role: string, active: boolean): string[] {
     '/resource-audit',
     '/alerts',
     '/contact',
+    '/security',
     '/admin',
   ];
   if (!active) return all;

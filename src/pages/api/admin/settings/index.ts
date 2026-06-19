@@ -30,6 +30,7 @@ const updateSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
+  securityModuleEnabled: z.boolean().optional(),
 });
 
 async function getHandler(_req: AuthenticatedRequest, res: NextApiResponse) {

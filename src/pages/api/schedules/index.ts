@@ -14,24 +14,30 @@ async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
 }
 
 async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
-  ensureSchedulerRunning();
-  const parsed = createScheduleSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    ensureSchedulerRunning();
+    const parsed = createScheduleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+
+    const data = parsed.data;
+    const schedule = await prisma.schedule.create({
+      data: { ...data, nextRun: null },
+    });
+
+    const nextRun = computeNextRun(schedule);
+    const updated = await prisma.schedule.update({
+      where: { id: schedule.id },
+      data: { nextRun },
+    });
+
+    return res.status(201).json({ schedule: updated });
+  } catch (err) {
+    console.error('[schedules] create failed:', err);
+    const message = err instanceof Error ? err.message : 'Failed to create schedule';
+    return res.status(500).json({ error: message });
   }
-
-  const data = parsed.data;
-  const schedule = await prisma.schedule.create({
-    data: { ...data, nextRun: null },
-  });
-
-  const nextRun = computeNextRun(schedule);
-  const updated = await prisma.schedule.update({
-    where: { id: schedule.id },
-    data: { nextRun },
-  });
-
-  return res.status(201).json({ schedule: updated });
 }
 
 function handler(req: AuthenticatedRequest, res: NextApiResponse) {

@@ -6,8 +6,12 @@ import { setClientSettings } from '@/lib/client-settings';
 
 async function fetchPublicSettings() {
   const res = await fetch('/api/settings/public', { credentials: 'include' });
-  if (!res.ok) return { demoMode: false, apiBaseUrl: '' };
-  return res.json() as Promise<{ demoMode: boolean; apiBaseUrl: string }>;
+  if (!res.ok) return { demoMode: false, apiBaseUrl: '', securityModuleEnabled: false };
+  return res.json() as Promise<{
+    demoMode: boolean;
+    apiBaseUrl: string;
+    securityModuleEnabled?: boolean;
+  }>;
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {

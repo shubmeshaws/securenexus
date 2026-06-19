@@ -23,6 +23,7 @@ export const SETTING_KEYS = {
   NODE_SAMPLE_RETENTION_DAYS: 'node_sample_retention_days',
   NODE_SAMPLE_DATA_START_DATE: 'node_sample_data_start_date',
   NODE_SAMPLE_DATA_START_TIME: 'node_sample_data_start_time',
+  SECURITY_MODULE_ENABLED: 'security_module_enabled',
   RESOURCE_AUDIT_RETENTION_AMOUNT: 'resource_audit_retention_amount',
   RESOURCE_AUDIT_RETENTION_UNIT: 'resource_audit_retention_unit',
   RESOURCE_AUDIT_DATA_START_DATE: 'resource_audit_data_start_date',
@@ -62,6 +63,7 @@ const ENV_FALLBACK: Record<SettingKey, () => string | undefined> = {
   [SETTING_KEYS.NODE_SAMPLE_RETENTION_DAYS]: () => '90',
   [SETTING_KEYS.NODE_SAMPLE_DATA_START_DATE]: () => undefined,
   [SETTING_KEYS.NODE_SAMPLE_DATA_START_TIME]: () => '00:00',
+  [SETTING_KEYS.SECURITY_MODULE_ENABLED]: () => 'false',
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT]: () => '3',
   [SETTING_KEYS.RESOURCE_AUDIT_RETENTION_UNIT]: () => 'months',
   [SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE]: () => '2026-06-01',
@@ -125,6 +127,11 @@ export async function isDemoModeServer(): Promise<boolean> {
   return value === 'true';
 }
 
+export async function getSecurityModuleEnabled(): Promise<boolean> {
+  const value = await getSetting(SETTING_KEYS.SECURITY_MODULE_ENABLED);
+  return value === 'true';
+}
+
 export async function getArgoCDConfig(): Promise<{
   server: string;
   token: string;
@@ -165,6 +172,7 @@ export interface AdminSettingsView {
   nodeSampleRetentionDays: number;
   nodeSampleDataStartDate: string;
   nodeSampleDataStartTime: string;
+  securityModuleEnabled: boolean;
   resourceAuditRetentionAmount: number;
   resourceAuditRetentionUnit: 'weeks' | 'months' | 'years';
   resourceAuditDataStartDate: string;
@@ -204,6 +212,7 @@ export async function getAdminSettings(): Promise<AdminSettingsView> {
       const value = read(SETTING_KEYS.NODE_SAMPLE_DATA_START_TIME).trim();
       return /^\d{2}:\d{2}$/.test(value) ? value : '00:00';
     })(),
+    securityModuleEnabled: read(SETTING_KEYS.SECURITY_MODULE_ENABLED) === 'true',
     resourceAuditRetentionAmount: Math.max(
       1,
       parseInt(read(SETTING_KEYS.RESOURCE_AUDIT_RETENTION_AMOUNT) || String(DEFAULT_RESOURCE_AUDIT_RETENTION_AMOUNT), 10) ||
@@ -236,6 +245,7 @@ export interface AdminSettingsInput {
   nodeSampleRetentionDays?: number;
   nodeSampleDataStartDate?: string;
   nodeSampleDataStartTime?: string;
+  securityModuleEnabled?: boolean;
   resourceAuditRetentionAmount?: number;
   resourceAuditRetentionUnit?: ResourceAuditRetentionUnit;
   resourceAuditDataStartDate?: string;
@@ -383,6 +393,13 @@ export async function updateAdminSettings(
     upserts.push({
       key: SETTING_KEYS.RESOURCE_AUDIT_DATA_START_DATE,
       value,
+      isSecret: false,
+    });
+  }
+  if (input.securityModuleEnabled !== undefined) {
+    upserts.push({
+      key: SETTING_KEYS.SECURITY_MODULE_ENABLED,
+      value: input.securityModuleEnabled ? 'true' : 'false',
       isSecret: false,
     });
   }

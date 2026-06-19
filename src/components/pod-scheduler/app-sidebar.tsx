@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { useSidebar } from './sidebar-context';
 import { useSession } from '@/components/auth/session-context';
-import { canAccessRoute } from '@/lib/permissions';
+import { canAccessRoute, isAdminRole } from '@/lib/permissions';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Icons.pages.dashboard },
@@ -20,6 +20,7 @@ const navItems = [
   { href: '/active-schedules', label: 'Live Schedules', icon: Icons.pages.liveSchedules, liveCount: true },
   { href: '/activity', label: 'Activity Logs', icon: Icons.pages.activity },
   { href: '/resource-audit', label: 'Resource changes', icon: Icons.pages.resourceAudit },
+  { href: '/security', label: 'Security', icon: Icons.pages.security, adminSecurity: true },
   { href: '/alerts', label: 'Alerts', icon: Icons.pages.alerts },
   { href: '/contact', label: 'Contact', icon: Icons.pages.contact },
   { href: '/admin', label: 'Admin Panel', icon: Icons.pages.admin },
@@ -31,7 +32,19 @@ export function AppSidebar() {
   const { collapsed, toggle, isMobile, setCollapsed } = useSidebar();
   const expandedOnMobile = isMobile && !collapsed;
 
+  const { data: publicSettings, isLoading: publicSettingsLoading } = useQuery({
+    queryKey: ['public-settings'],
+    queryFn: () =>
+      apiFetch<{ securityModuleEnabled?: boolean }>('/api/settings/public'),
+    staleTime: 30_000,
+  });
+
   const visibleNavItems = navItems.filter((item) => {
+    if ('adminSecurity' in item && item.adminSecurity) {
+      if (!session || !isAdminRole(session.role)) return false;
+      if (publicSettingsLoading) return false;
+      if (!publicSettings?.securityModuleEnabled) return false;
+    }
     if (!session) return true;
     if (!session.active) return true;
     return canAccessRoute(session.role, item.href);

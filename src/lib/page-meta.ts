@@ -39,6 +39,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     iconClass: 'text-sky-700',
     accent: 'sky',
   },
+  '/security': {
+    title: 'Security',
+    subtitle: 'AppSec resources, tools & reports',
+    icon: Icons.pages.security,
+    gradient: 'from-violet-500 via-purple-600 to-fuchsia-600',
+    ring: 'ring-violet-500/25',
+    iconClass: 'text-violet-700',
+    accent: 'violet',
+  },
   '/infrastructure': {
     title: 'Infrastructure',
     subtitle: 'Workload control plane',

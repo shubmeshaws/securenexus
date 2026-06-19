@@ -745,7 +745,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <div className="space-y-2">
           <Label>Exclude workloads (optional)</Label>
           <p className="text-[10px] text-muted-foreground">
-            All Deployments and StatefulSets in the namespace will be scheduled. Uncheck any to exclude. DaemonSets are always skipped.
+            All Deployments, StatefulSets, CronJobs, and ScaledJobs in the namespace will be scheduled. Uncheck any to exclude. DaemonSets are always skipped.
           </p>
           {!namespace ? (
             <p className="text-xs text-muted-foreground">Select a namespace first.</p>

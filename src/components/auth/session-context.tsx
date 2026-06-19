@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { usePathname, useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api-client';
-import { canAccessRoute, resolveUserPermissions, type UserPermissions } from '@/lib/permissions';
+import { canAccessRoute, isAdminRole, resolveUserPermissions, type UserPermissions } from '@/lib/permissions';
 import { AccessPendingBanner } from '@/components/auth/access-pending-banner';
 
 export interface SessionUser {
@@ -60,12 +60,31 @@ export function AccessGate({ children }: { children: ReactNode }) {
   const router = useRouter();
   const session = useSession();
 
+  const { data: publicSettings } = useQuery({
+    queryKey: ['public-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/public', { credentials: 'include' });
+      if (!res.ok) return { securityModuleEnabled: false };
+      return res.json() as Promise<{ securityModuleEnabled?: boolean }>;
+    },
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     if (!session?.active || !pathname) return;
+
+    if (pathname.startsWith('/security')) {
+      if (publicSettings === undefined) return;
+      if (!isAdminRole(session.role) || !publicSettings.securityModuleEnabled) {
+        router.replace('/dashboard');
+        return;
+      }
+    }
+
     if (!canAccessRoute(session.role, pathname)) {
       router.replace('/dashboard');
     }
-  }, [session?.active, session?.role, pathname, router]);
+  }, [session?.active, session?.role, pathname, router, publicSettings]);
 
   if (session && !session.active) {
     return <AccessPendingBanner />;

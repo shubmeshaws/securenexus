@@ -10,6 +10,7 @@ const PROTECTED_PREFIXES = [
   '/activity',
   '/resource-audit',
   '/alerts',
+  '/security',
   '/admin',
 ];
 
@@ -68,6 +69,8 @@ export const config = {
     '/resource-audit/:path*',
     '/alerts',
     '/alerts/:path*',
+    '/security',
+    '/security/:path*',
     '/admin',
     '/admin/:path*',
   ],

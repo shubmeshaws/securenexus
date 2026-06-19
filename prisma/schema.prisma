@@ -151,6 +151,79 @@ model ClusterPodHourlySample {
   @@index([clusterName, calendarDate])
 }
 
+model SecurityResource {
+  id            String   @id @default(cuid())
+  type          String   // repository | target_url
+  name          String
+  repoUrl       String?
+  defaultBranch String?
+  targetUrl     String?
+  description   String?
+  enabled       Boolean  @default(true)
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  reports SecurityReport[]
+
+  @@index([type])
+  @@index([enabled])
+}
+
+model SecurityToolSetting {
+  id          String    @id @default(cuid())
+  toolId      String    @unique
+  enabled     Boolean   @default(false)
+  installedAt DateTime?
+  installedOs String?
+  updatedAt   DateTime  @updatedAt
+}
+
+model SecurityReport {
+  id          String   @id @default(cuid())
+  resourceId  String?
+  toolId      String
+  scanJobId   String?
+  title       String
+  status      String   @default("completed") // pending | completed | failed
+  summary     String?
+  htmlContent String   @db.Text
+  highCount   Int      @default(0)
+  mediumCount Int      @default(0)
+  lowCount    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  resource SecurityResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  scanJob  SecurityScanJob?  @relation(fields: [scanJobId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId])
+  @@index([toolId])
+  @@index([scanJobId])
+  @@index([createdAt])
+}
+
+model SecurityScanJob {
+  id          String   @id @default(cuid())
+  resourceIds Json
+  toolIds     Json
+  status      String   @default("queued") // queued | running | completed | failed
+  progress    Int      @default(0)
+  message     String?
+  error       String?
+  reportCount Int      @default(0)
+  pairTotal   Int      @default(0)
+  createdBy   String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reports SecurityReport[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
 model EnvironmentMetrics {
   id             String   @id @default("global")
   state          String   @default("running") // running | stopped
