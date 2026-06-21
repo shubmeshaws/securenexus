@@ -15,7 +15,8 @@ import {
 import { logActivity } from './activity';
 import { buildShutdownActivityDetails } from './shutdown-node-count';
 import prisma from './prisma';
-import { computeCurrentLiveStartupAt, computeNextRun, formatScheduleStartupLabel } from './scheduler-utils';
+import { computeCurrentLiveStartupAt, computeNextRun, computeNextStartupAt, formatScheduleStartupLabel } from './scheduler-utils';
+import { defaultBlockUntil } from './argocd-sync-windows';
 import {
   isNamespaceSchedule,
   isNonEksSchedule,
@@ -122,8 +123,11 @@ async function collectScheduleArgoApps(
   return Array.from(byName.values());
 }
 
-/** Pause (disable automated sync for) every Argo app managing this schedule's workloads. */
-async function pauseArgoForSchedule(schedule: Schedule): Promise<{ note: string; apps: string[] }> {
+/** Pause automated sync and block manual sync for every Argo app on this schedule. */
+async function pauseArgoForSchedule(
+  schedule: Schedule,
+  now = new Date()
+): Promise<{ note: string; apps: string[] }> {
   const targets = await collectScheduleArgoApps(schedule);
   console.log(
     `[Argo pause] ${schedule.namespace} resolved apps: ${
@@ -131,6 +135,14 @@ async function pauseArgoForSchedule(schedule: Schedule): Promise<{ note: string;
     }`
   );
   const paused: string[] = [];
+  const manualBlocked: string[] = [];
+  // Compute from schedule times — do not reuse liveStartupAt (may be stale from a prior cycle).
+  const blockUntil =
+    computeCurrentLiveStartupAt(schedule, now) ??
+    computeNextStartupAt(schedule, now) ??
+    defaultBlockUntil(now);
+  const timeZone = schedule.timezone || 'UTC';
+
   for (const app of targets) {
     try {
       await argocdClient.updateSyncPolicy(app.name, 'none', app.instanceId);
@@ -141,9 +153,34 @@ async function pauseArgoForSchedule(schedule: Schedule): Promise<{ note: string;
         err instanceof Error ? err.message : err
       );
     }
+
+    try {
+      await argocdClient.addScheduleManualSyncDenyWindow(
+        {
+          appName: app.name,
+          blockFrom: now,
+          blockUntil,
+          timeZone,
+        },
+        app.instanceId
+      );
+      manualBlocked.push(app.name);
+      console.log(
+        `[Argo pause] manual sync deny window added for ${app.name} until ${blockUntil.toISOString()}`
+      );
+    } catch (err) {
+      console.error(
+        `[Argo pause] failed to block manual sync for ${app.name}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
   }
-  const note = paused.length ? ` · ArgoCD sync paused (${paused.join(', ')})` : '';
-  return { note, apps: paused };
+
+  const notes: string[] = [];
+  if (paused.length) notes.push(`ArgoCD sync paused (${paused.join(', ')})`);
+  if (manualBlocked.length) notes.push(`manual sync blocked (${manualBlocked.join(', ')})`);
+  const note = notes.length ? ` · ${notes.join(' · ')}` : '';
+  return { note, apps: Array.from(new Set([...paused, ...manualBlocked])) };
 }
 
 interface WorkloadTarget {
@@ -190,27 +227,83 @@ async function resolveArgoApp(
   }
 }
 
-/** Resume (re-enable automated sync for) a known set of Argo apps by name. */
-async function resumeStoredArgoApps(schedule: Schedule, apps: string[]): Promise<string> {
-  if (schedule.syncPolicy !== 'automated') return '';
-  const resumed: string[] = [];
-  for (const name of apps) {
+interface ScheduleArgoApp {
+  name: string;
+  instanceId: string;
+}
+
+async function resolveArgoAppsForResume(
+  schedule: Schedule,
+  appNames: string[]
+): Promise<ScheduleArgoApp[]> {
+  const resolved: ScheduleArgoApp[] = [];
+  for (const name of appNames) {
+    const match = await findArgoAppByName(schedule, name);
+    if (match) {
+      resolved.push(match);
+      continue;
+    }
+    if (schedule.argocdInstanceId) {
+      resolved.push({ name, instanceId: schedule.argocdInstanceId });
+    }
+  }
+  return resolved;
+}
+
+/** Resume automated sync and remove SecureNexus manual-sync deny windows. */
+async function resumeStoredArgoApps(
+  schedule: Schedule,
+  apps: ScheduleArgoApp[]
+): Promise<string> {
+  const unblocked: string[] = [];
+  for (const app of apps) {
     try {
-      await argocdClient.updateSyncPolicy(name, 'automated');
-      resumed.push(name);
+      const removed = await argocdClient.removeScheduleManualSyncDenyWindows(
+        app.name,
+        app.instanceId
+      );
+      if (removed > 0) {
+        unblocked.push(app.name);
+        console.log(
+          `[Argo resume] removed ${removed} manual-sync deny window(s) for ${app.name}`
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[Argo resume] failed to remove manual-sync deny window for ${app.name}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  const notes: string[] = [];
+  if (unblocked.length) {
+    notes.push(`manual sync unblocked (${unblocked.join(', ')})`);
+  }
+
+  if (schedule.syncPolicy !== 'automated') {
+    return notes.length ? ` · ${notes.join(' · ')}` : '';
+  }
+
+  const resumed: string[] = [];
+  for (const app of apps) {
+    try {
+      await argocdClient.updateSyncPolicy(app.name, 'automated', app.instanceId);
+      resumed.push(app.name);
       try {
-        await argocdClient.triggerSync(name);
+        await argocdClient.triggerSync(app.name, app.instanceId);
       } catch {
         // best-effort
       }
     } catch (err) {
       console.error(
-        `[STS startup] failed to resume Argo app ${name}:`,
+        `[Argo resume] failed to resume Argo app ${app.name}:`,
         err instanceof Error ? err.message : err
       );
     }
   }
-  return resumed.length ? ` · ArgoCD sync restored (${resumed.join(', ')})` : '';
+  if (resumed.length) notes.push(`ArgoCD sync restored (${resumed.join(', ')})`);
+  return notes.length ? ` · ${notes.join(' · ')}` : '';
 }
 
 async function getScheduleTargets(schedule: Schedule): Promise<WorkloadTarget[]> {
@@ -611,13 +704,16 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
     let argoNote = '';
     try {
-      if (schedule.syncPolicy === 'automated') {
-        // Prefer the apps we recorded at shutdown; otherwise re-resolve from the
-        // (now restored) live resources.
-        const toResume = storedPausedApps.length
-          ? storedPausedApps
-          : (await collectScheduleArgoApps(schedule)).map((a) => a.name);
+      const storedNames = storedPausedApps.length
+        ? storedPausedApps
+        : (await collectScheduleArgoApps(schedule)).map((a) => a.name);
+      const toResume = await resolveArgoAppsForResume(schedule, storedNames);
+      if (toResume.length) {
         argoNote = await resumeStoredArgoApps(schedule, toResume);
+      } else if (storedNames.length) {
+        console.warn(
+          `[Argo resume] could not resolve Argo instance for apps: ${storedNames.join(', ')}`
+        );
       }
     } catch (err) {
       argoNote = ` · ArgoCD sync restore failed: ${err instanceof Error ? err.message : 'unknown'}`;
@@ -697,18 +793,24 @@ export async function runScheduleNow(
   if (!schedule) throw new Error('Schedule not found');
 
   if (mode === 'shutdown') {
-    await executeShutdown(schedule, triggeredBy);
+    await executeShutdown(schedule, triggeredBy, { markLive: true });
   } else {
     await executeStartup(schedule, triggeredBy);
   }
 
-  const nextRun = computeNextRun(schedule);
+  const now = new Date();
+  const nextRun = computeNextRun(schedule, now);
   await prisma.schedule.update({
     where: { id: scheduleId },
     data: {
-      lastRun: new Date(),
+      lastRun: now,
       nextRun,
-      ...(mode === 'startup' ? { liveActive: false, liveStartupAt: null } : {}),
+      ...(mode === 'shutdown'
+        ? {
+            liveActive: true,
+            liveStartupAt: computeCurrentLiveStartupAt(schedule, now),
+          }
+        : { liveActive: false, liveStartupAt: null }),
     },
   });
 }

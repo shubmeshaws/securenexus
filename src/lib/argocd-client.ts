@@ -5,6 +5,12 @@ import {
   listEnabledArgoCDInstances,
   type ArgoCDInstanceConfig,
 } from '@/lib/argocd-instances';
+import {
+  buildScheduleDenySyncWindow,
+  mergeScheduleDenySyncWindow,
+  removeScheduleDenySyncWindows,
+  type ArgoSyncWindowSpec,
+} from '@/lib/argocd-sync-windows';
 import { getArgoCDConfig, normalizeArgoCDServer } from '@/lib/settings';
 
 export interface ArgoCDHealth {
@@ -352,6 +358,83 @@ class InstanceArgoCDClient {
     return res.json() as Promise<Record<string, unknown>>;
   }
 
+  async getApplicationProjectName(appName: string): Promise<string> {
+    const app = await this.getApplicationRaw(appName);
+    const spec = app.spec as Record<string, unknown> | undefined;
+    const project = spec?.project;
+    return typeof project === 'string' && project.trim() ? project : 'default';
+  }
+
+  async getProjectRaw(projectName: string): Promise<Record<string, unknown>> {
+    const res = await argoFetch(`${this.baseUrl}/projects/${encodeURIComponent(projectName)}`, {
+      headers: this.headers,
+      insecureTls: this.instance.insecureTls,
+      timeoutMs: 30_000,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to get ArgoCD project ${projectName}: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    if (data.project && typeof data.project === 'object') {
+      return data.project as Record<string, unknown>;
+    }
+    return data;
+  }
+
+  async updateProjectRaw(projectName: string, project: Record<string, unknown>): Promise<void> {
+    const res = await argoFetch(`${this.baseUrl}/projects/${encodeURIComponent(projectName)}`, {
+      method: 'PUT',
+      headers: this.headers,
+      body: JSON.stringify({ project }),
+      insecureTls: this.instance.insecureTls,
+      timeoutMs: 30_000,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to update ArgoCD project ${projectName}: ${res.status} ${text}`);
+    }
+  }
+
+  private readProjectSyncWindows(project: Record<string, unknown>): ArgoSyncWindowSpec[] {
+    const spec = (project.spec as Record<string, unknown>) ?? {};
+    const rows = spec.syncWindows;
+    return Array.isArray(rows) ? (rows as ArgoSyncWindowSpec[]) : [];
+  }
+
+  async addScheduleManualSyncDenyWindow(input: {
+    appName: string;
+    blockFrom: Date;
+    blockUntil: Date;
+    timeZone: string;
+  }): Promise<void> {
+    const projectName = await this.getApplicationProjectName(input.appName);
+    const project = await this.getProjectRaw(projectName);
+    const spec = (project.spec as Record<string, unknown>) ?? {};
+    const nextWindow = buildScheduleDenySyncWindow({
+      appName: input.appName,
+      blockFrom: input.blockFrom,
+      blockUntil: input.blockUntil,
+      timeZone: input.timeZone,
+    });
+    spec.syncWindows = mergeScheduleDenySyncWindow(this.readProjectSyncWindows(project), nextWindow);
+    project.spec = spec;
+    await this.updateProjectRaw(projectName, project);
+  }
+
+  async removeScheduleManualSyncDenyWindows(appName: string): Promise<number> {
+    const projectName = await this.getApplicationProjectName(appName);
+    const project = await this.getProjectRaw(projectName);
+    const existing = this.readProjectSyncWindows(project);
+    const { windows, removed } = removeScheduleDenySyncWindows(existing, appName);
+    if (removed === 0) return 0;
+    const spec = (project.spec as Record<string, unknown>) ?? {};
+    spec.syncWindows = windows;
+    project.spec = spec;
+    await this.updateProjectRaw(projectName, project);
+    return removed;
+  }
+
   async getManagedResources(appName: string): Promise<ArgoCDManagedResourceItem[]> {
     const res = await argoFetch(
       `${this.baseUrl}/applications/${encodeURIComponent(appName)}/managed-resources`,
@@ -579,6 +662,27 @@ class MultiArgoCDClient {
   async triggerSync(appName: string, instanceId?: string): Promise<void> {
     const { client } = await resolveInstanceForApp(appName, instanceId);
     return client.triggerSync(appName);
+  }
+
+  async addScheduleManualSyncDenyWindow(
+    input: {
+      appName: string;
+      blockFrom: Date;
+      blockUntil: Date;
+      timeZone: string;
+    },
+    instanceId?: string
+  ): Promise<void> {
+    const { client } = await resolveInstanceForApp(input.appName, instanceId);
+    return client.addScheduleManualSyncDenyWindow(input);
+  }
+
+  async removeScheduleManualSyncDenyWindows(
+    appName: string,
+    instanceId?: string
+  ): Promise<number> {
+    const { client } = await resolveInstanceForApp(appName, instanceId);
+    return client.removeScheduleManualSyncDenyWindows(appName);
   }
 
   async getManagedResources(
