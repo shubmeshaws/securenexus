@@ -5,6 +5,9 @@ import {
   parseZonedDatetimeInput,
   timeFromZonedInstant,
 } from './schedule-recurrence';
+import { startupAfterShutdown } from './schedule-window';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { setHours, setMinutes, getDay, addDays } from 'date-fns';
 
 export const syncPolicySchema = z.object({
   syncPolicy: z.enum(['automated', 'none']),
@@ -77,10 +80,23 @@ const onetimeTimingSchema = z.object({
   daysOfWeek: z.array(z.number().int().min(1).max(7)).optional().default([]),
 });
 
+const windowTimingSchema = z.object({
+  recurrence: z.literal('window'),
+  shutdownTime: timeString,
+  startupTime: timeString,
+  shutdownDayOfWeek: z.number().int().min(1).max(7),
+  startupDayOfWeek: z.number().int().min(1).max(7),
+  windowRepeatWeekly: z.boolean().optional().default(true),
+  oneTimeShutdownAt: z.string().optional().nullable(),
+  oneTimeStartupAt: z.string().optional().nullable(),
+  daysOfWeek: z.array(z.number().int().min(1).max(7)).optional().default([]),
+});
+
 const scheduleBaseSchema = z.discriminatedUnion('recurrence', [
   scheduleIdentitySchema.merge(dailyTimingSchema),
   scheduleIdentitySchema.merge(splitTimingSchema),
   scheduleIdentitySchema.merge(onetimeTimingSchema),
+  scheduleIdentitySchema.merge(windowTimingSchema),
 ]);
 
 type ScheduleInput = z.infer<typeof scheduleBaseSchema>;
@@ -113,6 +129,28 @@ function normalizeScope<T extends ScheduleInput>(data: T) {
   };
 }
 
+function isoDayFromZonedDate(zoned: Date): number {
+  const d = getDay(zoned);
+  return d === 0 ? 7 : d;
+}
+
+function windowShutdownInstant(
+  shutdownDay: number,
+  shutdownTime: string,
+  timezone: string
+): Date {
+  const now = new Date();
+  const zoned = toZonedTime(now, timezone);
+  const [h, m] = shutdownTime.split(':').map(Number);
+  for (let offset = 0; offset < 7; offset++) {
+    const candidate = addDays(zoned, offset);
+    if (isoDayFromZonedDate(candidate) !== shutdownDay) continue;
+    const local = setMinutes(setHours(candidate, h), m);
+    return fromZonedTime(local, timezone);
+  }
+  throw new Error('Invalid shutdown day');
+}
+
 function normalizeScheduleInput(data: ScheduleInput) {
   const scoped = normalizeScope(data);
 
@@ -136,6 +174,9 @@ function normalizeScheduleInput(data: ScheduleInput) {
       weekendShutdownTime: null,
       weekendStartupTime: null,
       weekendDays: [] as number[],
+      shutdownDayOfWeek: null,
+      startupDayOfWeek: null,
+      windowRepeatWeekly: true,
       daysOfWeek: [] as number[],
       oneTimeShutdownAt: shutdownAt,
       oneTimeStartupAt: startupAt,
@@ -152,6 +193,98 @@ function normalizeScheduleInput(data: ScheduleInput) {
       weekendShutdownTime: scoped.weekendShutdownTime,
       weekendStartupTime: scoped.weekendStartupTime,
       weekendDays,
+      shutdownDayOfWeek: null,
+      startupDayOfWeek: null,
+      windowRepeatWeekly: true,
+      oneTimeShutdownAt: null,
+      oneTimeStartupAt: null,
+      oneTimeCompleted: false,
+    };
+  }
+
+  if (scoped.recurrence === 'window') {
+    if (scoped.windowRepeatWeekly === false) {
+      const shutdownInput = scoped.oneTimeShutdownAt;
+      const startupInput = scoped.oneTimeStartupAt;
+      if (!shutdownInput || !startupInput) {
+        throw new z.ZodError([
+          {
+            code: 'custom',
+            message: 'Shutdown and startup date/time are required when repeat is off',
+            path: ['oneTimeShutdownAt'],
+          },
+        ]);
+      }
+      const shutdownAt = parseZonedDatetimeInput(shutdownInput, scoped.timezone);
+      const startupAt = parseZonedDatetimeInput(startupInput, scoped.timezone);
+      if (startupAt <= shutdownAt) {
+        throw new z.ZodError([
+          {
+            code: 'custom',
+            message: 'Startup must be after shutdown',
+            path: ['oneTimeStartupAt'],
+          },
+        ]);
+      }
+      const shutdownZoned = toZonedTime(shutdownAt, scoped.timezone);
+      const startupZoned = toZonedTime(startupAt, scoped.timezone);
+      return {
+        ...scoped,
+        recurrence: 'window' as const,
+        shutdownTime: timeFromZonedInstant(shutdownAt, scoped.timezone),
+        startupTime: timeFromZonedInstant(startupAt, scoped.timezone),
+        shutdownDayOfWeek: isoDayFromZonedDate(shutdownZoned),
+        startupDayOfWeek: isoDayFromZonedDate(startupZoned),
+        windowRepeatWeekly: false,
+        weekendShutdownTime: null,
+        weekendStartupTime: null,
+        weekendDays: [] as number[],
+        daysOfWeek: [] as number[],
+        oneTimeShutdownAt: shutdownAt,
+        oneTimeStartupAt: startupAt,
+        oneTimeCompleted: false,
+      };
+    }
+
+    const shutdownDay = scoped.shutdownDayOfWeek;
+    const startupDay = scoped.startupDayOfWeek;
+    const refShutdown = windowShutdownInstant(shutdownDay, scoped.shutdownTime, scoped.timezone);
+    const refStartup = startupAfterShutdown(
+      {
+        recurrence: 'window',
+        timezone: scoped.timezone,
+        shutdownTime: scoped.shutdownTime,
+        startupTime: scoped.startupTime,
+        shutdownDayOfWeek: shutdownDay,
+        startupDayOfWeek: startupDay,
+        windowRepeatWeekly: true,
+        oneTimeShutdownAt: null,
+        oneTimeStartupAt: null,
+        oneTimeCompleted: false,
+        enabled: true,
+      },
+      refShutdown
+    );
+    if (!refStartup || refStartup <= refShutdown) {
+      throw new z.ZodError([
+        {
+          code: 'custom',
+          message: 'Startup day/time must be after shutdown day/time in the same cycle',
+          path: ['startupDayOfWeek'],
+        },
+      ]);
+    }
+
+    return {
+      ...scoped,
+      recurrence: 'window' as const,
+      shutdownDayOfWeek: shutdownDay,
+      startupDayOfWeek: startupDay,
+      windowRepeatWeekly: true,
+      weekendShutdownTime: null,
+      weekendStartupTime: null,
+      weekendDays: [] as number[],
+      daysOfWeek: Array.from(new Set([shutdownDay, startupDay])).sort((a, b) => a - b),
       oneTimeShutdownAt: null,
       oneTimeStartupAt: null,
       oneTimeCompleted: false,
@@ -164,6 +297,9 @@ function normalizeScheduleInput(data: ScheduleInput) {
     weekendShutdownTime: null,
     weekendStartupTime: null,
     weekendDays: [] as number[],
+    shutdownDayOfWeek: null,
+    startupDayOfWeek: null,
+    windowRepeatWeekly: true,
     oneTimeShutdownAt: null,
     oneTimeStartupAt: null,
     oneTimeCompleted: false,
@@ -232,9 +368,12 @@ export const updateScheduleBodySchema = z
     targetReplicas: z.number().int().min(0).max(100).optional(),
     enabled: z.boolean().optional(),
     teamsAlertEnabled: z.boolean().optional(),
-    recurrence: z.enum(['daily', 'onetime', 'split']).optional(),
+    recurrence: z.enum(['daily', 'onetime', 'split', 'window']).optional(),
     shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    shutdownDayOfWeek: z.number().int().min(1).max(7).optional(),
+    startupDayOfWeek: z.number().int().min(1).max(7).optional(),
+    windowRepeatWeekly: z.boolean().optional(),
     weekendShutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     weekendStartupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     weekendDays: z.array(z.number().int().min(1).max(7)).optional(),
@@ -314,6 +453,59 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
       weekendShutdownTime: patch.weekendShutdownTime ?? existing.weekendShutdownTime ?? '',
       weekendStartupTime: patch.weekendStartupTime ?? existing.weekendStartupTime ?? '',
       weekendDays: patch.weekendDays ?? existing.weekendDays,
+      daysOfWeek: patch.daysOfWeek ?? existing.daysOfWeek,
+    } as ScheduleInput);
+  }
+
+  if (recurrence === 'window') {
+    const windowRepeatWeekly =
+      patch.windowRepeatWeekly ?? existing.windowRepeatWeekly ?? true;
+    if (windowRepeatWeekly === false) {
+      const shutdownInput =
+        patch.oneTimeShutdownAt ??
+        (existing.oneTimeShutdownAt
+          ? formatZonedDatetimeInput(existing.oneTimeShutdownAt, timezone)
+          : '');
+      const startupInput =
+        patch.oneTimeStartupAt ??
+        (existing.oneTimeStartupAt
+          ? formatZonedDatetimeInput(existing.oneTimeStartupAt, timezone)
+          : '');
+
+      if (!shutdownInput || !startupInput) {
+        throw new z.ZodError([
+          {
+            code: 'custom',
+            message: 'Shutdown and startup date/time are required when repeat is off',
+            path: ['oneTimeShutdownAt'],
+          },
+        ]);
+      }
+
+      return wrapNormalize({
+        ...base,
+        workloadKind: base.workloadKind as ScheduleInput['workloadKind'],
+        recurrence: 'window',
+        shutdownTime: patch.shutdownTime ?? existing.shutdownTime,
+        startupTime: patch.startupTime ?? existing.startupTime,
+        shutdownDayOfWeek: patch.shutdownDayOfWeek ?? existing.shutdownDayOfWeek ?? 5,
+        startupDayOfWeek: patch.startupDayOfWeek ?? existing.startupDayOfWeek ?? 1,
+        windowRepeatWeekly: false,
+        oneTimeShutdownAt: shutdownInput,
+        oneTimeStartupAt: startupInput,
+        daysOfWeek: [],
+      } as ScheduleInput);
+    }
+
+    return wrapNormalize({
+      ...base,
+      workloadKind: base.workloadKind as ScheduleInput['workloadKind'],
+      recurrence: 'window',
+      shutdownTime: patch.shutdownTime ?? existing.shutdownTime,
+      startupTime: patch.startupTime ?? existing.startupTime,
+      shutdownDayOfWeek: patch.shutdownDayOfWeek ?? existing.shutdownDayOfWeek ?? 5,
+      startupDayOfWeek: patch.startupDayOfWeek ?? existing.startupDayOfWeek ?? 1,
+      windowRepeatWeekly: true,
       daysOfWeek: patch.daysOfWeek ?? existing.daysOfWeek,
     } as ScheduleInput);
   }

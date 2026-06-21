@@ -10,7 +10,7 @@ import {
   shouldRunStartupCatchup,
   reloadAllSchedules,
 } from './scheduler-utils';
-import { isOnetimeSchedule } from './schedule-recurrence';
+import { isOnetimeSchedule, completesAfterStartup } from './schedule-recurrence';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { setHours, setMinutes, setSeconds, setMilliseconds } from 'date-fns';
 import type { Schedule } from '@prisma/client';
@@ -94,7 +94,7 @@ async function tickSchedules(): Promise<SchedulerTickResult[]> {
           nextRun: computeNextRun(schedule, now),
           liveActive: runShutdown,
           liveStartupAt: runShutdown ? computeCurrentLiveStartupAt(schedule, now) : null,
-          ...(runStartup && isOnetimeSchedule(schedule)
+          ...(runStartup && completesAfterStartup(schedule)
             ? { oneTimeCompleted: true, enabled: false, nextRun: null }
             : {}),
         },

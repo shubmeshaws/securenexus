@@ -114,6 +114,9 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       daysOfWeek: [1, 2, 3, 4, 5] as number[],
       weekdayDays: [1, 2, 3, 4, 5] as number[],
       weekendDays: [6, 7] as number[],
+      shutdownDayOfWeek: 5,
+      startupDayOfWeek: 1,
+      windowRepeatWeekly: true,
       syncPolicy: 'automated' as 'automated' | 'none',
       argocdInstanceId: null as string | null,
       targetReplicas: 2,
@@ -156,6 +159,9 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
         : recurrence === 'split'
           ? [6, 7]
           : [],
+    shutdownDayOfWeek: schedule.shutdownDayOfWeek ?? 5,
+    startupDayOfWeek: schedule.startupDayOfWeek ?? 1,
+    windowRepeatWeekly: schedule.windowRepeatWeekly ?? true,
     syncPolicy: schedule.syncPolicy ?? 'automated',
     argocdInstanceId: schedule.argocdInstanceId ?? null,
     targetReplicas: schedule.targetReplicas ?? 2,
@@ -208,6 +214,9 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [daysOfWeek, setDaysOfWeek] = useState<number[]>(initial.daysOfWeek);
   const [weekendDays, setWeekendDays] = useState<number[]>(initial.weekendDays);
   const [weekdayDays, setWeekdayDays] = useState<number[]>(initial.weekdayDays);
+  const [shutdownDayOfWeek, setShutdownDayOfWeek] = useState(initial.shutdownDayOfWeek);
+  const [startupDayOfWeek, setStartupDayOfWeek] = useState(initial.startupDayOfWeek);
+  const [windowRepeatWeekly, setWindowRepeatWeekly] = useState(initial.windowRepeatWeekly);
   const [syncPolicy, setSyncPolicy] = useState<'automated' | 'none'>(initial.syncPolicy);
   const [argocdInstanceId, setArgoCDInstanceId] = useState<string | null>(initial.argocdInstanceId);
   const [enabled, setEnabled] = useState(initial.enabled);
@@ -378,7 +387,19 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
               oneTimeShutdownAt,
               oneTimeStartupAt,
             }
-          : recurrence === 'split'
+          : recurrence === 'window'
+            ? {
+                ...shared,
+                shutdownTime,
+                startupTime,
+                shutdownDayOfWeek,
+                startupDayOfWeek,
+                windowRepeatWeekly,
+                ...(windowRepeatWeekly
+                  ? {}
+                  : { oneTimeShutdownAt, oneTimeStartupAt }),
+              }
+            : recurrence === 'split'
             ? {
                 ...shared,
                 shutdownTime,
@@ -496,6 +517,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                 mode: 'split',
                 title: 'Weekday + Weekend',
                 desc: 'Two day groups with their own times (pick the days for each)',
+              },
+              {
+                mode: 'window',
+                title: 'Stop day → Start day',
+                desc: 'Stop on one day (e.g. Fri) and start on another (e.g. Mon). Optional weekly repeat.',
               },
               {
                 mode: 'onetime',
@@ -919,7 +945,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           value={timezone}
           onValueChange={(value) => {
             setTimezone(value);
-            if (recurrence === 'onetime') {
+            if (recurrence === 'onetime' || (recurrence === 'window' && !windowRepeatWeekly)) {
               const shutdown = defaultOnetimeShutdownInput(value);
               setOneTimeShutdownAt(shutdown);
               setOneTimeStartupAt(defaultOnetimeStartupInput(shutdown, value));
@@ -935,9 +961,148 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </Select>
       </div>
 
-      {recurrence !== 'onetime' ? (
+      {recurrence === 'onetime' ? (
         <>
-          {recurrence === 'split' ? (
+          <div className="space-y-2">
+            <Label>Shutdown date & time</Label>
+            <Input
+              type="datetime-local"
+              value={oneTimeShutdownAt}
+              onChange={(e) => {
+                setOneTimeShutdownAt(e.target.value);
+                if (oneTimeStartupAt <= e.target.value) {
+                  setOneTimeStartupAt(defaultOnetimeStartupInput(e.target.value, timezone));
+                }
+              }}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Startup date & time</Label>
+            <Input
+              type="datetime-local"
+              value={oneTimeStartupAt}
+              min={oneTimeShutdownAt}
+              onChange={(e) => setOneTimeStartupAt(e.target.value)}
+              required
+            />
+          </div>
+          <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+            This schedule runs once: shutdown at the first datetime, then startup at the second.
+            It is disabled automatically after startup completes.
+          </p>
+        </>
+      ) : recurrence === 'window' ? (
+        <>
+          <div className="flex items-center justify-between rounded-xl border border-border p-3">
+            <div>
+              <Label>Repeat every week</Label>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">
+                Turn off to run this stop → start window only once
+              </p>
+            </div>
+            <Switch checked={windowRepeatWeekly} onCheckedChange={setWindowRepeatWeekly} />
+          </div>
+
+          {windowRepeatWeekly ? (
+            <>
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Stop
+                </Label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Day</Label>
+                    <select
+                      className={NATIVE_SELECT_CLASS}
+                      value={shutdownDayOfWeek}
+                      onChange={(e) => setShutdownDayOfWeek(Number(e.target.value))}
+                    >
+                      {DAY_LABELS.map((label, i) => (
+                        <option key={label} value={i + 1}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Time</Label>
+                    <Input
+                      type="time"
+                      value={shutdownTime}
+                      onChange={(e) => setShutdownTime(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Start
+                </Label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Day</Label>
+                    <select
+                      className={NATIVE_SELECT_CLASS}
+                      value={startupDayOfWeek}
+                      onChange={(e) => setStartupDayOfWeek(Number(e.target.value))}
+                    >
+                      {DAY_LABELS.map((label, i) => (
+                        <option key={label} value={i + 1}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Time</Label>
+                    <Input
+                      type="time"
+                      value={startupTime}
+                      onChange={(e) => setStartupTime(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+              <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+                Example: stop {DAY_LABELS[shutdownDayOfWeek - 1]} at {formatTime12h(shutdownTime)},{' '}
+                start {DAY_LABELS[startupDayOfWeek - 1]} at {formatTime12h(startupTime)} — repeats every
+                week. Workloads stay down between stop and start.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label>Stop date & time</Label>
+                <Input
+                  type="datetime-local"
+                  value={oneTimeShutdownAt}
+                  onChange={(e) => {
+                    setOneTimeShutdownAt(e.target.value);
+                    if (oneTimeStartupAt <= e.target.value) {
+                      setOneTimeStartupAt(defaultOnetimeStartupInput(e.target.value, timezone));
+                    }
+                  }}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Start date & time</Label>
+                <Input
+                  type="datetime-local"
+                  value={oneTimeStartupAt}
+                  min={oneTimeShutdownAt}
+                  onChange={(e) => setOneTimeStartupAt(e.target.value)}
+                  required
+                />
+              </div>
+              <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+                Runs this cross-day window once, then disables after startup completes.
+              </p>
+            </>
+          )}
+        </>
+      ) : recurrence === 'split' ? (
             <>
               <div className="space-y-3 rounded-xl border border-border p-3">
                 <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1046,58 +1211,23 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                   .
                 </p>
               ) : null}
+
+              <div className="space-y-2">
+                <Label>Days of week</Label>
+                <div className="flex flex-wrap gap-3">
+                  {DAY_LABELS.map((label, i) => {
+                    const day = i + 1;
+                    return (
+                      <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                        <Checkbox checked={daysOfWeek.includes(day)} onCheckedChange={() => toggleDay(day)} />
+                        {label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
             </>
           )}
-
-          {recurrence !== 'split' && (
-            <div className="space-y-2">
-              <Label>Days of week</Label>
-              <div className="flex flex-wrap gap-3">
-                {DAY_LABELS.map((label, i) => {
-                  const day = i + 1;
-                  return (
-                    <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
-                      <Checkbox checked={daysOfWeek.includes(day)} onCheckedChange={() => toggleDay(day)} />
-                      {label}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          <div className="space-y-2">
-            <Label>Shutdown date & time</Label>
-            <Input
-              type="datetime-local"
-              value={oneTimeShutdownAt}
-              onChange={(e) => {
-                setOneTimeShutdownAt(e.target.value);
-                if (oneTimeStartupAt <= e.target.value) {
-                  setOneTimeStartupAt(defaultOnetimeStartupInput(e.target.value, timezone));
-                }
-              }}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Startup date & time</Label>
-            <Input
-              type="datetime-local"
-              value={oneTimeStartupAt}
-              min={oneTimeShutdownAt}
-              onChange={(e) => setOneTimeStartupAt(e.target.value)}
-              required
-            />
-          </div>
-          <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
-            This schedule runs once: shutdown at the first datetime, then startup at the second.
-            It is disabled automatically after startup completes.
-          </p>
-        </>
-      )}
 
       {platformType === 'eks' && (
         <>

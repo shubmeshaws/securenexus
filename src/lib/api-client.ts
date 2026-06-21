@@ -73,10 +73,13 @@ export interface Schedule {
   weekendShutdownTime: string | null;
   weekendStartupTime: string | null;
   weekendDays: number[];
-  recurrence: 'daily' | 'onetime' | 'split';
+  recurrence: 'daily' | 'onetime' | 'split' | 'window';
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
   oneTimeCompleted: boolean;
+  shutdownDayOfWeek: number | null;
+  startupDayOfWeek: number | null;
+  windowRepeatWeekly: boolean;
   timezone: string;
   daysOfWeek: number[];
   syncPolicy: 'automated' | 'none';

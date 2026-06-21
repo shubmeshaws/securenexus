@@ -26,10 +26,13 @@ model Schedule {
   ec2Region       String?
   shutdownTime    String    // 24h format HH:mm (daily) or derived display for one-time
   startupTime     String    // 24h format HH:mm (daily) or derived display for one-time
-  recurrence      String    @default("daily") // daily | onetime | split
+  recurrence      String    @default("daily") // daily | onetime | split | window
   weekendShutdownTime String? // split mode: weekend-window shutdown HH:mm (other days use shutdownTime)
   weekendStartupTime  String? // split mode: weekend-window startup HH:mm (other days use startupTime)
   weekendDays     Int[]     @default([]) // split mode: ISO days (1=Mon…7=Sun) that use the weekend window
+  shutdownDayOfWeek Int?    // window mode: ISO day (1=Mon…7=Sun) to shut down
+  startupDayOfWeek  Int?    // window mode: ISO day (1=Mon…7=Sun) to start up
+  windowRepeatWeekly Boolean @default(true) // window mode: repeat every week; false = one-time window
   oneTimeShutdownAt DateTime?
   oneTimeStartupAt  DateTime?
   oneTimeCompleted  Boolean   @default(false)

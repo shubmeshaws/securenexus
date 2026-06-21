@@ -6,6 +6,8 @@ import {
   inferScheduleEnvironment,
   parseClusterDisplay,
 } from '@/lib/utils';
+import { isWindowOnce, isWindowSchedule } from '@/lib/schedule-recurrence';
+import { formatWindowScheduleSummary } from '@/lib/schedule-window';
 import { formatWorkloadKeyLabel, isNamespaceSchedule } from '@/lib/workload-utils';
 
 function scheduleTargetLabel(schedule: Schedule): string {
@@ -29,19 +31,38 @@ function scheduleRepeatsLabel(schedule: Schedule): string {
   if (schedule.recurrence === 'onetime') {
     return schedule.oneTimeCompleted ? 'One-time (done)' : 'One-time';
   }
+  if (isWindowSchedule(schedule)) {
+    return schedule.windowRepeatWeekly === false
+      ? schedule.oneTimeCompleted
+        ? 'Stop → Start (once, done)'
+        : 'Stop → Start (once)'
+      : formatWindowScheduleSummary(schedule);
+  }
   return daysOfWeekSummary(schedule.daysOfWeek).label;
 }
 
 function scheduleShutdownLabel(schedule: Schedule): string {
-  if (schedule.recurrence === 'onetime' && schedule.oneTimeShutdownAt) {
+  if (
+    (schedule.recurrence === 'onetime' || isWindowOnce(schedule)) &&
+    schedule.oneTimeShutdownAt
+  ) {
     return formatNextRunAt(schedule.oneTimeShutdownAt, schedule.timezone);
+  }
+  if (isWindowSchedule(schedule) && schedule.shutdownDayOfWeek) {
+    return `${schedule.shutdownDayOfWeek} ${schedule.shutdownTime}`;
   }
   return formatTime12h(schedule.shutdownTime);
 }
 
 function scheduleStartupLabel(schedule: Schedule): string {
-  if (schedule.recurrence === 'onetime' && schedule.oneTimeStartupAt) {
+  if (
+    (schedule.recurrence === 'onetime' || isWindowOnce(schedule)) &&
+    schedule.oneTimeStartupAt
+  ) {
     return formatNextRunAt(schedule.oneTimeStartupAt, schedule.timezone);
+  }
+  if (isWindowSchedule(schedule) && schedule.startupDayOfWeek) {
+    return `${schedule.startupDayOfWeek} ${schedule.startupTime}`;
   }
   return formatTime12h(schedule.startupTime);
 }

@@ -22,6 +22,7 @@ import {
   DashboardFilterSelect,
 } from '@/components/dashboard/dashboard-filters';
 import { ScheduleFormDrawer } from '@/components/pod-scheduler/schedule-form-drawer';
+import { ScheduleDetailDrawer } from '@/components/pod-scheduler/schedule-detail-drawer';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { PageHeader, GlassPanel } from '@/components/pod-scheduler/ui-primitives';
 import { usePermissions } from '@/components/auth/session-context';
@@ -71,6 +72,7 @@ export default function SchedulesPage() {
   const permissions = usePermissions();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
+  const [detailSchedule, setDetailSchedule] = useState<Schedule | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
   const [runSchedule, setRunSchedule] = useState<{ id: string; mode: 'shutdown' | 'startup' } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -150,9 +152,9 @@ export default function SchedulesPage() {
   function scheduleRowClass(schedule: Schedule) {
     const isManual = schedule.platformType === 'non_eks';
     return cn(
-      'border-b border-border transition-colors',
+      'cursor-pointer border-b border-border transition-colors hover:bg-muted/30',
       schedule.liveActive &&
-        'bg-red-500/[0.04] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]',
+        'bg-red-500/[0.04] hover:bg-red-500/[0.07] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]',
       !schedule.liveActive &&
         isManual &&
         'bg-sky-500/[0.07] hover:bg-sky-500/[0.1] dark:bg-sky-500/10 dark:hover:bg-sky-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(14,165,233)]',
@@ -291,6 +293,7 @@ export default function SchedulesPage() {
               <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-500/40" />
               <span>EKS</span>
             </span>
+            <span className="text-muted-foreground/80">· Click a row to view details</span>
           </div>
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full text-sm table-modern">
@@ -328,7 +331,11 @@ export default function SchedulesPage() {
                   </tr>
                 )}
                 {filteredSchedules.map((s) => (
-                  <tr key={s.id} className={scheduleRowClass(s)}>
+                  <tr
+                    key={s.id}
+                    className={scheduleRowClass(s)}
+                    onClick={() => setDetailSchedule(s)}
+                  >
                     <td className="px-5 py-3.5 font-medium text-foreground">{s.name}</td>
                     <td className="px-5 py-3.5">
                       <ScheduleClusterCell cluster={s.cluster} />
@@ -358,7 +365,7 @@ export default function SchedulesPage() {
                     <td className="px-5 py-3.5">
                       <ScheduleNextRunCell schedule={s} />
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3.5" onClick={(e) => e.stopPropagation()}>
                       <div className="flex justify-end">
                         <div className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-card/60 p-1 shadow-sm">
                           {permissions.scheduleStop && (
@@ -419,6 +426,28 @@ export default function SchedulesPage() {
           </div>
         </GlassPanel>
       )}
+
+      <ScheduleDetailDrawer
+        open={detailSchedule !== null}
+        onClose={() => setDetailSchedule(null)}
+        schedule={detailSchedule}
+        canEdit={permissions.scheduleEdit}
+        canStart={permissions.scheduleStart}
+        canStop={permissions.scheduleStop}
+        onEdit={(schedule) => {
+          setDetailSchedule(null);
+          setEditSchedule(schedule);
+          setDrawerOpen(true);
+        }}
+        onRun={(schedule, mode) => {
+          setDetailSchedule(null);
+          setRunSchedule({ id: schedule.id, mode });
+        }}
+        onDelete={(schedule) => {
+          setDetailSchedule(null);
+          setScheduleToDelete(schedule);
+        }}
+      />
 
       <ScheduleFormDrawer
         key={editSchedule?.id ?? 'new-schedule'}

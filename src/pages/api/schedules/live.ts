@@ -3,7 +3,8 @@ import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/
 import prisma from '@/lib/prisma';
 import { computeCurrentLiveStartupAt, isLiveScheduleVisible } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
-import { isOnetimeSchedule } from '@/lib/schedule-recurrence';
+import { isOnetimeSchedule, isWindowSchedule } from '@/lib/schedule-recurrence';
+import { dayLabel } from '@/lib/schedule-window';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
@@ -37,6 +38,10 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
         recurrence: schedule.recurrence,
         oneTimeShutdownAt: schedule.oneTimeShutdownAt?.toISOString() ?? null,
         oneTimeStartupAt: schedule.oneTimeStartupAt?.toISOString() ?? null,
+        shutdownDayOfWeek: schedule.shutdownDayOfWeek,
+        startupDayOfWeek: schedule.startupDayOfWeek,
+        windowRepeatWeekly: schedule.windowRepeatWeekly,
+        oneTimeCompleted: schedule.oneTimeCompleted,
         timezone: schedule.timezone,
         daysOfWeek: schedule.daysOfWeek,
         lastRun: schedule.lastRun?.toISOString() ?? null,
@@ -44,7 +49,11 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
         startupAt: startupAt?.toISOString() ?? null,
         message: isOnetimeSchedule(schedule) && startupAt
           ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-          : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
+          : isWindowSchedule(schedule) && startupAt
+            ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
+            : isWindowSchedule(schedule) && schedule.startupDayOfWeek
+              ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
+              : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
       };
     });
 

@@ -1,14 +1,42 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 
-export type ScheduleRecurrence = 'daily' | 'onetime' | 'split';
+export type ScheduleRecurrence = 'daily' | 'onetime' | 'split' | 'window';
 
-/** Weekly-repeating schedules (daily + weekday/weekend split) — i.e. not one-time. */
+/** Weekly-repeating schedules (daily + weekday/weekend split + window) — i.e. not one-time. */
 export function isDailySchedule(schedule: { recurrence?: string | null }): boolean {
-  return schedule.recurrence !== 'onetime';
+  return schedule.recurrence !== 'onetime' && !isWindowOnce(schedule);
 }
 
 export function isOnetimeSchedule(schedule: { recurrence?: string | null }): boolean {
   return schedule.recurrence === 'onetime';
+}
+
+/** Cross-day window that runs only once (recurrence=window, windowRepeatWeekly=false). */
+export function isWindowOnce(schedule: {
+  recurrence?: string | null;
+  windowRepeatWeekly?: boolean | null;
+}): boolean {
+  return schedule.recurrence === 'window' && schedule.windowRepeatWeekly === false;
+}
+
+/** Stop-day → start-day schedule (Fri stop, Mon start, etc.). */
+export function isWindowSchedule(schedule: { recurrence?: string | null }): boolean {
+  return schedule.recurrence === 'window';
+}
+
+/** Schedules that auto-disable after the startup run completes. */
+export function completesAfterStartup(schedule: {
+  recurrence?: string | null;
+  windowRepeatWeekly?: boolean | null;
+}): boolean {
+  return isOnetimeSchedule(schedule) || isWindowOnce(schedule);
+}
+
+export function isWindowRepeating(schedule: {
+  recurrence?: string | null;
+  windowRepeatWeekly?: boolean | null;
+}): boolean {
+  return schedule.recurrence === 'window' && schedule.windowRepeatWeekly !== false;
 }
 
 /** Split schedules apply different times on weekdays (Mon–Fri) vs weekends (Sat–Sun). */

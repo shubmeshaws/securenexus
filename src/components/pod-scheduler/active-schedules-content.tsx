@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Activity, CircleStop, Icons, Loader2 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, type Schedule } from '@/lib/api-client';
 import { formatRelativeTime, parseClusterDisplay } from '@/lib/utils';
 import {
   DashboardFilterBar,
@@ -13,6 +13,7 @@ import {
 } from '@/components/dashboard/dashboard-filters';
 import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
+import { ScheduleDetailDrawer } from '@/components/pod-scheduler/schedule-detail-drawer';
 import { usePermissions } from '@/components/auth/session-context';
 import { PageHeader, GlassPanel, PanelHeader, EmptyState } from '@/components/pod-scheduler/ui-primitives';
 import { Badge } from '@/components/ui/badge';
@@ -41,9 +42,13 @@ interface LiveScheduleItem {
   weekendShutdownTime: string | null;
   weekendStartupTime: string | null;
   weekendDays: number[];
-  recurrence: 'daily' | 'onetime' | 'split';
+  recurrence: 'daily' | 'onetime' | 'split' | 'window';
+  shutdownDayOfWeek: number | null;
+  startupDayOfWeek: number | null;
+  windowRepeatWeekly: boolean;
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
+  oneTimeCompleted: boolean;
   timezone: string;
   daysOfWeek: number[];
   lastRun: string | null;
@@ -79,6 +84,7 @@ export function ActiveSchedulesContent() {
   const queryClient = useQueryClient();
   const permissions = usePermissions();
   const [scheduleToStop, setScheduleToStop] = useState<LiveScheduleItem | null>(null);
+  const [detailLiveSchedule, setDetailLiveSchedule] = useState<LiveScheduleItem | null>(null);
   const [clusterFilter, setClusterFilter] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
   const [namespaceFilter, setNamespaceFilter] = useState('');
@@ -87,6 +93,12 @@ export function ActiveSchedulesContent() {
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['schedules-live'],
     queryFn: () => apiFetch<LiveSchedulesResponse>('/api/schedules/live'),
+    ...scheduleLiveQueryOptions,
+  });
+
+  const { data: allSchedulesData } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => apiFetch<{ schedules: Schedule[] }>('/api/schedules'),
     ...scheduleLiveQueryOptions,
   });
 
@@ -104,6 +116,9 @@ export function ActiveSchedulesContent() {
 
   const schedules = data?.schedules ?? [];
   const total = data?.total ?? 0;
+  const detailSchedule = detailLiveSchedule
+    ? allSchedulesData?.schedules.find((s) => s.id === detailLiveSchedule.id) ?? null
+    : null;
 
   const clusterOptions = useMemo(
     () =>
@@ -285,7 +300,11 @@ export function ActiveSchedulesContent() {
                   </tr>
                 )}
                 {filteredSchedules.map((schedule) => (
-                  <tr key={schedule.id} className="border-b border-border">
+                  <tr
+                    key={schedule.id}
+                    className="cursor-pointer border-b border-border transition-colors hover:bg-muted/30"
+                    onClick={() => setDetailLiveSchedule(schedule)}
+                  >
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-2">
                         <span className="relative flex h-2.5 w-2.5">
@@ -308,39 +327,12 @@ export function ActiveSchedulesContent() {
                       <Badge variant="success">Stopped</Badge>
                     </td>
                     <td className="px-5 py-3.5 text-xs text-muted-foreground">
-                      <ScheduleShutdownAtCell
-                        schedule={{
-                          recurrence: schedule.recurrence,
-                          shutdownTime: schedule.shutdownTime,
-                          weekendShutdownTime: schedule.weekendShutdownTime,
-                          weekendDays: schedule.weekendDays,
-                          daysOfWeek: schedule.daysOfWeek,
-                          oneTimeShutdownAt: schedule.oneTimeShutdownAt,
-                          timezone: schedule.timezone,
-                        }}
-                      />
+                      <ScheduleShutdownAtCell schedule={schedule} />
                       {' → '}
-                      <ScheduleStartupAtCell
-                        schedule={{
-                          recurrence: schedule.recurrence,
-                          startupTime: schedule.startupTime,
-                          weekendStartupTime: schedule.weekendStartupTime,
-                          weekendDays: schedule.weekendDays,
-                          daysOfWeek: schedule.daysOfWeek,
-                          oneTimeStartupAt: schedule.oneTimeStartupAt,
-                          timezone: schedule.timezone,
-                        }}
-                      />
+                      <ScheduleStartupAtCell schedule={schedule} />
                     </td>
                     <td className="px-5 py-3.5">
-                      <ScheduleRepeatsCell
-                        schedule={{
-                          recurrence: schedule.recurrence,
-                          daysOfWeek: schedule.daysOfWeek,
-                          oneTimeCompleted: false,
-                          enabled: true,
-                        }}
-                      />
+                      <ScheduleRepeatsCell schedule={schedule} />
                     </td>
                     <td className="px-5 py-3.5">
                       {schedule.startupAt ? (
@@ -357,7 +349,7 @@ export function ActiveSchedulesContent() {
                         }}
                       />
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3.5" onClick={(e) => e.stopPropagation()}>
                       {permissions.liveScheduleStop ? (
                         <div className="flex items-center justify-end">
                           <Button
@@ -388,6 +380,20 @@ export function ActiveSchedulesContent() {
           Refreshes automatically · last checked {formatRelativeTime(new Date(dataUpdatedAt))}
         </p>
       )}
+
+      <ScheduleDetailDrawer
+        open={detailLiveSchedule !== null && detailSchedule !== null}
+        onClose={() => setDetailLiveSchedule(null)}
+        schedule={detailSchedule}
+        liveInfo={
+          detailLiveSchedule
+            ? {
+                message: detailLiveSchedule.message,
+                startupAt: detailLiveSchedule.startupAt,
+              }
+            : undefined
+        }
+      />
 
       <ConfirmDialog
         open={scheduleToStop !== null}

@@ -6,3 +6,4 @@ export { DegradedBanner } from './degraded-banner';
 export { ClusterTreeView } from './cluster-tree-view';
 export { DeploymentDetailPanel } from './deployment-detail-panel';
 export { ScheduleFormDrawer } from './schedule-form-drawer';
+export { ScheduleDetailDrawer } from './schedule-detail-drawer';

@@ -15,6 +15,8 @@ import {
   inferScheduleEnvironment,
   parseClusterDisplay,
 } from '@/lib/utils';
+import { isOnetimeSchedule, isWindowSchedule, isWindowOnce } from '@/lib/schedule-recurrence';
+import { dayLabel, formatWindowScheduleSummary } from '@/lib/schedule-window';
 import {
   formatWorkloadKeyLabel,
   isNamespaceSchedule,
@@ -167,10 +169,20 @@ export function ScheduleShutdownAtCell({
     | 'weekendDays'
     | 'daysOfWeek'
     | 'oneTimeShutdownAt'
+    | 'oneTimeStartupAt'
     | 'timezone'
+    | 'shutdownDayOfWeek'
+    | 'windowRepeatWeekly'
   >;
 }) {
-  if (schedule.recurrence === 'onetime' && schedule.oneTimeShutdownAt) {
+  if (isWindowSchedule(schedule) && schedule.windowRepeatWeekly !== false && schedule.shutdownDayOfWeek) {
+    return (
+      <span className="whitespace-nowrap text-xs text-foreground">
+        {dayLabel(schedule.shutdownDayOfWeek)} {formatTime12h(schedule.shutdownTime)}
+      </span>
+    );
+  }
+  if ((isOnetimeSchedule(schedule) || isWindowOnce(schedule)) && schedule.oneTimeShutdownAt) {
     return (
       <span className="whitespace-nowrap text-xs text-foreground">
         {formatNextRunAt(schedule.oneTimeShutdownAt, schedule.timezone)}
@@ -201,10 +213,20 @@ export function ScheduleStartupAtCell({
     | 'weekendDays'
     | 'daysOfWeek'
     | 'oneTimeStartupAt'
+    | 'oneTimeShutdownAt'
     | 'timezone'
+    | 'startupDayOfWeek'
+    | 'windowRepeatWeekly'
   >;
 }) {
-  if (schedule.recurrence === 'onetime' && schedule.oneTimeStartupAt) {
+  if (isWindowSchedule(schedule) && schedule.windowRepeatWeekly !== false && schedule.startupDayOfWeek) {
+    return (
+      <span className="whitespace-nowrap text-xs text-foreground">
+        {dayLabel(schedule.startupDayOfWeek)} {formatTime12h(schedule.startupTime)}
+      </span>
+    );
+  }
+  if ((isOnetimeSchedule(schedule) || isWindowOnce(schedule)) && schedule.oneTimeStartupAt) {
     return (
       <span className="whitespace-nowrap text-xs text-foreground">
         {formatNextRunAt(schedule.oneTimeStartupAt, schedule.timezone)}
@@ -227,10 +249,28 @@ export function ScheduleStartupAtCell({
 export function ScheduleRepeatsCell({
   schedule,
 }: {
-  schedule: Pick<Schedule, 'recurrence' | 'daysOfWeek' | 'oneTimeCompleted' | 'enabled'>;
+  schedule: Pick<
+    Schedule,
+    | 'recurrence'
+    | 'daysOfWeek'
+    | 'oneTimeCompleted'
+    | 'windowRepeatWeekly'
+    | 'shutdownDayOfWeek'
+    | 'startupDayOfWeek'
+    | 'shutdownTime'
+    | 'startupTime'
+  >;
 }) {
-  if (schedule.recurrence === 'onetime') {
+  if (isOnetimeSchedule(schedule)) {
     const label = schedule.oneTimeCompleted ? 'One-time (done)' : 'One-time';
+    return <span className="text-xs text-muted-foreground">{label}</span>;
+  }
+  if (isWindowSchedule(schedule)) {
+    const label = isWindowOnce(schedule)
+      ? schedule.oneTimeCompleted
+        ? 'Stop → Start (once, done)'
+        : 'Stop → Start (once)'
+      : formatWindowScheduleSummary(schedule);
     return <span className="text-xs text-muted-foreground">{label}</span>;
   }
   return <ScheduleDaysCell days={schedule.daysOfWeek} />;
