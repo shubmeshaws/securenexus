@@ -1,18 +1,14 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { parseDashboardDateQuery } from '@/lib/dashboard-date-range';
 import { getNodeCountTrendData } from '@/lib/node-count-trend-service';
-import type { NodeCountMetric } from '@/lib/node-count-trend-data';
+import type { NodeCountTrendQuery } from '@/lib/node-count-trend-data';
 
-function parseQuery(req: AuthenticatedRequest) {
-  const daysRaw = req.query.days;
-  const from = typeof req.query.from === 'string' ? req.query.from : undefined;
-  const to = typeof req.query.to === 'string' ? req.query.to : undefined;
-  const metricRaw = typeof req.query.metric === 'string' ? req.query.metric : undefined;
+function parseQuery(req: AuthenticatedRequest): NodeCountTrendQuery {
+  const dateQuery = parseDashboardDateQuery(req.query);
   const cluster = typeof req.query.cluster === 'string' ? req.query.cluster : undefined;
-  const days =
-    typeof daysRaw === 'string' && /^\d+$/.test(daysRaw) ? Number.parseInt(daysRaw, 10) : undefined;
-  const metric: NodeCountMetric = metricRaw === 'max' ? 'max' : 'average';
-  return { days, from, to, metric, cluster };
+  const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+  return { ...dateQuery, cluster, date };
 }
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {

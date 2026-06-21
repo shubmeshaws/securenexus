@@ -14,19 +14,19 @@ import {
   type ChartOptions,
 } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2';
-import { ArrowUp, Boxes } from 'lucide-react';
+import { Boxes, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTheme } from '@/components/providers/theme-provider';
-import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
+import { GlassPanel, PanelHeader, PanelSubtitle } from '@/components/pod-scheduler/ui-primitives';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api-client';
 import {
-  AFTER_STOP_STYLE,
-  BEFORE_STOP_STYLE,
   NODE_COUNT_TREND_PLACEHOLDER,
+  NODES_SERIES_STYLE,
+  PODS_SERIES_STYLE,
   formatNodeCount,
-  nodeCountMetricLabel,
-  type NodeCountMetric,
   type NodeCountTrendResponse,
+  type NodePodSeriesId,
 } from '@/lib/node-count-trend-data';
 import {
   appendDashboardDateQuery,
@@ -39,7 +39,7 @@ import {
   DashboardFilterSelect,
   DashboardToggleGroup,
 } from '@/components/dashboard/dashboard-filters';
-import { cn } from '@/lib/utils';
+import { cn, formatTime12h } from '@/lib/utils';
 
 ChartJS.register(
   CategoryScale,
@@ -52,42 +52,29 @@ ChartJS.register(
 );
 
 type ChartMode = 'line' | 'bar';
+type SeriesMode = NodePodSeriesId;
 
 const CHART_HEIGHT_PX = 260;
 
-function DeltaBadge({ delta }: { delta: number }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-0.5 font-medium',
-        delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
-      )}
-    >
-      {delta >= 0 ? (
-        <ArrowUp className="h-3 w-3" strokeWidth={2} />
-      ) : (
-        <ArrowUp className="h-3 w-3 rotate-180" strokeWidth={2} />
-      )}
-      {formatNodeCount(Math.abs(delta))} nodes
-    </span>
-  );
-}
+const SERIES_STYLES: Record<NodePodSeriesId, { color: string; fill: string; barBg: string }> = {
+  nodes: NODES_SERIES_STYLE,
+  pods: PODS_SERIES_STYLE,
+};
 
 function NodeCountTrendSkeleton() {
   return (
     <GlassPanel className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
-        <Skeleton className="h-8 w-44" />
-        <Skeleton className="h-7 w-28 rounded-lg" />
+        <Skeleton className="h-8 w-52" />
+        <Skeleton className="h-7 w-40 rounded-lg" />
       </div>
-      <Skeleton className="mx-5 mt-3 h-3 w-56" />
+      <Skeleton className="mx-5 mt-3 h-3 w-72" />
       <div className="flex flex-1 flex-col gap-3 px-5 py-4">
         <div className="flex gap-4">
-          <Skeleton className="h-3 w-32" />
-          <Skeleton className="h-3 w-32" />
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3 w-24" />
         </div>
         <Skeleton className="w-full flex-1 rounded-xl" style={{ minHeight: CHART_HEIGHT_PX }} />
-        <Skeleton className="h-10 w-full rounded-lg" />
       </div>
     </GlassPanel>
   );
@@ -101,18 +88,26 @@ export default function NodeCountTrend({
   dateRange: DashboardDateRange;
 }) {
   const { theme } = useTheme();
-  const [chartMode, setChartMode] = useState<ChartMode>('bar');
-  const [metric, setMetric] = useState<NodeCountMetric>('average');
+  const [chartMode, setChartMode] = useState<ChartMode>('line');
+  const [seriesMode, setSeriesMode] = useState<SeriesMode>('nodes');
   const [cluster, setCluster] = useState('');
+  const [calendarDate, setCalendarDate] = useState('');
 
   const rangeReady = isDashboardDateRangeReady(dateRange);
-  const metricShort = metric === 'max' ? 'max' : 'avg';
-  const clusterParam = cluster ? `&cluster=${encodeURIComponent(cluster)}` : '';
-  const trendUrl = `${appendDashboardDateQuery('/api/dashboard/node-count-trend', dateRange)}&metric=${metric}${clusterParam}`;
+  const periodLabel = getDashboardPeriodLabel(dateRange);
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['node-count-trend', dateRange, metric, cluster],
-    queryFn: () => apiFetch<NodeCountTrendResponse>(trendUrl),
+  const queryUrl = useMemo(() => {
+    const base = appendDashboardDateQuery('/api/dashboard/node-count-trend', dateRange);
+    const params = new URLSearchParams();
+    if (cluster) params.set('cluster', cluster);
+    if (calendarDate) params.set('date', calendarDate);
+    const extra = params.toString();
+    return extra ? `${base}&${extra}` : base;
+  }, [dateRange, cluster, calendarDate]);
+
+  const { data, isLoading, isFetching, isError, error } = useQuery({
+    queryKey: ['node-count-trend', dateRange, cluster, calendarDate],
+    queryFn: () => apiFetch<NodeCountTrendResponse>(queryUrl),
     refetchInterval: 60_000,
     placeholderData: (previousData) => previousData ?? NODE_COUNT_TREND_PLACEHOLDER,
     enabled: rangeReady,
@@ -131,30 +126,57 @@ export default function NodeCountTrend({
     }
   }, [cluster, chartData.cluster]);
 
-  const hasData = chartData.series.some((row) => row.data.some((value) => value > 0));
+  useEffect(() => {
+    if (!chartData.calendarDate || calendarDate) return;
+    setCalendarDate(chartData.calendarDate);
+  }, [chartData.calendarDate, calendarDate]);
+
+  useEffect(() => {
+    if (cluster && availableClusters.length && !availableClusters.includes(cluster)) {
+      setCluster('');
+      setCalendarDate('');
+    }
+  }, [cluster, availableClusters]);
+
+  const visibleSeries = useMemo(
+    () => chartData.series.filter((row) => row.id === seriesMode),
+    [chartData.series, seriesMode]
+  );
+
+  const hasData =
+    chartData.hasSamples && visibleSeries.some((row) => row.data.some((value) => value != null));
+  const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
+
+  const periodHoursLabel = useMemo(() => {
+    if (
+      chartData.captureStartDate &&
+      chartData.calendarDate === chartData.captureStartDate &&
+      chartData.captureStartHour != null
+    ) {
+      return `from ${formatTime12h(`${String(chartData.captureStartHour).padStart(2, '0')}:00`)}`;
+    }
+    return 'from 12:00 AM';
+  }, [chartData.captureStartDate, chartData.captureStartHour, chartData.calendarDate]);
+
   const isDark = theme === 'dark';
   const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
   const tickColor = '#888780';
 
-  const seriesStyles = {
-    'before-stop': BEFORE_STOP_STYLE,
-    'after-stop': AFTER_STOP_STYLE,
-  } as const;
-
   const datasets = useMemo(() => {
-    return chartData.series.map((row) => {
-      const style = seriesStyles[row.id];
+    return visibleSeries.map((row) => {
+      const style = SERIES_STYLES[row.id];
       if (chartMode === 'line') {
         return {
           label: row.label,
           data: row.data,
           borderColor: style.color,
           backgroundColor: style.fill,
-          tension: 0.4,
+          tension: 0.35,
           borderWidth: 2,
-          pointRadius: 2,
+          pointRadius: chartData.labels.length > 24 ? 0 : 2,
           pointHoverRadius: 4,
-          fill: true,
+          spanGaps: true,
+          fill: false,
         };
       }
       return {
@@ -163,34 +185,35 @@ export default function NodeCountTrend({
         backgroundColor: style.barBg,
         borderColor: style.color,
         borderWidth: 1,
-        borderRadius: 4,
+        borderRadius: 3,
       };
     });
-  }, [chartData.series, chartMode]);
+  }, [visibleSeries, chartData.labels.length, chartMode]);
 
-  const options: ChartOptions<'line' | 'bar'> = useMemo(
+  const chartOptions = useMemo(
     () => ({
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
+      interaction: { mode: 'index' as const, intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (context) => ` ${formatNodeCount(Number(context.parsed.y))} nodes ${metricShort}`,
+            label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+              ` ${context.dataset.label}: ${formatNodeCount(Number(context.parsed.y))}`,
           },
         },
       },
       scales: {
         x: {
           grid: {
-            display: chartMode === 'bar' ? false : true,
+            display: chartMode === 'line',
             color: gridColor,
           },
           ticks: {
             color: tickColor,
             font: { size: 10 },
-            maxTicksLimit: chartData.days > 14 ? 8 : 7,
+            maxTicksLimit: chartData.labels.length > 24 ? 12 : 8,
             maxRotation: 0,
           },
         },
@@ -199,53 +222,53 @@ export default function NodeCountTrend({
           ticks: {
             color: tickColor,
             font: { size: 10 },
-            callback: (value) => formatNodeCount(Number(value)),
+            callback: (value: string | number) => formatNodeCount(Number(value)),
           },
         },
       },
     }),
-    [chartMode, chartData.days, gridColor, tickColor, metricShort]
+    [chartMode, chartData.labels.length, gridColor, tickColor]
   );
 
   if (isLoading && !data) {
     return <NodeCountTrendSkeleton />;
   }
 
-  const ChartComponent = chartMode === 'line' ? Line : Bar;
-  const periodLabel = getDashboardPeriodLabel(dateRange);
-  const periodSummaryLabel = metric === 'max' ? 'Period max' : 'Period avg';
-  const beforeSeries = chartData.series.find((row) => row.id === 'before-stop');
-  const afterSeries = chartData.series.find((row) => row.id === 'after-stop');
-
   return (
     <GlassPanel className={cn('flex h-full flex-col', className)}>
       <PanelHeader
-        title="Node count trend"
+        title="Node & pod count trend"
         icon={Boxes}
         accent="violet"
+        titleAddon={
+          availableClusters.length > 0 ? (
+            <DashboardFilterSelect
+              width="lg"
+              value={cluster || chartData.cluster}
+              onChange={(e) => {
+                setCluster(e.target.value);
+                setCalendarDate('');
+              }}
+              aria-label="Cluster filter"
+              title={cluster || chartData.cluster}
+            >
+              {availableClusters.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </DashboardFilterSelect>
+          ) : null
+        }
         action={
           <DashboardFilterBar className="justify-end">
-            {availableClusters.length > 0 ? (
-              <DashboardFilterSelect
-                width="lg"
-                value={cluster || chartData.cluster}
-                onChange={(e) => setCluster(e.target.value)}
-                aria-label="Cluster filter"
-                title={cluster || chartData.cluster}
-              >
-                {availableClusters.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </DashboardFilterSelect>
-            ) : null}
             <DashboardToggleGroup
-              value={metric}
-              onChange={setMetric}
+              value={seriesMode}
+              onChange={setSeriesMode}
+              capitalize
               options={[
-                { id: 'average' as const, label: 'Average' },
-                { id: 'max' as const, label: 'Max' },
+                { id: 'nodes' as const, label: 'nodes' },
+                { id: 'pods' as const, label: 'pods' },
               ]}
             />
             <DashboardToggleGroup
@@ -260,26 +283,67 @@ export default function NodeCountTrend({
           </DashboardFilterBar>
         }
       />
-      <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
-        {nodeCountMetricLabel(metric)} during daytime (after startup, before shutdown) vs stopped hours · hourly
-        ready-node samples · {periodLabel}
-        {chartData.isTodayLive ? ' · today live until midnight' : ''}
+      <PanelSubtitle
+        action={
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-[11px]"
+              disabled={!chartData.previousDate}
+              onClick={() => chartData.previousDate && setCalendarDate(chartData.previousDate)}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Previous day
+            </Button>
+            <span className="min-w-[6.5rem] text-center text-[11px] font-medium tabular-nums text-foreground">
+              {chartData.calendarDate || '—'}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-[11px]"
+              disabled={!chartData.nextDate}
+              onClick={() => chartData.nextDate && setCalendarDate(chartData.nextDate)}
+            >
+              Next day
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        }
+      >
+        Hourly {seriesLabel.toLowerCase()} {periodHoursLabel} to 11:59 PM · {periodLabel}
+        {chartData.retentionDays ? ` · ${chartData.retentionDays}-day retention` : ''}
         {isFetching ? ' · updating…' : ''}
-      </p>
+      </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 py-3">
         <div className="mb-3 flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5">
-          {!availableClusters.length ? (
+          {!rangeReady ? (
             <p className="text-[11px] text-muted-foreground">
-              Add EKS clusters under Clusters to start tracking node counts.
+              Select a from and to date to load the chart.
+            </p>
+          ) : !availableClusters.length ? (
+            <p className="text-[11px] text-muted-foreground">
+              Add EKS clusters under Clusters to start tracking node and pod counts.
+            </p>
+          ) : !chartData.hasSamples ? (
+            <p className="text-[11px] text-muted-foreground">
+              Sampling registered clusters — hourly counts appear once samples are collected.
             </p>
           ) : !hasData ? (
             <p className="text-[11px] text-muted-foreground">
-              Sampling registered clusters — hourly counts appear throughout the day.
+              No {seriesMode} samples for {chartData.calendarDate || 'this day'}.
             </p>
           ) : (
-            chartData.series.map((row) => {
-              const style = seriesStyles[row.id];
+            visibleSeries.map((row) => {
+              const style = SERIES_STYLES[row.id];
+              const latest =
+                [...row.data].reverse().find((value) => value != null) ??
+                row.data.at(-1) ??
+                0;
               return (
                 <div key={row.id} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   <span
@@ -287,7 +351,7 @@ export default function NodeCountTrend({
                     style={{ backgroundColor: style.color }}
                   />
                   <span>
-                    {row.label} · {formatNodeCount(row.total)} nodes {metricShort}
+                    {row.label} · latest {formatNodeCount(latest)}
                   </span>
                 </div>
               );
@@ -300,52 +364,28 @@ export default function NodeCountTrend({
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               Select a from and to date to load the chart.
             </div>
+          ) : isError ? (
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-red-500">
+              Failed to load trend data{(error as Error)?.message ? `: ${(error as Error).message}` : ''}.
+              Refresh the page after the server restarts.
+            </div>
           ) : !availableClusters.length ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               No registered clusters found.
             </div>
+          ) : !chartData.hasSamples ? (
+            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+              Waiting for the first node and pod count sample…
+            </div>
           ) : !hasData ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              Waiting for the first hourly node count sample…
+              No {seriesMode} samples for {chartData.calendarDate || 'this day'}.
             </div>
+          ) : chartMode === 'line' ? (
+            <Line data={{ labels: chartData.labels, datasets }} options={chartOptions as ChartOptions<'line'>} />
           ) : (
-            <ChartComponent data={{ labels: chartData.labels, datasets }} options={options} />
+            <Bar data={{ labels: chartData.labels, datasets }} options={chartOptions as ChartOptions<'bar'>} />
           )}
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg bg-muted/60 px-3 py-2.5">
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">Today before stop: </span>
-            <span className="font-medium text-foreground">
-              {formatNodeCount(chartData.summary.todayBefore)} nodes
-            </span>
-          </div>
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">Today after stop: </span>
-            <span className="font-medium text-foreground">
-              {formatNodeCount(chartData.summary.todayAfter)} nodes
-            </span>
-          </div>
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">{periodSummaryLabel} before: </span>
-            <span className="font-medium text-foreground">
-              {formatNodeCount(beforeSeries?.total ?? chartData.summary.periodBefore)} nodes
-            </span>
-          </div>
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">{periodSummaryLabel} after: </span>
-            <span className="font-medium text-foreground">
-              {formatNodeCount(afterSeries?.total ?? chartData.summary.periodAfter)} nodes
-            </span>
-          </div>
-          <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-muted-foreground">Before vs prior: </span>
-            <DeltaBadge delta={chartData.summary.priorBeforeDelta} />
-          </div>
-          <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-muted-foreground">After vs prior: </span>
-            <DeltaBadge delta={chartData.summary.priorAfterDelta} />
-          </div>
         </div>
       </div>
     </GlassPanel>

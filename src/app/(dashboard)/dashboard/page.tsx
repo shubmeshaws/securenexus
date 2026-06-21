@@ -16,6 +16,7 @@ import {
   PageHeader,
   GlassPanel,
   PanelHeader,
+  PanelSubtitle,
   ScrollTable,
 } from '@/components/pod-scheduler/ui-primitives';
 import NodeCountTrend from '@/components/dashboard/node-count-trend';
@@ -268,11 +269,11 @@ export default function PodSchedulerOverviewPage() {
                   </DashboardFilterBar>
                 }
               />
-              <p className="min-h-[4.25rem] border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
+              <PanelSubtitle className="min-h-[4.25rem]">
                 EKS only — counts actual stop→start windows from schedules, manual runs, and infrastructure actions.
                 Early startup ends the window at the real start time. · {periodLabel}
                 {periodSuffix}
-              </p>
+              </PanelSubtitle>
               {!rangeReady ? (
                 <p className="p-8 text-center text-sm text-muted-foreground">
                   Select a from and to date to load stop-time data.
@@ -357,10 +358,10 @@ export default function PodSchedulerOverviewPage() {
                   />
                 }
               />
-              <p className="min-h-[4.25rem] border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
+              <PanelSubtitle className="min-h-[4.25rem]">
                 Non-EKS EC2 instances — actual stop→start windows from scheduled or manual actions. · {periodLabel}
                 {periodSuffix}
-              </p>
+              </PanelSubtitle>
               {!rangeReady ? (
                 <p className="p-8 text-center text-sm text-muted-foreground">
                   Select a from and to date to load stop-time data.

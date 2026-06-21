@@ -23,9 +23,15 @@ const nextConfig = {
     // Avoid EMFILE watcher errors on macOS when many files are open
     if (dev) {
       config.watchOptions = {
-        poll: 1000,
         aggregateTimeout: 300,
-        ignored: ['**/node_modules/**', '**/.git/**', '**/.next/**'],
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/.next/**',
+          '**/.securenexus/**',
+          '**/.git-repos/**',
+          '**/.securenexus/security-scans/**',
+        ],
       };
     }
     return config;

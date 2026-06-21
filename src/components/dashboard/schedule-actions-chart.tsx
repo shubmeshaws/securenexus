@@ -16,7 +16,7 @@ import {
 import { Bar } from 'react-chartjs-2';
 import { BarChart2 } from 'lucide-react';
 import { useTheme } from '@/components/providers/theme-provider';
-import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
+import { GlassPanel, PanelHeader, PanelSubtitle } from '@/components/pod-scheduler/ui-primitives';
 import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api-client';
 import {
@@ -204,10 +204,10 @@ export default function ScheduleActionsChart({
           </div>
         }
       />
-      <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
+      <PanelSubtitle>
         Shutdowns vs startups · {periodLabel}
         {isFetching ? ' · updating…' : ''}
-      </p>
+      </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 py-3">
         <div className="mb-3 flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">

@@ -250,7 +250,7 @@ export function AdminRetentionPanel() {
               onChange={(e) => setNodeSampleRetentionDays(parseInt(e.target.value, 10) || 90)}
             />
             <p className="text-[11px] text-muted-foreground">
-              Hourly node and pod count samples for Node count trend, Node changes, and Pod changes are
+              15-minute node and pod count samples for Node & pod count trend, Node changes, and Pod changes are
               kept for this many days. Minimum 7 days.
             </p>
           </div>

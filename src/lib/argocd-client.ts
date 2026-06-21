@@ -302,15 +302,23 @@ class InstanceArgoCDClient {
     const app = await this.getApplicationRaw(appName);
     const spec = (app.spec as Record<string, unknown>) ?? {};
     if (syncPolicy === 'automated') {
-      spec.syncPolicy = { automated: { prune: true, selfHeal: true } };
+      const existing = (spec.syncPolicy as Record<string, unknown>) ?? {};
+      spec.syncPolicy = { ...existing, automated: { prune: true, selfHeal: true } };
     } else {
-      spec.syncPolicy = {};
+      // Remove the automated block so Argo stops auto-syncing/self-healing.
+      const existing = (spec.syncPolicy as Record<string, unknown>) ?? {};
+      const { automated: _automated, ...rest } = existing;
+      spec.syncPolicy = rest;
     }
+    // Use PUT (the Update endpoint) with the full application body. The PATCH
+    // endpoint expects an ApplicationPatchRequest ({patch, patchType}); sending a
+    // full app there silently no-ops, leaving automated sync enabled.
     const res = await argoFetch(`${this.baseUrl}/applications/${encodeURIComponent(appName)}`, {
-      method: 'PATCH',
+      method: 'PUT',
       headers: this.headers,
       body: JSON.stringify({ ...app, spec }),
       insecureTls: this.instance.insecureTls,
+      timeoutMs: 30_000,
     });
     if (!res.ok) {
       const text = await res.text();

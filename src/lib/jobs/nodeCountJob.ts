@@ -23,9 +23,9 @@ export function initNodeCountJob(): void {
   if (g[NODE_COUNT_JOB_KEY]) return;
   g[NODE_COUNT_JOB_KEY] = true;
 
-  console.log('[NodeCount] Initializing hourly node & pod count sampler…');
+  console.log('[NodeCount] Initializing 15-minute node & pod count sampler…');
 
-  hourlyJob = cron.schedule('5 * * * *', () => {
+  hourlyJob = cron.schedule('*/15 * * * *', () => {
     void runHourlySamples().catch((err) => {
       console.error('[NodeCount] Hourly sample failed:', err);
     });

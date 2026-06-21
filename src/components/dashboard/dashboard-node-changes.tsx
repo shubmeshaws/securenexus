@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Boxes, Loader2 } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
-import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
+import { GlassPanel, PanelHeader, PanelSubtitle } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import DashboardDateFilter from '@/components/dashboard/dashboard-date-filter';
 import {
@@ -129,40 +129,41 @@ export function DashboardNodeChanges({
           }
         />
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
-          <p className="max-w-3xl text-[11px] leading-relaxed text-muted-foreground">
-            Hourly ready-node counts {periodHoursLabel} to 11:59 PM · {periodLabel}
-            {data?.retentionDays ? ` · ${data.retentionDays}-day retention` : ''}
-            {isFetching ? ' · updating…' : ''}
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1 text-[11px]"
-              disabled={!data?.previousDate}
-              onClick={() => data?.previousDate && setCalendarDate(data.previousDate)}
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-              Previous day
-            </Button>
-            <span className="min-w-[6.5rem] text-center text-[11px] font-medium tabular-nums text-foreground">
-              {data?.calendarDate ?? '—'}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1 text-[11px]"
-              disabled={!data?.nextDate}
-              onClick={() => data?.nextDate && setCalendarDate(data.nextDate)}
-            >
-              Next day
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
+        <PanelSubtitle
+          action={
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-[11px]"
+                disabled={!data?.previousDate}
+                onClick={() => data?.previousDate && setCalendarDate(data.previousDate)}
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Previous day
+              </Button>
+              <span className="min-w-[6.5rem] text-center text-[11px] font-medium tabular-nums text-foreground">
+                {data?.calendarDate ?? '—'}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-[11px]"
+                disabled={!data?.nextDate}
+                onClick={() => data?.nextDate && setCalendarDate(data.nextDate)}
+              >
+                Next day
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          }
+        >
+          Hourly ready-node counts {periodHoursLabel} to 11:59 PM · {periodLabel}
+          {data?.retentionDays ? ` · ${data.retentionDays}-day retention` : ''}
+          {isFetching ? ' · updating…' : ''}
+        </PanelSubtitle>
 
         {!rangeReady ? (
           <p className="p-8 text-center text-sm text-muted-foreground">

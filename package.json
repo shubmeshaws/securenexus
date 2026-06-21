@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3005",
+    "dev": "WATCHPACK_POLLING=true next dev -p 3005",
     "preview": "npm run build && lsof -ti:3005 | xargs kill -9 2>/dev/null || true && next start -p 3005",
     "build": "prisma generate && next build",
     "start": "next start -H 0.0.0.0 -p 3005",

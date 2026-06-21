@@ -10,7 +10,7 @@ import {
 import { parseClusterDisplay } from '@/lib/utils';
 import { resolveAwsCredentialForAccount } from '@/lib/eks-kubeconfig';
 
-const K8S_NAMESPACE_TIMEOUT_MS = 5_000;
+const K8S_NAMESPACE_TIMEOUT_MS = 12_000;
 const ARGOCD_NAMESPACE_TIMEOUT_MS = 8_000;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {

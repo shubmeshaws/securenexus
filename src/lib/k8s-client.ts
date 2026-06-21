@@ -562,6 +562,181 @@ export async function scaleStatefulSet(
   );
 }
 
+export async function statefulSetExists(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<boolean> {
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.AppsV1Api);
+    await api.readNamespacedStatefulSet(name, namespace);
+    return true;
+  } catch (err) {
+    const status = (err as { statusCode?: number; body?: { code?: number } })?.statusCode
+      ?? (err as { body?: { code?: number } })?.body?.code;
+    if (status === 404) return false;
+    throw err;
+  }
+}
+
+type ObjectMeta = { labels?: { [k: string]: string }; annotations?: { [k: string]: string } } | undefined;
+
+/**
+ * Extract the owning ArgoCD application name from a resource's tracking metadata.
+ * ArgoCD marks managed resources with the `argocd.argoproj.io/tracking-id`
+ * annotation (annotation tracking) and/or the `app.kubernetes.io/instance` label
+ * (label tracking, default).
+ */
+function argoAppNameFromMeta(meta: ObjectMeta): string | null {
+  // tracking-id format: "<app>:<group>/<kind>:<namespace>/<name>"
+  const trackingId = meta?.annotations?.['argocd.argoproj.io/tracking-id'];
+  const fromTracking = trackingId?.split(':')[0]?.trim();
+  if (fromTracking) return fromTracking;
+
+  const instanceLabel = meta?.labels?.['app.kubernetes.io/instance']?.trim();
+  if (instanceLabel) return instanceLabel;
+
+  return null;
+}
+
+/**
+ * Read the ArgoCD application managing a StatefulSet directly from the live
+ * resource. Far more reliable than matching apps by namespace, since one Argo app
+ * often deploys resources across namespaces under a name unrelated to the workload.
+ */
+export async function getStatefulSetArgoAppName(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<string | null> {
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.AppsV1Api);
+    const res = await api.readNamespacedStatefulSet(name, namespace);
+    return argoAppNameFromMeta(res.body.metadata);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Collect the set of ArgoCD application names managing workloads in a namespace,
+ * derived from each live resource's tracking metadata. Covers Deployments and
+ * StatefulSets — enough to identify the Argo apps that need pausing for a
+ * namespace-scoped shutdown.
+ */
+export async function getArgoAppNamesForNamespace(
+  cluster: string,
+  namespace: string
+): Promise<string[]> {
+  const names = new Set<string>();
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.AppsV1Api);
+
+    const [deployments, statefulSets] = await Promise.all([
+      api.listNamespacedDeployment(namespace).catch(() => null),
+      api.listNamespacedStatefulSet(namespace).catch(() => null),
+    ]);
+
+    for (const item of deployments?.body.items ?? []) {
+      const app = argoAppNameFromMeta(item.metadata);
+      if (app) names.add(app);
+    }
+    for (const item of statefulSets?.body.items ?? []) {
+      const app = argoAppNameFromMeta(item.metadata);
+      if (app) names.add(app);
+    }
+  } catch {
+    // best-effort
+  }
+  return Array.from(names);
+}
+
+function labelSelectorFromMatchLabels(matchLabels?: { [key: string]: string }): string | undefined {
+  if (!matchLabels) return undefined;
+  const entries = Object.entries(matchLabels);
+  if (!entries.length) return undefined;
+  return entries.map(([k, v]) => `${k}=${v}`).join(',');
+}
+
+function podBelongsToStatefulSet(pod: k8s.V1Pod, stsName: string): boolean {
+  const owned = (pod.metadata?.ownerReferences ?? []).some(
+    (owner) => owner.kind === 'StatefulSet' && owner.name === stsName
+  );
+  if (owned) return true;
+  // StatefulSet pods are named "<sts>-<ordinal>"; match as a fallback once GC
+  // has stripped the ownerReference.
+  const podName = pod.metadata?.name ?? '';
+  return new RegExp(`^${stsName}-\\d+$`).test(podName);
+}
+
+/**
+ * Delete a StatefulSet while preserving its PVCs. PVCs created from
+ * volumeClaimTemplates are not owned by the StatefulSet, so deletion removes the
+ * pods but leaves persistent storage intact — no data loss. After deleting the
+ * StatefulSet we explicitly delete its pods so none linger.
+ */
+export async function deleteStatefulSet(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<void> {
+  const kc = await getConfigForCluster(cluster);
+  const appsApi = kc.makeApiClient(k8s.AppsV1Api);
+  const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+
+  // Capture the pod selector before deleting so we can clean up pods afterwards.
+  let labelSelector: string | undefined;
+  try {
+    const sts = await appsApi.readNamespacedStatefulSet(name, namespace);
+    labelSelector = labelSelectorFromMatchLabels(sts.body.spec?.selector?.matchLabels);
+  } catch (err) {
+    const status = (err as { statusCode?: number; body?: { code?: number } })?.statusCode
+      ?? (err as { body?: { code?: number } })?.body?.code;
+    if (status === 404) return;
+    throw err;
+  }
+
+  // Delete the StatefulSet (Background cascade removes the object immediately;
+  // the garbage collector removes owned pods asynchronously).
+  await appsApi.deleteNamespacedStatefulSet(
+    name,
+    namespace,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'Background'
+  );
+
+  // Belt-and-suspenders: explicitly delete any pods still belonging to the STS
+  // so none linger if GC is slow.
+  try {
+    const pods = await coreApi.listNamespacedPod(
+      namespace,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector
+    );
+    for (const pod of pods.body.items ?? []) {
+      if (!podBelongsToStatefulSet(pod, name)) continue;
+      const podName = pod.metadata?.name;
+      if (!podName) continue;
+      try {
+        await coreApi.deleteNamespacedPod(podName, namespace);
+      } catch {
+        // Pod may already be terminating from the cascade delete.
+      }
+    }
+  } catch {
+    // Pod cleanup is best-effort; the cascade delete already removes them.
+  }
+}
+
 async function setCronJobSuspended(
   cluster: string,
   namespace: string,

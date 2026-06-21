@@ -70,7 +70,10 @@ export interface Schedule {
   awsAccountId?: string | null;
   shutdownTime: string;
   startupTime: string;
-  recurrence: 'daily' | 'onetime';
+  weekendShutdownTime: string | null;
+  weekendStartupTime: string | null;
+  weekendDays: number[];
+  recurrence: 'daily' | 'onetime' | 'split';
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
   oneTimeCompleted: boolean;

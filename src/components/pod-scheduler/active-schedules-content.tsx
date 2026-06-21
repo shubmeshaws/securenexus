@@ -1,12 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Activity, CircleStop, Icons, Loader2 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch } from '@/lib/api-client';
-import { formatRelativeTime } from '@/lib/utils';
+import { formatRelativeTime, parseClusterDisplay } from '@/lib/utils';
+import {
+  DashboardFilterBar,
+  DashboardFilterSelect,
+} from '@/components/dashboard/dashboard-filters';
 import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { usePermissions } from '@/components/auth/session-context';
@@ -34,7 +38,10 @@ interface LiveScheduleItem {
   excludedWorkloads: string[];
   shutdownTime: string;
   startupTime: string;
-  recurrence: 'daily' | 'onetime';
+  weekendShutdownTime: string | null;
+  weekendStartupTime: string | null;
+  weekendDays: number[];
+  recurrence: 'daily' | 'onetime' | 'split';
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
   timezone: string;
@@ -51,10 +58,31 @@ interface LiveSchedulesResponse {
   checkedAt: string;
 }
 
+type LiveScheduleStatusKey = 'stopped' | 'completed' | 'enabled' | 'disabled';
+
+function liveScheduleAccountId(schedule: LiveScheduleItem): string {
+  return parseClusterDisplay(schedule.cluster).accountId ?? '';
+}
+
+function liveScheduleStatusKey(_schedule: LiveScheduleItem): LiveScheduleStatusKey {
+  return 'stopped';
+}
+
+const LIVE_STATUS_FILTER_OPTIONS: { value: LiveScheduleStatusKey; label: string }[] = [
+  { value: 'enabled', label: 'Enabled' },
+  { value: 'stopped', label: 'Stopped' },
+  { value: 'disabled', label: 'Disabled' },
+  { value: 'completed', label: 'Completed' },
+];
+
 export function ActiveSchedulesContent() {
   const queryClient = useQueryClient();
   const permissions = usePermissions();
   const [scheduleToStop, setScheduleToStop] = useState<LiveScheduleItem | null>(null);
+  const [clusterFilter, setClusterFilter] = useState('');
+  const [accountFilter, setAccountFilter] = useState('');
+  const [namespaceFilter, setNamespaceFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['schedules-live'],
@@ -77,6 +105,39 @@ export function ActiveSchedulesContent() {
   const schedules = data?.schedules ?? [];
   const total = data?.total ?? 0;
 
+  const clusterOptions = useMemo(
+    () =>
+      Array.from(new Set(schedules.map((s) => s.cluster).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [schedules]
+  );
+  const accountOptions = useMemo(
+    () =>
+      Array.from(new Set(schedules.map(liveScheduleAccountId).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [schedules]
+  );
+  const namespaceOptions = useMemo(
+    () =>
+      Array.from(new Set(schedules.map((s) => s.namespace).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [schedules]
+  );
+
+  const filtersActive = Boolean(clusterFilter || accountFilter || namespaceFilter || statusFilter);
+
+  const filteredSchedules = useMemo(() => {
+    let list = schedules;
+    if (clusterFilter) list = list.filter((s) => s.cluster === clusterFilter);
+    if (accountFilter) list = list.filter((s) => liveScheduleAccountId(s) === accountFilter);
+    if (namespaceFilter) list = list.filter((s) => s.namespace === namespaceFilter);
+    if (statusFilter) list = list.filter((s) => liveScheduleStatusKey(s) === statusFilter);
+    return list;
+  }, [schedules, clusterFilter, accountFilter, namespaceFilter, statusFilter]);
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -98,7 +159,12 @@ export function ActiveSchedulesContent() {
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">In stopped window</p>
-          <p className="text-lg font-semibold text-foreground">{total}</p>
+          <p className="text-lg font-semibold text-foreground">
+            {filtersActive ? filteredSchedules.length : total}
+            {filtersActive && filteredSchedules.length !== total ? (
+              <span className="ml-1 text-sm font-normal text-muted-foreground">/ {total}</span>
+            ) : null}
+          </p>
         </div>
       </GlassPanel>
 
@@ -122,6 +188,78 @@ export function ActiveSchedulesContent() {
       ) : (
         <GlassPanel>
           <PanelHeader title="Stopped & waiting for startup" icon={CircleStop} />
+          <div className="border-b border-border px-5 py-3">
+            <DashboardFilterBar>
+              <DashboardFilterSelect
+                value={clusterFilter}
+                onChange={(e) => setClusterFilter(e.target.value)}
+                aria-label="Filter by cluster"
+                title="Filter by cluster"
+              >
+                <option value="">All clusters</option>
+                {clusterOptions.map((c) => (
+                  <option key={c} value={c}>
+                    {parseClusterDisplay(c).clusterName}
+                  </option>
+                ))}
+              </DashboardFilterSelect>
+              <DashboardFilterSelect
+                value={accountFilter}
+                onChange={(e) => setAccountFilter(e.target.value)}
+                aria-label="Filter by account ID"
+                title="Filter by account ID"
+              >
+                <option value="">All account IDs</option>
+                {accountOptions.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </DashboardFilterSelect>
+              <DashboardFilterSelect
+                value={namespaceFilter}
+                onChange={(e) => setNamespaceFilter(e.target.value)}
+                aria-label="Filter by namespace"
+                title="Filter by namespace"
+              >
+                <option value="">All namespaces</option>
+                {namespaceOptions.map((ns) => (
+                  <option key={ns} value={ns}>
+                    {ns}
+                  </option>
+                ))}
+              </DashboardFilterSelect>
+              <DashboardFilterSelect
+                width="sm"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="Filter by status"
+                title="Filter by status"
+              >
+                <option value="">All statuses</option>
+                {LIVE_STATUS_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </DashboardFilterSelect>
+              {filtersActive && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-[11px] text-muted-foreground"
+                  onClick={() => {
+                    setClusterFilter('');
+                    setAccountFilter('');
+                    setNamespaceFilter('');
+                    setStatusFilter('');
+                  }}
+                >
+                  Clear filters
+                </Button>
+              )}
+            </DashboardFilterBar>
+          </div>
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full text-sm table-modern">
               <thead>
@@ -132,7 +270,6 @@ export function ActiveSchedulesContent() {
                   <th className="px-5 py-3 text-left font-medium">Target</th>
                   <th className="px-5 py-3 text-left font-medium">Status</th>
                   <th className="px-5 py-3 text-left font-medium">Stopped window</th>
-                  <th className="px-5 py-3 text-left font-medium">Timezone</th>
                   <th className="px-5 py-3 text-left font-medium">Days</th>
                   <th className="px-5 py-3 text-left font-medium">Time remaining</th>
                   <th className="px-5 py-3 text-left font-medium">Startup at</th>
@@ -140,7 +277,14 @@ export function ActiveSchedulesContent() {
                 </tr>
               </thead>
               <tbody>
-                {schedules.map((schedule) => (
+                {filteredSchedules.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                      No live schedules match the selected filters
+                    </td>
+                  </tr>
+                )}
+                {filteredSchedules.map((schedule) => (
                   <tr key={schedule.id} className="border-b border-border">
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-2">
@@ -168,6 +312,9 @@ export function ActiveSchedulesContent() {
                         schedule={{
                           recurrence: schedule.recurrence,
                           shutdownTime: schedule.shutdownTime,
+                          weekendShutdownTime: schedule.weekendShutdownTime,
+                          weekendDays: schedule.weekendDays,
+                          daysOfWeek: schedule.daysOfWeek,
                           oneTimeShutdownAt: schedule.oneTimeShutdownAt,
                           timezone: schedule.timezone,
                         }}
@@ -177,12 +324,14 @@ export function ActiveSchedulesContent() {
                         schedule={{
                           recurrence: schedule.recurrence,
                           startupTime: schedule.startupTime,
+                          weekendStartupTime: schedule.weekendStartupTime,
+                          weekendDays: schedule.weekendDays,
+                          daysOfWeek: schedule.daysOfWeek,
                           oneTimeStartupAt: schedule.oneTimeStartupAt,
                           timezone: schedule.timezone,
                         }}
                       />
                     </td>
-                    <td className="px-5 py-3.5 text-xs text-muted-foreground">{schedule.timezone}</td>
                     <td className="px-5 py-3.5">
                       <ScheduleRepeatsCell
                         schedule={{

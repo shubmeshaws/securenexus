@@ -78,6 +78,11 @@ function toView(row: {
 }
 
 export function getGitReposRoot(): string {
+  // Allow relocating local git mirrors outside the project tree. In dev this
+  // keeps thousands of mirror files out of Next.js's file watcher (which would
+  // otherwise exhaust file descriptors and break HMR/route detection).
+  const override = process.env.GIT_REPOS_ROOT?.trim();
+  if (override) return path.isAbsolute(override) ? override : path.join(process.cwd(), override);
   return path.join(process.cwd(), '.git-repos');
 }
 

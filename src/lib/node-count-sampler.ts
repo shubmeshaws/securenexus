@@ -7,11 +7,13 @@ import { getClusterReadyNodeCount } from './k8s-client';
 export function getCalendarDateAndHour(
   now: Date,
   tz: string = IST_TIMEZONE
-): { date: string; hour: number } {
+): { date: string; hour: number; minuteSlot: number } {
   const zoned = toZonedTime(now, tz);
+  const minute = zoned.getMinutes();
   return {
     date: format(zoned, 'yyyy-MM-dd'),
     hour: zoned.getHours(),
+    minuteSlot: Math.floor(minute / 15) * 15,
   };
 }
 
@@ -20,19 +22,21 @@ export async function upsertHourlyNodeSample(
   nodeCount: number,
   now: Date = new Date()
 ): Promise<void> {
-  const { date, hour } = getCalendarDateAndHour(now);
+  const { date, hour, minuteSlot } = getCalendarDateAndHour(now);
   await prisma.clusterNodeHourlySample.upsert({
     where: {
-      clusterName_calendarDate_hour: {
+      clusterName_calendarDate_hour_minuteSlot: {
         clusterName,
         calendarDate: date,
         hour,
+        minuteSlot,
       },
     },
     create: {
       clusterName,
       calendarDate: date,
       hour,
+      minuteSlot,
       nodeCount,
       sampledAt: now,
     },

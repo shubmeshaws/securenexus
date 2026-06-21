@@ -145,6 +145,7 @@ export function PanelHeader({
   brandIconSrc,
   brandIconAlt,
   brandIconSurface,
+  titleAddon,
   action,
   accent = 'blue',
 }: {
@@ -153,12 +154,14 @@ export function PanelHeader({
   brandIconSrc?: string;
   brandIconAlt?: string;
   brandIconSurface?: 'default' | 'light';
+  /** Inline controls placed after the title on the same row (e.g. cluster filter). */
+  titleAddon?: React.ReactNode;
   action?: React.ReactNode;
   accent?: IconAccent;
 }) {
   return (
     <div className="modern-card-header">
-      <div className="flex min-w-0 shrink items-center gap-3">
+      <div className="flex min-w-0 shrink flex-wrap items-center gap-x-3 gap-y-2">
         {brandIconSrc ? (
           <BrandIcon
             src={brandIconSrc}
@@ -171,6 +174,36 @@ export function PanelHeader({
           Icon && <ModernIcon icon={Icon} accent={accent} size="sm" />
         )}
         <h2 className="modern-card-title">{title}</h2>
+        {titleAddon ? <div className="flex min-w-0 items-center">{titleAddon}</div> : null}
+      </div>
+      {action ? <div className="ml-auto flex shrink-0 items-center">{action}</div> : null}
+    </div>
+  );
+}
+
+/** Subtitle row aligned with PanelHeader title text (past the icon column). */
+export function PanelSubtitle({
+  children,
+  action,
+  alignWithIcon = true,
+  className,
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+  /** When false, text aligns with card padding (use when PanelHeader has no icon). */
+  alignWithIcon?: boolean;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-5 pb-3',
+        className
+      )}
+    >
+      <div className={cn('flex min-w-0 flex-1 items-start gap-3', !alignWithIcon && 'gap-0')}>
+        {alignWithIcon ? <div className="h-7 w-7 shrink-0" aria-hidden="true" /> : null}
+        <p className="min-w-0 max-w-3xl text-[11px] leading-relaxed text-muted-foreground">{children}</p>
       </div>
       {action ? <div className="ml-auto flex shrink-0 items-center">{action}</div> : null}
     </div>

@@ -106,10 +106,14 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       recurrence: 'daily' as ScheduleRecurrence,
       shutdownTime: '20:30',
       startupTime: '08:30',
+      weekendShutdownTime: '20:30',
+      weekendStartupTime: '10:30',
       oneTimeShutdownAt: defaultShutdown,
       oneTimeStartupAt: defaultOnetimeStartupInput(defaultShutdown, timezone),
       timezone,
       daysOfWeek: [1, 2, 3, 4, 5] as number[],
+      weekdayDays: [1, 2, 3, 4, 5] as number[],
+      weekendDays: [6, 7] as number[],
       syncPolicy: 'automated' as 'automated' | 'none',
       argocdInstanceId: null as string | null,
       targetReplicas: 2,
@@ -133,6 +137,8 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
     recurrence,
     shutdownTime: schedule.shutdownTime ?? '20:30',
     startupTime: schedule.startupTime ?? '08:30',
+    weekendShutdownTime: schedule.weekendShutdownTime ?? '20:30',
+    weekendStartupTime: schedule.weekendStartupTime ?? '10:30',
     oneTimeShutdownAt: schedule.oneTimeShutdownAt
       ? formatZonedDatetimeInput(new Date(schedule.oneTimeShutdownAt), timezone)
       : defaultShutdown,
@@ -141,6 +147,15 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       : defaultOnetimeStartupInput(defaultShutdown, timezone),
     timezone,
     daysOfWeek: schedule.daysOfWeek ?? [1, 2, 3, 4, 5],
+    weekdayDays: (schedule.daysOfWeek ?? [1, 2, 3, 4, 5]).filter(
+      (d) => !(schedule.weekendDays ?? []).includes(d)
+    ),
+    weekendDays:
+      schedule.weekendDays && schedule.weekendDays.length
+        ? schedule.weekendDays
+        : recurrence === 'split'
+          ? [6, 7]
+          : [],
     syncPolicy: schedule.syncPolicy ?? 'automated',
     argocdInstanceId: schedule.argocdInstanceId ?? null,
     targetReplicas: schedule.targetReplicas ?? 2,
@@ -185,10 +200,14 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [recurrence, setRecurrence] = useState<ScheduleRecurrence>(initial.recurrence);
   const [shutdownTime, setShutdownTime] = useState(initial.shutdownTime);
   const [startupTime, setStartupTime] = useState(initial.startupTime);
+  const [weekendShutdownTime, setWeekendShutdownTime] = useState(initial.weekendShutdownTime);
+  const [weekendStartupTime, setWeekendStartupTime] = useState(initial.weekendStartupTime);
   const [oneTimeShutdownAt, setOneTimeShutdownAt] = useState(initial.oneTimeShutdownAt);
   const [oneTimeStartupAt, setOneTimeStartupAt] = useState(initial.oneTimeStartupAt);
   const [timezone, setTimezone] = useState(initial.timezone);
   const [daysOfWeek, setDaysOfWeek] = useState<number[]>(initial.daysOfWeek);
+  const [weekendDays, setWeekendDays] = useState<number[]>(initial.weekendDays);
+  const [weekdayDays, setWeekdayDays] = useState<number[]>(initial.weekdayDays);
   const [syncPolicy, setSyncPolicy] = useState<'automated' | 'none'>(initial.syncPolicy);
   const [argocdInstanceId, setArgoCDInstanceId] = useState<string | null>(initial.argocdInstanceId);
   const [enabled, setEnabled] = useState(initial.enabled);
@@ -240,12 +259,35 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const { data: nsData, isLoading: nsLoading, isFetching: nsFetching } = useQuery({
     queryKey: ['namespaces', cluster],
     queryFn: () =>
-      apiFetch<{ namespaces: string[] }>(
-        `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces`
-      ),
+      apiFetch<{
+        namespaces: string[];
+        source?: 'k8s' | 'fallback' | 'error';
+        warning?: string;
+      }>(`/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces`),
     enabled: platformType === 'eks' && Boolean(cluster),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,
+  });
+
+  const namespaceSource = nsData?.source;
+  const namespaceWarning = nsData?.warning;
+  const namespaceLiveUnavailable = Boolean(cluster) && namespaceSource && namespaceSource !== 'k8s';
+
+  const clusterTest = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        ok: boolean;
+        namespaceCount?: number;
+        durationMs: number;
+        error?: string;
+        hint?: string;
+      }>(`/api/k8s/clusters/${encodeURIComponent(cluster)}/test`),
+    onSuccess: (result) => {
+      if (result.ok) {
+        queryClient.invalidateQueries({ queryKey: ['namespaces', cluster] });
+        queryClient.invalidateQueries({ queryKey: ['workloads', cluster] });
+      }
+    },
   });
 
   const { data: workloadsData, isLoading: workloadsLoading } = useQuery({
@@ -336,12 +378,24 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
               oneTimeShutdownAt,
               oneTimeStartupAt,
             }
-          : {
-              ...shared,
-              shutdownTime,
-              startupTime,
-              daysOfWeek,
-            };
+          : recurrence === 'split'
+            ? {
+                ...shared,
+                shutdownTime,
+                startupTime,
+                weekendShutdownTime,
+                weekendStartupTime,
+                daysOfWeek: Array.from(new Set([...weekdayDays, ...weekendDays])).sort(
+                  (a, b) => a - b
+                ),
+                weekendDays,
+              }
+            : {
+                ...shared,
+                shutdownTime,
+                startupTime,
+                daysOfWeek,
+              };
 
       if (isEdit && schedule) {
         return apiFetch(`/api/schedules/${schedule.id}`, {
@@ -395,6 +449,26 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
     );
   }
 
+  // Split mode: a day belongs to either the weekday window or the weekend
+  // window (mutually exclusive). Toggling a day in one group clears it from the other.
+  function toggleWeekdayDay(day: number) {
+    setWeekendDays((prev) => prev.filter((d) => d !== day));
+    setWeekdayDays((prev) =>
+      prev.includes(day)
+        ? prev.filter((d) => d !== day)
+        : [...prev, day].sort((a, b) => a - b)
+    );
+  }
+
+  function toggleWeekendDay(day: number) {
+    setWeekdayDays((prev) => prev.filter((d) => d !== day));
+    setWeekendDays((prev) =>
+      prev.includes(day)
+        ? prev.filter((d) => d !== day)
+        : [...prev, day].sort((a, b) => a - b)
+    );
+  }
+
   return (
     <form
       className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 scrollbar-thin"
@@ -410,8 +484,26 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
 
       <div className="space-y-2">
         <Label>Schedule type</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {(['daily', 'onetime'] as const).map((mode) => (
+        <div className="grid grid-cols-1 gap-2">
+          {(
+            [
+              {
+                mode: 'daily',
+                title: 'Daily',
+                desc: 'Same times on every selected day each week',
+              },
+              {
+                mode: 'split',
+                title: 'Weekday + Weekend',
+                desc: 'Two day groups with their own times (pick the days for each)',
+              },
+              {
+                mode: 'onetime',
+                title: 'One-time',
+                desc: 'Runs shutdown and startup once on chosen dates',
+              },
+            ] as const
+          ).map(({ mode, title, desc }) => (
             <button
               key={mode}
               type="button"
@@ -423,14 +515,8 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                   : 'border-border bg-background text-muted-foreground hover:border-border/80'
               )}
             >
-              <span className="block font-medium">
-                {mode === 'daily' ? 'Daily' : 'One-time'}
-              </span>
-              <span className="mt-0.5 block text-[10px] opacity-80">
-                {mode === 'daily'
-                  ? 'Repeats on selected days every week'
-                  : 'Runs shutdown and startup once on chosen dates'}
-              </span>
+              <span className="block font-medium">{title}</span>
+              <span className="mt-0.5 block text-[10px] opacity-80">{desc}</span>
             </button>
           ))}
         </div>
@@ -638,6 +724,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             setAppName('');
             setWorkloadKind('Deployment');
             setExcludedWorkloads([]);
+            clusterTest.reset();
           }}
         >
           <option value="" disabled>
@@ -653,6 +740,35 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           <p className="text-[10px] text-muted-foreground">
             No clusters registered yet. Add one under Clusters first.
           </p>
+        )}
+        {cluster && (
+          <div className="space-y-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={clusterTest.isPending}
+              onClick={() => clusterTest.mutate()}
+            >
+              {clusterTest.isPending ? 'Testing connection…' : 'Test connection'}
+            </Button>
+            {clusterTest.data?.ok ? (
+              <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[10px] leading-relaxed text-emerald-700 dark:text-emerald-300">
+                Connected — listed {clusterTest.data.namespaceCount} namespace(s) in{' '}
+                {(clusterTest.data.durationMs / 1000).toFixed(1)}s. Reopen the namespace dropdown to
+                load the live list.
+              </p>
+            ) : clusterTest.data && !clusterTest.data.ok ? (
+              <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[10px] leading-relaxed text-red-700 dark:text-red-300">
+                Connection failed after {(clusterTest.data.durationMs / 1000).toFixed(1)}s:{' '}
+                {clusterTest.data.error}
+                {clusterTest.data.hint ? <span className="block mt-1 opacity-90">{clusterTest.data.hint}</span> : null}
+              </p>
+            ) : clusterTest.isError ? (
+              <p className="text-[10px] text-red-500">{(clusterTest.error as Error).message}</p>
+            ) : null}
+          </div>
         )}
       </div>
 
@@ -684,6 +800,14 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </select>
         {nsFetching && namespaceOptions.length > 0 ? (
           <p className="text-[10px] text-muted-foreground">Refreshing namespaces…</p>
+        ) : null}
+        {namespaceLiveUnavailable ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-900 dark:text-amber-200">
+            {namespaceWarning ??
+              'Live cluster API unavailable — showing namespaces from saved schedules and audit history only.'}{' '}
+            The SecureNexus server may not be able to reach this cluster (check VPN/network and the
+            cluster credentials). Workloads may also be empty until the connection is restored.
+          </p>
         ) : null}
       </div>
 
@@ -750,7 +874,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           {!namespace ? (
             <p className="text-xs text-muted-foreground">Select a namespace first.</p>
           ) : scalableWorkloads.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No scalable workloads found in this namespace.</p>
+            <p className="text-xs text-muted-foreground">
+              {namespaceLiveUnavailable
+                ? 'Could not load workloads — the cluster API is unreachable from the server (check VPN/network and credentials).'
+                : 'No scalable workloads found in this namespace.'}
+            </p>
           ) : (
             <div className="max-h-40 space-y-2 overflow-y-auto rounded-xl border border-border p-3 scrollbar-thin">
               {scalableWorkloads.map((w) => {
@@ -807,45 +935,136 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </Select>
       </div>
 
-      {recurrence === 'daily' ? (
+      {recurrence !== 'onetime' ? (
         <>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Shutdown</Label>
-              <Input type="time" value={shutdownTime} onChange={(e) => setShutdownTime(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>Startup</Label>
-              <Input type="time" value={startupTime} onChange={(e) => setStartupTime(e.target.value)} />
-            </div>
-          </div>
-
-          {isOvernightSchedule(shutdownTime, startupTime) ? (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-              Overnight window: workloads stop at {formatTime12h(shutdownTime)} and start the{' '}
-              <strong>next day</strong> at {formatTime12h(startupTime)}. To restart a few minutes after
-              shutdown (like a short break), set startup to a later <strong>PM</strong> time — e.g.{' '}
-              {formatTime12h(
-                `${String(Math.min(23, Number(shutdownTime.split(':')[0]) + 1)).padStart(2, '0')}:${shutdownTime.split(':')[1] ?? '00'}`
+          {recurrence === 'split' ? (
+            <>
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Weekday window
+                </Label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Shutdown</Label>
+                    <Input type="time" value={shutdownTime} onChange={(e) => setShutdownTime(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Startup</Label>
+                    <Input type="time" value={startupTime} onChange={(e) => setStartupTime(e.target.value)} />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] text-muted-foreground">Days</Label>
+                  <div className="flex flex-wrap gap-3">
+                    {DAY_LABELS.map((label, i) => {
+                      const day = i + 1;
+                      return (
+                        <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                          <Checkbox
+                            checked={weekdayDays.includes(day)}
+                            onCheckedChange={() => toggleWeekdayDay(day)}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3 rounded-xl border border-border p-3">
+                <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Weekend window
+                </Label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Shutdown</Label>
+                    <Input
+                      type="time"
+                      value={weekendShutdownTime}
+                      onChange={(e) => setWeekendShutdownTime(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Startup</Label>
+                    <Input
+                      type="time"
+                      value={weekendStartupTime}
+                      onChange={(e) => setWeekendStartupTime(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] text-muted-foreground">Days</Label>
+                  <div className="flex flex-wrap gap-3">
+                    {DAY_LABELS.map((label, i) => {
+                      const day = i + 1;
+                      return (
+                        <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                          <Checkbox
+                            checked={weekendDays.includes(day)}
+                            onCheckedChange={() => toggleWeekendDay(day)}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              {weekdayDays.length === 0 && weekendDays.length === 0 ? (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                  Pick at least one day in either window for this schedule to run.
+                </p>
+              ) : (
+                <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  Each day uses the times of the window it is assigned to. A day can belong to only
+                  one window.
+                </p>
               )}
-              .
-            </p>
-          ) : null}
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Shutdown</Label>
+                  <Input type="time" value={shutdownTime} onChange={(e) => setShutdownTime(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Startup</Label>
+                  <Input type="time" value={startupTime} onChange={(e) => setStartupTime(e.target.value)} />
+                </div>
+              </div>
 
-          <div className="space-y-2">
-            <Label>Days of week</Label>
-            <div className="flex flex-wrap gap-3">
-              {DAY_LABELS.map((label, i) => {
-                const day = i + 1;
-                return (
-                  <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
-                    <Checkbox checked={daysOfWeek.includes(day)} onCheckedChange={() => toggleDay(day)} />
-                    {label}
-                  </label>
-                );
-              })}
+              {isOvernightSchedule(shutdownTime, startupTime) ? (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                  Overnight window: workloads stop at {formatTime12h(shutdownTime)} and start the{' '}
+                  <strong>next day</strong> at {formatTime12h(startupTime)}. To restart a few minutes after
+                  shutdown (like a short break), set startup to a later <strong>PM</strong> time — e.g.{' '}
+                  {formatTime12h(
+                    `${String(Math.min(23, Number(shutdownTime.split(':')[0]) + 1)).padStart(2, '0')}:${shutdownTime.split(':')[1] ?? '00'}`
+                  )}
+                  .
+                </p>
+              ) : null}
+            </>
+          )}
+
+          {recurrence !== 'split' && (
+            <div className="space-y-2">
+              <Label>Days of week</Label>
+              <div className="flex flex-wrap gap-3">
+                {DAY_LABELS.map((label, i) => {
+                  const day = i + 1;
+                  return (
+                    <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Checkbox checked={daysOfWeek.includes(day)} onCheckedChange={() => toggleDay(day)} />
+                      {label}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </>
       ) : (
         <>

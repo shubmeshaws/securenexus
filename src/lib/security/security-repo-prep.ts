@@ -14,7 +14,18 @@ import type { SecurityResourceView } from '@/lib/security-service';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 5 * 60 * 1000;
-export const SECURITY_SCAN_ROOT = path.join(process.cwd(), '.securenexus', 'security-scans');
+
+function resolveSecurityScanRoot(): string {
+  // Allow relocating ephemeral scan clones outside the project tree so Next.js's
+  // dev file watcher doesn't try to watch thousands of cloned repo files (EMFILE).
+  const override = process.env.SECURITY_SCAN_ROOT?.trim();
+  if (override) {
+    return path.isAbsolute(override) ? override : path.join(process.cwd(), override);
+  }
+  return path.join(process.cwd(), '.securenexus', 'security-scans');
+}
+
+export const SECURITY_SCAN_ROOT = resolveSecurityScanRoot();
 
 export interface PreparedRepository {
   repoPath: string;

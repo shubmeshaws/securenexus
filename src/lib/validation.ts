@@ -41,11 +41,29 @@ const scheduleIdentitySchema = z.object({
   teamsAlertEnabled: z.boolean().optional().default(true),
 });
 
+const timeString = z.string().regex(/^\d{2}:\d{2}$/);
+
 const dailyTimingSchema = z.object({
   recurrence: z.literal('daily').optional().default('daily'),
-  shutdownTime: z.string().regex(/^\d{2}:\d{2}$/),
-  startupTime: z.string().regex(/^\d{2}:\d{2}$/),
+  shutdownTime: timeString,
+  startupTime: timeString,
   daysOfWeek: z.array(z.number().int().min(1).max(7)).min(1),
+  oneTimeShutdownAt: z.null().optional(),
+  oneTimeStartupAt: z.null().optional(),
+});
+
+const splitTimingSchema = z.object({
+  recurrence: z.literal('split'),
+  // Weekday-window times:
+  shutdownTime: timeString,
+  startupTime: timeString,
+  // Weekend-window times:
+  weekendShutdownTime: timeString,
+  weekendStartupTime: timeString,
+  // All active days (union of both windows):
+  daysOfWeek: z.array(z.number().int().min(1).max(7)).min(1),
+  // Subset of daysOfWeek that use the weekend window:
+  weekendDays: z.array(z.number().int().min(1).max(7)).optional().default([]),
   oneTimeShutdownAt: z.null().optional(),
   oneTimeStartupAt: z.null().optional(),
 });
@@ -54,13 +72,14 @@ const onetimeTimingSchema = z.object({
   recurrence: z.literal('onetime'),
   oneTimeShutdownAt: z.string().min(1),
   oneTimeStartupAt: z.string().min(1),
-  shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-  startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  shutdownTime: timeString.optional(),
+  startupTime: timeString.optional(),
   daysOfWeek: z.array(z.number().int().min(1).max(7)).optional().default([]),
 });
 
 const scheduleBaseSchema = z.discriminatedUnion('recurrence', [
   scheduleIdentitySchema.merge(dailyTimingSchema),
+  scheduleIdentitySchema.merge(splitTimingSchema),
   scheduleIdentitySchema.merge(onetimeTimingSchema),
 ]);
 
@@ -114,6 +133,9 @@ function normalizeScheduleInput(data: ScheduleInput) {
       ...scoped,
       shutdownTime: timeFromZonedInstant(shutdownAt, scoped.timezone),
       startupTime: timeFromZonedInstant(startupAt, scoped.timezone),
+      weekendShutdownTime: null,
+      weekendStartupTime: null,
+      weekendDays: [] as number[],
       daysOfWeek: [] as number[],
       oneTimeShutdownAt: shutdownAt,
       oneTimeStartupAt: startupAt,
@@ -121,9 +143,27 @@ function normalizeScheduleInput(data: ScheduleInput) {
     };
   }
 
+  if (scoped.recurrence === 'split') {
+    // weekendDays must be a subset of the active days.
+    const weekendDays = (scoped.weekendDays ?? []).filter((d) => scoped.daysOfWeek.includes(d));
+    return {
+      ...scoped,
+      recurrence: 'split' as const,
+      weekendShutdownTime: scoped.weekendShutdownTime,
+      weekendStartupTime: scoped.weekendStartupTime,
+      weekendDays,
+      oneTimeShutdownAt: null,
+      oneTimeStartupAt: null,
+      oneTimeCompleted: false,
+    };
+  }
+
   return {
     ...scoped,
     recurrence: 'daily' as const,
+    weekendShutdownTime: null,
+    weekendStartupTime: null,
+    weekendDays: [] as number[],
     oneTimeShutdownAt: null,
     oneTimeStartupAt: null,
     oneTimeCompleted: false,
@@ -192,9 +232,12 @@ export const updateScheduleBodySchema = z
     targetReplicas: z.number().int().min(0).max(100).optional(),
     enabled: z.boolean().optional(),
     teamsAlertEnabled: z.boolean().optional(),
-    recurrence: z.enum(['daily', 'onetime']).optional(),
+    recurrence: z.enum(['daily', 'onetime', 'split']).optional(),
     shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    weekendShutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    weekendStartupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    weekendDays: z.array(z.number().int().min(1).max(7)).optional(),
     daysOfWeek: z.array(z.number().int().min(1).max(7)).optional(),
     oneTimeShutdownAt: z.string().min(1).optional(),
     oneTimeStartupAt: z.string().min(1).optional(),
@@ -258,6 +301,20 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
       oneTimeShutdownAt: shutdownInput,
       oneTimeStartupAt: startupInput,
       daysOfWeek: [],
+    } as ScheduleInput);
+  }
+
+  if (recurrence === 'split') {
+    return wrapNormalize({
+      ...base,
+      workloadKind: base.workloadKind as ScheduleInput['workloadKind'],
+      recurrence: 'split',
+      shutdownTime: patch.shutdownTime ?? existing.shutdownTime,
+      startupTime: patch.startupTime ?? existing.startupTime,
+      weekendShutdownTime: patch.weekendShutdownTime ?? existing.weekendShutdownTime ?? '',
+      weekendStartupTime: patch.weekendStartupTime ?? existing.weekendStartupTime ?? '',
+      weekendDays: patch.weekendDays ?? existing.weekendDays,
+      daysOfWeek: patch.daysOfWeek ?? existing.daysOfWeek,
     } as ScheduleInput);
   }
 

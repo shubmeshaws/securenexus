@@ -1,13 +1,19 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 
-export type ScheduleRecurrence = 'daily' | 'onetime';
+export type ScheduleRecurrence = 'daily' | 'onetime' | 'split';
 
+/** Weekly-repeating schedules (daily + weekday/weekend split) — i.e. not one-time. */
 export function isDailySchedule(schedule: { recurrence?: string | null }): boolean {
   return schedule.recurrence !== 'onetime';
 }
 
 export function isOnetimeSchedule(schedule: { recurrence?: string | null }): boolean {
   return schedule.recurrence === 'onetime';
+}
+
+/** Split schedules apply different times on weekdays (Mon–Fri) vs weekends (Sat–Sun). */
+export function isSplitSchedule(schedule: { recurrence?: string | null }): boolean {
+  return schedule.recurrence === 'split';
 }
 
 /** True when the schedule instant matches the current minute in the schedule timezone. */

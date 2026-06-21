@@ -8,6 +8,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import {
+  DAY_LABELS,
   daysOfWeekSummary,
   formatTime12h,
   formatNextRunAt,
@@ -112,12 +113,61 @@ export function ScheduleTimeCell({ time }: { time: string }) {
   return <span className="whitespace-nowrap text-xs text-foreground">{formatTime12h(time)}</span>;
 }
 
+function daysLabel(days: number[]): string {
+  if (!days.length) return 'no days';
+  return days
+    .slice()
+    .sort((a, b) => a - b)
+    .map((d) => DAY_LABELS[d - 1] ?? '?')
+    .join(', ');
+}
+
+function SplitTimeCell({
+  weekdayTime,
+  weekendTime,
+  daysOfWeek,
+  weekendDays,
+}: {
+  weekdayTime: string;
+  weekendTime: string | null;
+  daysOfWeek: number[];
+  weekendDays: number[];
+}) {
+  if (!weekendTime) return <ScheduleTimeCell time={weekdayTime} />;
+  const weekdayGroup = (daysOfWeek ?? []).filter((d) => !(weekendDays ?? []).includes(d));
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-default whitespace-nowrap border-b border-dashed border-muted-foreground/40 text-xs text-foreground">
+            {formatTime12h(weekdayTime)} <span className="text-muted-foreground">/ {formatTime12h(weekendTime)}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="space-y-1">
+          <p className="text-[11px]">
+            Weekday window ({daysLabel(weekdayGroup)}): {formatTime12h(weekdayTime)}
+          </p>
+          <p className="text-[11px]">
+            Weekend window ({daysLabel(weekendDays ?? [])}): {formatTime12h(weekendTime)}
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export function ScheduleShutdownAtCell({
   schedule,
 }: {
   schedule: Pick<
     Schedule,
-    'recurrence' | 'shutdownTime' | 'oneTimeShutdownAt' | 'timezone'
+    | 'recurrence'
+    | 'shutdownTime'
+    | 'weekendShutdownTime'
+    | 'weekendDays'
+    | 'daysOfWeek'
+    | 'oneTimeShutdownAt'
+    | 'timezone'
   >;
 }) {
   if (schedule.recurrence === 'onetime' && schedule.oneTimeShutdownAt) {
@@ -125,6 +175,16 @@ export function ScheduleShutdownAtCell({
       <span className="whitespace-nowrap text-xs text-foreground">
         {formatNextRunAt(schedule.oneTimeShutdownAt, schedule.timezone)}
       </span>
+    );
+  }
+  if (schedule.recurrence === 'split') {
+    return (
+      <SplitTimeCell
+        weekdayTime={schedule.shutdownTime}
+        weekendTime={schedule.weekendShutdownTime}
+        daysOfWeek={schedule.daysOfWeek}
+        weekendDays={schedule.weekendDays}
+      />
     );
   }
   return <ScheduleTimeCell time={schedule.shutdownTime} />;
@@ -135,7 +195,13 @@ export function ScheduleStartupAtCell({
 }: {
   schedule: Pick<
     Schedule,
-    'recurrence' | 'startupTime' | 'oneTimeStartupAt' | 'timezone'
+    | 'recurrence'
+    | 'startupTime'
+    | 'weekendStartupTime'
+    | 'weekendDays'
+    | 'daysOfWeek'
+    | 'oneTimeStartupAt'
+    | 'timezone'
   >;
 }) {
   if (schedule.recurrence === 'onetime' && schedule.oneTimeStartupAt) {
@@ -143,6 +209,16 @@ export function ScheduleStartupAtCell({
       <span className="whitespace-nowrap text-xs text-foreground">
         {formatNextRunAt(schedule.oneTimeStartupAt, schedule.timezone)}
       </span>
+    );
+  }
+  if (schedule.recurrence === 'split') {
+    return (
+      <SplitTimeCell
+        weekdayTime={schedule.startupTime}
+        weekendTime={schedule.weekendStartupTime}
+        daysOfWeek={schedule.daysOfWeek}
+        weekendDays={schedule.weekendDays}
+      />
     );
   }
   return <ScheduleTimeCell time={schedule.startupTime} />;

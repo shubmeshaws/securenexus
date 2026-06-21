@@ -9,6 +9,41 @@ import {
 import prisma from './prisma';
 import type { Schedule } from '@prisma/client';
 
+/** ISO day-of-week (1=Mon … 7=Sun) for a zoned date. */
+function isoDayOfWeek(date: Date): number {
+  const d = getDay(date);
+  return d === 0 ? 7 : d;
+}
+
+/**
+ * Resolve the shutdown/startup HH:mm that apply on a given ISO weekday. For
+ * `split` schedules, days listed in `weekendDays` use the weekend window and all
+ * other active days use the default (weekday) window; non-split recurrences
+ * always use the default window.
+ */
+export function effectiveTimesForDay(
+  schedule: Pick<
+    Schedule,
+    'recurrence' | 'shutdownTime' | 'startupTime' | 'weekendShutdownTime' | 'weekendStartupTime' | 'weekendDays'
+  >,
+  isoDay: number
+): { shutdownTime: string; startupTime: string } {
+  // Fall back to Sat/Sun for legacy split schedules saved without explicit days.
+  const weekendDays = schedule.weekendDays?.length ? schedule.weekendDays : [6, 7];
+  if (
+    schedule.recurrence === 'split' &&
+    weekendDays.includes(isoDay) &&
+    schedule.weekendShutdownTime &&
+    schedule.weekendStartupTime
+  ) {
+    return {
+      shutdownTime: schedule.weekendShutdownTime,
+      startupTime: schedule.weekendStartupTime,
+    };
+  }
+  return { shutdownTime: schedule.shutdownTime, startupTime: schedule.startupTime };
+}
+
 function computeNextRunDaily(schedule: Schedule, fromDate = new Date()): Date | null {
   if (schedule.daysOfWeek.length === 0) return null;
 
@@ -17,11 +52,12 @@ function computeNextRunDaily(schedule: Schedule, fromDate = new Date()): Date | 
 
   for (let offset = 0; offset < 8; offset++) {
     const candidate = addDays(zonedNow, offset);
-    const dayOfWeek = getDay(candidate) === 0 ? 7 : getDay(candidate);
+    const dayOfWeek = isoDayOfWeek(candidate);
     if (!schedule.daysOfWeek.includes(dayOfWeek)) continue;
 
-    const [shH, shM] = schedule.shutdownTime.split(':').map(Number);
-    const [stH, stM] = schedule.startupTime.split(':').map(Number);
+    const { shutdownTime, startupTime } = effectiveTimesForDay(schedule, dayOfWeek);
+    const [shH, shM] = shutdownTime.split(':').map(Number);
+    const [stH, stM] = startupTime.split(':').map(Number);
 
     const shutdownLocal = setMinutes(setHours(candidate, shH), shM);
     const startupLocal = setMinutes(setHours(candidate, stH), stM);
@@ -72,8 +108,10 @@ export function computeCurrentLiveStartupAt(schedule: Schedule, now = new Date()
 
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
-  const [stH, stM] = schedule.startupTime.split(':').map(Number);
-  const [shH, shM] = schedule.shutdownTime.split(':').map(Number);
+  const todayDow = isoDayOfWeek(zoned);
+  const today = effectiveTimesForDay(schedule, todayDow);
+  const [stH, stM] = today.startupTime.split(':').map(Number);
+  const [shH, shM] = today.shutdownTime.split(':').map(Number);
   const startupMinutes = stH * 60 + stM;
   const shutdownMinutes = shH * 60 + shM;
   const minutesNow = zoned.getHours() * 60 + zoned.getMinutes();
@@ -82,7 +120,11 @@ export function computeCurrentLiveStartupAt(schedule: Schedule, now = new Date()
 
   if (startupMinutes < shutdownMinutes) {
     if (minutesNow >= shutdownMinutes) {
-      startupLocal = setMinutes(setHours(addDays(zoned, 1), stH), stM);
+      // Overnight window: startup falls on the next day — use that day's times.
+      const tomorrow = addDays(zoned, 1);
+      const tomorrowStartup = effectiveTimesForDay(schedule, isoDayOfWeek(tomorrow)).startupTime;
+      const [stH2, stM2] = tomorrowStartup.split(':').map(Number);
+      startupLocal = setMinutes(setHours(tomorrow, stH2), stM2);
     }
   }
 
@@ -101,13 +143,13 @@ export function computeNextStartupAt(schedule: Schedule, fromDate = new Date()):
 
   const tz = schedule.timezone || 'UTC';
   const zonedNow = toZonedTime(fromDate, tz);
-  const [stH, stM] = schedule.startupTime.split(':').map(Number);
 
   for (let offset = 0; offset < 8; offset++) {
     const candidate = addDays(zonedNow, offset);
-    const dayOfWeek = getDay(candidate) === 0 ? 7 : getDay(candidate);
+    const dayOfWeek = isoDayOfWeek(candidate);
     if (!schedule.daysOfWeek.includes(dayOfWeek)) continue;
 
+    const [stH, stM] = effectiveTimesForDay(schedule, dayOfWeek).startupTime.split(':').map(Number);
     const startupLocal = setMinutes(setHours(candidate, stH), stM);
     const startupUtc = fromZonedTime(startupLocal, tz);
     if (startupUtc > fromDate) return startupUtc;
@@ -138,10 +180,10 @@ export function shouldRunShutdown(schedule: Schedule, now = new Date()): boolean
 
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
-  const dayOfWeek = getDay(zoned) === 0 ? 7 : getDay(zoned);
+  const dayOfWeek = isoDayOfWeek(zoned);
   if (!schedule.daysOfWeek.includes(dayOfWeek)) return false;
 
-  const [h, m] = schedule.shutdownTime.split(':').map(Number);
+  const [h, m] = effectiveTimesForDay(schedule, dayOfWeek).shutdownTime.split(':').map(Number);
   return zoned.getHours() === h && zoned.getMinutes() === m;
 }
 
@@ -198,11 +240,12 @@ export function isScheduleActiveNow(schedule: Schedule, now = new Date()): boole
 
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
-  const dayOfWeek = getDay(zoned) === 0 ? 7 : getDay(zoned);
+  const dayOfWeek = isoDayOfWeek(zoned);
   if (!schedule.daysOfWeek.includes(dayOfWeek)) return false;
 
-  const [shH, shM] = schedule.shutdownTime.split(':').map(Number);
-  const [stH, stM] = schedule.startupTime.split(':').map(Number);
+  const { shutdownTime, startupTime } = effectiveTimesForDay(schedule, dayOfWeek);
+  const [shH, shM] = shutdownTime.split(':').map(Number);
+  const [stH, stM] = startupTime.split(':').map(Number);
   const minutesNow = zoned.getHours() * 60 + zoned.getMinutes();
   const startupMinutes = stH * 60 + stM;
   const shutdownMinutes = shH * 60 + shM;
@@ -295,10 +338,10 @@ export function shouldRunStartup(schedule: Schedule, now = new Date()): boolean 
 
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
-  const dayOfWeek = getDay(zoned) === 0 ? 7 : getDay(zoned);
+  const dayOfWeek = isoDayOfWeek(zoned);
   if (!schedule.daysOfWeek.includes(dayOfWeek)) return false;
 
-  const [h, m] = schedule.startupTime.split(':').map(Number);
+  const [h, m] = effectiveTimesForDay(schedule, dayOfWeek).startupTime.split(':').map(Number);
   return zoned.getHours() === h && zoned.getMinutes() === m;
 }
 

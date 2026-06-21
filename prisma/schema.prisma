@@ -26,7 +26,10 @@ model Schedule {
   ec2Region       String?
   shutdownTime    String    // 24h format HH:mm (daily) or derived display for one-time
   startupTime     String    // 24h format HH:mm (daily) or derived display for one-time
-  recurrence      String    @default("daily") // daily | onetime
+  recurrence      String    @default("daily") // daily | onetime | split
+  weekendShutdownTime String? // split mode: weekend-window shutdown HH:mm (other days use shutdownTime)
+  weekendStartupTime  String? // split mode: weekend-window startup HH:mm (other days use startupTime)
+  weekendDays     Int[]     @default([]) // split mode: ISO days (1=Mon…7=Sun) that use the weekend window
   oneTimeShutdownAt DateTime?
   oneTimeStartupAt  DateTime?
   oneTimeCompleted  Boolean   @default(false)
@@ -34,6 +37,7 @@ model Schedule {
   daysOfWeek      Int[]     // 1=Mon, 7=Sun
   syncPolicy      String    @default("automated") // "automated" | "none"
   argocdInstanceId String?
+  pausedArgoApps  String[]  @default([]) // Argo apps paused on shutdown, resumed on startup
   targetReplicas  Int       @default(1)
   enabled         Boolean   @default(true)
   teamsAlertEnabled Boolean @default(true) // send Teams alerts for this schedule's shutdown/startup
@@ -132,10 +136,11 @@ model ClusterNodeHourlySample {
   clusterName  String
   calendarDate String   // yyyy-MM-dd in COST_CALENDAR_TZ
   hour         Int      // 0–23 local calendar hour
+  minuteSlot   Int      @default(0) // 0, 15, 30, or 45 — quarter-hour within the hour
   nodeCount    Int
   sampledAt    DateTime @default(now())
 
-  @@unique([clusterName, calendarDate, hour])
+  @@unique([clusterName, calendarDate, hour, minuteSlot])
   @@index([clusterName, calendarDate])
 }
 
@@ -144,10 +149,11 @@ model ClusterPodHourlySample {
   clusterName  String
   calendarDate String   // yyyy-MM-dd in IST
   hour         Int      // 0–23 IST calendar hour
+  minuteSlot   Int      @default(0) // 0, 15, 30, or 45
   podCount     Int
   sampledAt    DateTime @default(now())
 
-  @@unique([clusterName, calendarDate, hour])
+  @@unique([clusterName, calendarDate, hour, minuteSlot])
   @@index([clusterName, calendarDate])
 }
 

@@ -7,19 +7,21 @@ export async function upsertHourlyPodSample(
   podCount: number,
   now: Date = new Date()
 ): Promise<void> {
-  const { date, hour } = getCalendarDateAndHour(now);
+  const { date, hour, minuteSlot } = getCalendarDateAndHour(now);
   await prisma.clusterPodHourlySample.upsert({
     where: {
-      clusterName_calendarDate_hour: {
+      clusterName_calendarDate_hour_minuteSlot: {
         clusterName,
         calendarDate: date,
         hour,
+        minuteSlot,
       },
     },
     create: {
       clusterName,
       calendarDate: date,
       hour,
+      minuteSlot,
       podCount,
       sampledAt: now,
     },
