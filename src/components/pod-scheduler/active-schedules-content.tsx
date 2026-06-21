@@ -3,10 +3,11 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { Activity, CircleStop, Icons, Loader2 } from '@/lib/icons';
+import { Activity, CircleStop, Icons, Loader2, ScanSearch } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
 import { formatRelativeTime, parseClusterDisplay } from '@/lib/utils';
+import { filterSchedulesByQuery } from '@/lib/schedule-search';
 import {
   DashboardFilterBar,
   DashboardFilterSelect,
@@ -15,9 +16,10 @@ import { scheduleLiveQueryOptions } from '@/components/providers/query-provider'
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { ScheduleDetailDrawer } from '@/components/pod-scheduler/schedule-detail-drawer';
 import { usePermissions } from '@/components/auth/session-context';
-import { PageHeader, GlassPanel, PanelHeader, EmptyState } from '@/components/pod-scheduler/ui-primitives';
+import { PageHeader, GlassPanel, EmptyState } from '@/components/pod-scheduler/ui-primitives';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { CountdownTimer } from '@/components/pod-scheduler/countdown-timer';
 import {
   ScheduleClusterCell,
@@ -85,6 +87,7 @@ export function ActiveSchedulesContent() {
   const permissions = usePermissions();
   const [scheduleToStop, setScheduleToStop] = useState<LiveScheduleItem | null>(null);
   const [detailLiveSchedule, setDetailLiveSchedule] = useState<LiveScheduleItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [clusterFilter, setClusterFilter] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
   const [namespaceFilter, setNamespaceFilter] = useState('');
@@ -142,16 +145,43 @@ export function ActiveSchedulesContent() {
     [schedules]
   );
 
-  const filtersActive = Boolean(clusterFilter || accountFilter || namespaceFilter || statusFilter);
+  const filtersActive = Boolean(
+    searchQuery || clusterFilter || accountFilter || namespaceFilter || statusFilter
+  );
 
   const filteredSchedules = useMemo(() => {
     let list = schedules;
+    if (searchQuery) {
+      const q = searchQuery.trim().toLowerCase();
+      if (allSchedulesData?.schedules) {
+        const matchingIds = new Set(
+          filterSchedulesByQuery(allSchedulesData.schedules, searchQuery).map((s) => s.id)
+        );
+        list = list.filter((s) => matchingIds.has(s.id));
+      } else {
+        list = list.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.namespace.toLowerCase().includes(q) ||
+            s.cluster.toLowerCase().includes(q) ||
+            s.appName.toLowerCase().includes(q)
+        );
+      }
+    }
     if (clusterFilter) list = list.filter((s) => s.cluster === clusterFilter);
     if (accountFilter) list = list.filter((s) => liveScheduleAccountId(s) === accountFilter);
     if (namespaceFilter) list = list.filter((s) => s.namespace === namespaceFilter);
     if (statusFilter) list = list.filter((s) => liveScheduleStatusKey(s) === statusFilter);
     return list;
-  }, [schedules, clusterFilter, accountFilter, namespaceFilter, statusFilter]);
+  }, [
+    schedules,
+    allSchedulesData?.schedules,
+    searchQuery,
+    clusterFilter,
+    accountFilter,
+    namespaceFilter,
+    statusFilter,
+  ]);
 
   return (
     <div className="space-y-5">
@@ -202,7 +232,26 @@ export function ActiveSchedulesContent() {
         </GlassPanel>
       ) : (
         <GlassPanel>
-          <PanelHeader title="Stopped & waiting for startup" icon={CircleStop} />
+          <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <AppIcon icon={CircleStop} size="sm" className="text-emerald-500" />
+              <h2 className="text-sm font-semibold text-foreground">Stopped & waiting for startup</h2>
+            </div>
+            <div className="relative w-full sm:max-w-xs">
+              <AppIcon
+                icon={ScanSearch}
+                size="sm"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search live schedules…"
+                className="pl-9"
+                aria-label="Search live schedules"
+              />
+            </div>
+          </div>
           <div className="border-b border-border px-5 py-3">
             <DashboardFilterBar>
               <DashboardFilterSelect
@@ -264,6 +313,7 @@ export function ActiveSchedulesContent() {
                   size="sm"
                   className="h-8 text-[11px] text-muted-foreground"
                   onClick={() => {
+                    setSearchQuery('');
                     setClusterFilter('');
                     setAccountFilter('');
                     setNamespaceFilter('');
@@ -295,7 +345,9 @@ export function ActiveSchedulesContent() {
                 {filteredSchedules.length === 0 && (
                   <tr>
                     <td colSpan={10} className="p-8 text-center text-muted-foreground">
-                      No live schedules match the selected filters
+                      {searchQuery
+                        ? <>No live schedules match &ldquo;{searchQuery}&rdquo;</>
+                        : 'No live schedules match the selected filters'}
                     </td>
                   </tr>
                 )}
