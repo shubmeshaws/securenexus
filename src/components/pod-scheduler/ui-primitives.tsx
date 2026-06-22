@@ -210,27 +210,33 @@ export function PanelSubtitle({
   );
 }
 
-/** Scrollable table body — fixed height for `maxRows` so footers align across panels. */
+/** Scrollable table body — flexes within the panel so footers align across sibling cards. */
+export function scrollTableBodyHeight(maxRows = 5): number {
+  return maxRows * 44 + 40;
+}
+
 export function ScrollTable({
   maxRows = 5,
   children,
   footer,
+  className,
 }: {
   maxRows?: number;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  className?: string;
 }) {
-  const bodyHeight = maxRows * 44 + 40;
+  const bodyHeight = scrollTableBodyHeight(maxRows);
 
   return (
-    <div className="flex flex-col">
+    <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
       <div
-        className="overflow-x-auto overflow-y-auto scrollbar-thin"
-        style={{ minHeight: `${bodyHeight}px`, maxHeight: `${bodyHeight}px` }}
+        className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-thin"
+        style={{ minHeight: `${bodyHeight}px` }}
       >
         {children}
       </div>
-      {footer}
+      {footer ? <div className="mt-auto shrink-0">{footer}</div> : null}
     </div>
   );
 }

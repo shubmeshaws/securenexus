@@ -1,56 +1,45 @@
 import type { DashboardDateQuery } from './dashboard-date-range';
 
-export type NodeCountInterval = '15m' | '1h' | '1d';
-
 export type NodePodSeriesId = 'nodes' | 'pods';
 
-export interface NodePodTrendSeries {
-  id: NodePodSeriesId;
-  label: string;
+export interface DayTrendSeries {
+  date: string;
   data: (number | null)[];
+  latest: number | null;
+}
+
+export interface MetricDayComparison {
+  today: DayTrendSeries;
+  yesterday: DayTrendSeries;
 }
 
 export interface NodeCountTrendResponse {
   labels: string[];
-  bucketKeys: string[];
-  days: number;
-  interval: NodeCountInterval;
-  isTodayLive: boolean;
-  hasSamples: boolean;
   cluster: string;
   availableClusters: string[];
-  calendarDate: string;
-  previousDate: string | null;
-  nextDate: string | null;
-  retentionDays: number;
-  totalDaysInRange: number;
-  captureStartDate: string | null;
-  captureStartHour: number | null;
-  series: NodePodTrendSeries[];
+  hasSamples: boolean;
+  comparison: Record<NodePodSeriesId, MetricDayComparison>;
 }
 
 export interface NodeCountTrendQuery extends DashboardDateQuery {
   cluster?: string;
-  date?: string;
 }
 
 export const EMPTY_NODE_COUNT_TREND: NodeCountTrendResponse = {
   labels: [],
-  bucketKeys: [],
-  days: 0,
-  interval: '1h',
-  isTodayLive: false,
-  hasSamples: false,
   cluster: '',
   availableClusters: [],
-  calendarDate: '',
-  previousDate: null,
-  nextDate: null,
-  retentionDays: 0,
-  totalDaysInRange: 0,
-  captureStartDate: null,
-  captureStartHour: null,
-  series: [],
+  hasSamples: false,
+  comparison: {
+    nodes: {
+      today: { date: '', data: [], latest: null },
+      yesterday: { date: '', data: [], latest: null },
+    },
+    pods: {
+      today: { date: '', data: [], latest: null },
+      yesterday: { date: '', data: [], latest: null },
+    },
+  },
 };
 
 export const NODE_COUNT_TREND_PLACEHOLDER = EMPTY_NODE_COUNT_TREND;
@@ -59,30 +48,33 @@ export function formatNodeCount(value: number): string {
   return String(Math.round(value));
 }
 
-export function nodeCountIntervalLabel(interval: NodeCountInterval): string {
-  if (interval === '15m') return '15-minute';
-  if (interval === '1h') return 'Hourly';
-  return 'Daily';
+export function latestNonNullValue(data: (number | null)[]): number | null {
+  for (let i = data.length - 1; i >= 0; i--) {
+    const value = data[i];
+    if (value != null) return value;
+  }
+  return null;
 }
 
-export const NODES_SERIES_STYLE = {
-  color: '#534AB7',
-  fill: 'rgba(83,74,183,0.08)',
-  barBg: 'rgba(83,74,183,0.75)',
+export const YESTERDAY_SERIES_STYLE = {
+  color: '#3B82F6',
+  fillTop: 'rgba(59, 130, 246, 0.32)',
+  fillBottom: 'rgba(59, 130, 246, 0.02)',
+  barBg: 'rgba(59, 130, 246, 0.75)',
 } as const;
 
-export const PODS_SERIES_STYLE = {
-  color: '#059669',
-  fill: 'rgba(5,150,105,0.08)',
-  barBg: 'rgba(5,150,105,0.75)',
+export const TODAY_SERIES_STYLE = {
+  color: '#34D399',
+  fillTop: 'rgba(52, 211, 153, 0.32)',
+  fillBottom: 'rgba(52, 211, 153, 0.02)',
+  barBg: 'rgba(52, 211, 153, 0.75)',
 } as const;
 
 /** @deprecated kept for any legacy imports */
-export const BEFORE_STOP_STYLE = NODES_SERIES_STYLE;
+export const NODES_SERIES_STYLE = YESTERDAY_SERIES_STYLE;
 /** @deprecated kept for any legacy imports */
-export const AFTER_STOP_STYLE = PODS_SERIES_STYLE;
-
-export function parseNodeCountInterval(raw: string | undefined): NodeCountInterval {
-  if (raw === '1h' || raw === '1d') return raw;
-  return '15m';
-}
+export const PODS_SERIES_STYLE = TODAY_SERIES_STYLE;
+/** @deprecated kept for any legacy imports */
+export const BEFORE_STOP_STYLE = YESTERDAY_SERIES_STYLE;
+/** @deprecated kept for any legacy imports */
+export const AFTER_STOP_STYLE = TODAY_SERIES_STYLE;

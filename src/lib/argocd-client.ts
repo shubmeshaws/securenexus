@@ -399,8 +399,35 @@ class InstanceArgoCDClient {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Failed to update ArgoCD project ${projectName}: ${res.status} ${text}`);
+      const hint =
+        res.status === 403
+          ? ' — Argo CD token needs permission to update AppProjects (projects, update).'
+          : '';
+      throw new Error(
+        `Failed to update ArgoCD project ${projectName}: ${res.status} ${text}${hint}`
+      );
     }
+  }
+
+  private async mutateProjectSpec(
+    projectName: string,
+    mutate: (project: Record<string, unknown>) => void
+  ): Promise<void> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const project = await this.getProjectRaw(projectName);
+      mutate(project);
+      try {
+        await this.updateProjectRaw(projectName, project);
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError ?? new Error(`Failed to update ArgoCD project ${projectName}`);
   }
 
   private readProjectSyncWindows(project: Record<string, unknown>): ArgoSyncWindowSpec[] {
@@ -416,29 +443,39 @@ class InstanceArgoCDClient {
     timeZone: string;
   }): Promise<void> {
     const projectName = await this.getApplicationProjectName(input.appName);
-    const project = await this.getProjectRaw(projectName);
-    const spec = (project.spec as Record<string, unknown>) ?? {};
+    const windowStart = new Date();
     const nextWindow = buildScheduleDenySyncWindow({
       appName: input.appName,
-      blockFrom: input.blockFrom,
       blockUntil: input.blockUntil,
       timeZone: input.timeZone,
+      windowStart,
     });
-    spec.syncWindows = mergeScheduleDenySyncWindow(this.readProjectSyncWindows(project), nextWindow);
-    project.spec = spec;
-    await this.updateProjectRaw(projectName, project);
+
+    await this.mutateProjectSpec(projectName, (project) => {
+      const spec = (project.spec as Record<string, unknown>) ?? {};
+      spec.syncWindows = mergeScheduleDenySyncWindow(this.readProjectSyncWindows(project), nextWindow);
+      project.spec = spec;
+    });
+
+    console.log(
+      `[Argo sync window] deny window set for ${input.appName} in project ${projectName}: ` +
+        `schedule=${nextWindow.schedule} duration=${nextWindow.duration} tz=${nextWindow.timeZone}`
+    );
   }
 
   async removeScheduleManualSyncDenyWindows(appName: string): Promise<number> {
     const projectName = await this.getApplicationProjectName(appName);
-    const project = await this.getProjectRaw(projectName);
-    const existing = this.readProjectSyncWindows(project);
-    const { windows, removed } = removeScheduleDenySyncWindows(existing, appName);
-    if (removed === 0) return 0;
-    const spec = (project.spec as Record<string, unknown>) ?? {};
-    spec.syncWindows = windows;
-    project.spec = spec;
-    await this.updateProjectRaw(projectName, project);
+    let removed = 0;
+
+    await this.mutateProjectSpec(projectName, (project) => {
+      const existing = this.readProjectSyncWindows(project);
+      const result = removeScheduleDenySyncWindows(existing, appName);
+      removed = result.removed;
+      const spec = (project.spec as Record<string, unknown>) ?? {};
+      spec.syncWindows = result.windows;
+      project.spec = spec;
+    });
+
     return removed;
   }
 

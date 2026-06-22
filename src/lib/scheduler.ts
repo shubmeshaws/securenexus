@@ -6,7 +6,7 @@ export {
   reloadAllSchedules,
 } from './scheduler-utils';
 
-export { executeShutdown, executeStartup, runScheduleNow, stopLiveSchedule } from './scheduler-actions';
+export { executeShutdown, executeStartup, runScheduleNow, stopLiveSchedule, applyManualSyncDenyForSchedule } from './scheduler-actions';
 
 export {
   initScheduler,
@@ -15,3 +15,5 @@ export {
   runSchedulerTick,
   type SchedulerTickResult,
 } from './scheduler-runner';
+
+export { reconcileStoppedScheduleSyncWindows, type SyncWindowReconcileResult } from './schedule-sync-window-reconcile';

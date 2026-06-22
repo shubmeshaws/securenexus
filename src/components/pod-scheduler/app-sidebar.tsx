@@ -14,7 +14,6 @@ import { canAccessRoute, isAdminRole } from '@/lib/permissions';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Icons.pages.dashboard },
-  { href: '/infrastructure', label: 'Infrastructure', icon: Icons.pages.infrastructure },
   { href: '/clusters', label: 'Clusters', icon: Icons.pages.clusters },
   { href: '/schedules', label: 'Schedules', icon: Icons.pages.schedules },
   { href: '/active-schedules', label: 'Live Schedules', icon: Icons.pages.liveSchedules, liveCount: true },

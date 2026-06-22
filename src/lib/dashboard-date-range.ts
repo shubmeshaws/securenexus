@@ -10,8 +10,10 @@ export interface DashboardDateRange {
 
 export type DashboardDateQuery = CostTrendQuery;
 
+export const DEFAULT_DASHBOARD_DAYS = 7;
+
 export const DEFAULT_DASHBOARD_DATE_RANGE: DashboardDateRange = {
-  preset: '14',
+  preset: '7',
   customFrom: '',
   customTo: '',
 };
@@ -47,7 +49,7 @@ export function dashboardDateRangeToQuery(range: DashboardDateRange): DashboardD
   if (range.preset === 'custom' && range.customFrom && range.customTo) {
     return { from: range.customFrom, to: range.customTo };
   }
-  return { days: range.preset === 'custom' ? 14 : Number(range.preset) };
+  return { days: range.preset === 'custom' ? DEFAULT_DASHBOARD_DAYS : Number(range.preset) };
 }
 
 export function buildDashboardDateQueryString(range: DashboardDateRange): string {
@@ -55,7 +57,7 @@ export function buildDashboardDateQueryString(range: DashboardDateRange): string
   if (query.from && query.to) {
     return `from=${encodeURIComponent(query.from)}&to=${encodeURIComponent(query.to)}`;
   }
-  return `days=${query.days ?? 14}`;
+  return `days=${query.days ?? DEFAULT_DASHBOARD_DAYS}`;
 }
 
 export function appendDashboardDateQuery(basePath: string, range: DashboardDateRange): string {
@@ -75,11 +77,11 @@ export function parseDashboardDateQuery(query: {
     return { from, to };
   }
   const daysRaw = typeof query.days === 'string' ? Number(query.days) : NaN;
-  const days = Number.isFinite(daysRaw) ? Math.min(Math.max(daysRaw, 1), 90) : 14;
+  const days = Number.isFinite(daysRaw) ? Math.min(Math.max(daysRaw, 1), 90) : DEFAULT_DASHBOARD_DAYS;
   return { days };
 }
 
-export function resolveDashboardRangeBounds(query: DashboardDateQuery = { days: 14 }): {
+export function resolveDashboardRangeBounds(query: DashboardDateQuery = { days: DEFAULT_DASHBOARD_DAYS }): {
   rangeStart: Date;
   rangeEnd: Date;
   days: number;

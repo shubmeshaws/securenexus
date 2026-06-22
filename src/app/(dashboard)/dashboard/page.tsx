@@ -21,6 +21,7 @@ import {
   PanelHeader,
   PanelSubtitle,
   ScrollTable,
+  scrollTableBodyHeight,
 } from '@/components/pod-scheduler/ui-primitives';
 import NodeCountTrend from '@/components/dashboard/node-count-trend';
 import ScheduleActionsChart from '@/components/dashboard/schedule-actions-chart';
@@ -43,6 +44,7 @@ import {
 import { formatHoursDisplay, formatRelativeTime, formatStoppedDuration, parseClusterDisplay, cn } from '@/lib/utils';
 
 const VISIBLE_ROWS = 5;
+const STOP_TABLE_BODY_HEIGHT = scrollTableBodyHeight(VISIBLE_ROWS);
 
 function RowCountBadge({ shown, total }: { shown: number; total: number }) {
   if (total <= VISIBLE_ROWS) return null;
@@ -277,21 +279,33 @@ export default function PodSchedulerOverviewPage() {
                 {periodSuffix}
               </PanelSubtitle>
               {!rangeReady ? (
-                <p className="p-8 text-center text-sm text-muted-foreground">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   Select a from and to date to load stop-time data.
-                </p>
+                </div>
               ) : isInsightsLoading && !insights ? (
-                <div className="flex justify-center p-8">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                 </div>
               ) : !namespaceStopped.length ? (
-                <p className="p-8 text-center text-sm text-muted-foreground">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   No Kubernetes workload stop-time data yet.
-                </p>
+                </div>
               ) : !filteredNamespaceStopped.length ? (
-                <p className="p-8 text-center text-sm text-muted-foreground">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   No stop-time data matches the selected cluster or namespace filters.
-                </p>
+                </div>
               ) : (
                 <ScrollTable
                   maxRows={VISIBLE_ROWS}
@@ -365,17 +379,26 @@ export default function PodSchedulerOverviewPage() {
                 {periodSuffix}
               </PanelSubtitle>
               {!rangeReady ? (
-                <p className="p-8 text-center text-sm text-muted-foreground">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   Select a from and to date to load stop-time data.
-                </p>
+                </div>
               ) : isInsightsLoading && !insights ? (
-                <div className="flex justify-center p-8">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                 </div>
               ) : !standaloneStopped.length ? (
-                <p className="p-8 text-center text-sm text-muted-foreground">
+                <div
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
+                  style={{ minHeight: STOP_TABLE_BODY_HEIGHT }}
+                >
                   No standalone workload stop-time data yet.
-                </p>
+                </div>
               ) : (
                 <ScrollTable
                   maxRows={VISIBLE_ROWS}

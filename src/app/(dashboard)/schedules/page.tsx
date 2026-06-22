@@ -23,6 +23,8 @@ import {
   DashboardFilterSelect,
 } from '@/components/dashboard/dashboard-filters';
 import { ScheduleFormDrawer } from '@/components/pod-scheduler/schedule-form-drawer';
+import { ScheduleCsvActions } from '@/components/pod-scheduler/schedule-csv-actions';
+import { ScheduleSyncWindowRepair } from '@/components/pod-scheduler/schedule-sync-window-repair';
 import {
   ActiveInstantRunsPanel,
   InstantScheduleDrawer,
@@ -195,16 +197,20 @@ export default function SchedulesPage() {
                 </Button>
               )}
               {permissions.scheduleEdit && (
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setEditSchedule(null);
-                    setDrawerOpen(true);
-                  }}
-                >
-                  <AppIcon icon={Icons.actions.add} size="sm" />
-                  Add Schedule
-                </Button>
+                <>
+                  <ScheduleSyncWindowRepair />
+                  <ScheduleCsvActions />
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setEditSchedule(null);
+                      setDrawerOpen(true);
+                    }}
+                  >
+                    <AppIcon icon={Icons.actions.add} size="sm" />
+                    Add Schedule
+                  </Button>
+                </>
               )}
             </div>
           ) : undefined

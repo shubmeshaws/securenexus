@@ -22,6 +22,7 @@ import {
   runInSchedulePool,
   SCHEDULE_EXECUTION_CONCURRENCY,
 } from './schedule-execution-pool';
+import { reconcileStoppedScheduleSyncWindows } from './schedule-sync-window-reconcile';
 
 const SCHEDULER_GLOBAL_KEY = '__secureNexusSchedulerStarted__';
 const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -194,6 +195,10 @@ export function initScheduler() {
 
   reloadAllSchedules().catch((err) => {
     console.error('[PodScheduler] Failed to compute next runs:', err);
+  });
+
+  reconcileStoppedScheduleSyncWindows().catch((err) => {
+    console.error('[PodScheduler] Failed to reconcile stopped sync windows:', err);
   });
 }
 

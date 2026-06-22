@@ -126,6 +126,88 @@ async function collectScheduleArgoApps(
   return Array.from(byName.values());
 }
 
+interface ScheduleArgoApp {
+  name: string;
+  instanceId: string;
+}
+
+async function blockManualSyncForApps(
+  apps: ScheduleArgoApp[],
+  input: {
+    blockUntil: Date;
+    timeZone: string;
+    now: Date;
+    logPrefix: string;
+  }
+): Promise<{ blocked: string[]; errors: string[] }> {
+  const blocked: string[] = [];
+  const errors: string[] = [];
+
+  for (const app of apps) {
+    try {
+      await argocdClient.addScheduleManualSyncDenyWindow(
+        {
+          appName: app.name,
+          blockFrom: input.now,
+          blockUntil: input.blockUntil,
+          timeZone: input.timeZone,
+        },
+        app.instanceId
+      );
+      blocked.push(app.name);
+      console.log(
+        `[${input.logPrefix}] manual sync deny window set for ${app.name} until ${input.blockUntil.toISOString()}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${app.name}: ${message}`);
+      console.error(`[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`);
+    }
+  }
+
+  return { blocked, errors };
+}
+
+function resolveManualSyncBlockUntilForShutdown(schedule: Schedule, now: Date): Date {
+  return (
+    computeCurrentLiveStartupAt(schedule, now) ??
+    computeNextStartupAt(schedule, now) ??
+    defaultBlockUntil(now)
+  );
+}
+
+function resolveManualSyncBlockUntilForReconcile(schedule: Schedule, now: Date): Date {
+  return schedule.liveStartupAt ?? resolveManualSyncBlockUntilForShutdown(schedule, now);
+}
+
+async function resolveScheduleArgoAppsForSyncDeny(schedule: Schedule): Promise<ScheduleArgoApp[]> {
+  if (schedule.pausedArgoApps.length > 0) {
+    const fromStored = await resolveArgoAppsForResume(schedule, schedule.pausedArgoApps);
+    if (fromStored.length) return fromStored;
+  }
+  return collectScheduleArgoApps(schedule);
+}
+
+/** Apply manual-sync deny windows only — for stopped schedules missing windows after deploy/restart. */
+export async function applyManualSyncDenyForSchedule(
+  schedule: Schedule,
+  now = new Date()
+): Promise<{ apps: string[]; errors: string[] }> {
+  if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
+
+  const targets = await resolveScheduleArgoAppsForSyncDeny(schedule);
+  if (!targets.length) return { apps: [], errors: [] };
+
+  const { blocked, errors } = await blockManualSyncForApps(targets, {
+    blockUntil: resolveManualSyncBlockUntilForReconcile(schedule, now),
+    timeZone: schedule.timezone || 'UTC',
+    now,
+    logPrefix: 'Argo reconcile',
+  });
+
+  return { apps: blocked, errors };
+}
+
 /** Pause automated sync and block manual sync for every Argo app on this schedule. */
 async function pauseArgoForSchedule(
   schedule: Schedule,
@@ -138,12 +220,7 @@ async function pauseArgoForSchedule(
     }`
   );
   const paused: string[] = [];
-  const manualBlocked: string[] = [];
-  // Compute from schedule times — do not reuse liveStartupAt (may be stale from a prior cycle).
-  const blockUntil =
-    computeCurrentLiveStartupAt(schedule, now) ??
-    computeNextStartupAt(schedule, now) ??
-    defaultBlockUntil(now);
+  const blockUntil = resolveManualSyncBlockUntilForShutdown(schedule, now);
   const timeZone = schedule.timezone || 'UTC';
 
   for (const app of targets) {
@@ -156,28 +233,14 @@ async function pauseArgoForSchedule(
         err instanceof Error ? err.message : err
       );
     }
-
-    try {
-      await argocdClient.addScheduleManualSyncDenyWindow(
-        {
-          appName: app.name,
-          blockFrom: now,
-          blockUntil,
-          timeZone,
-        },
-        app.instanceId
-      );
-      manualBlocked.push(app.name);
-      console.log(
-        `[Argo pause] manual sync deny window added for ${app.name} until ${blockUntil.toISOString()}`
-      );
-    } catch (err) {
-      console.error(
-        `[Argo pause] failed to block manual sync for ${app.name}:`,
-        err instanceof Error ? err.message : err
-      );
-    }
   }
+
+  const { blocked: manualBlocked } = await blockManualSyncForApps(targets, {
+    blockUntil,
+    timeZone,
+    now,
+    logPrefix: 'Argo pause',
+  });
 
   const notes: string[] = [];
   if (paused.length) notes.push(`ArgoCD sync paused (${paused.join(', ')})`);
@@ -228,11 +291,6 @@ async function resolveArgoApp(
   } catch {
     return null;
   }
-}
-
-interface ScheduleArgoApp {
-  name: string;
-  instanceId: string;
 }
 
 async function resolveArgoAppsForResume(

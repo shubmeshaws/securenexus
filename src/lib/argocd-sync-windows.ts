@@ -1,5 +1,5 @@
 import { addMinutes, differenceInMinutes } from 'date-fns';
-import { formatInTimeZone } from 'date-fns-tz';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 /** Identifies sync windows created by SecureNexus schedule shutdown. */
 export const SECURENEXUS_SYNC_WINDOW_DESCRIPTION = 'securenexus-schedule-manual-sync-deny';
@@ -20,11 +20,21 @@ const MIN_DENY_DURATION_HOURS = 1;
 const MAX_DENY_DURATION_HOURS = 168;
 const STARTUP_BUFFER_MINUTES = 30;
 
-/** Cron (minute hour dom month dow) for when the deny window starts — in the schedule timezone. */
+/** Floor a UTC instant to the start of its minute in the given timezone. */
+export function floorToScheduleMinute(when: Date, timeZone: string): Date {
+  const stamp = formatInTimeZone(when, timeZone, "yyyy-MM-dd'T'HH:mm:00");
+  return fromZonedTime(stamp, timeZone);
+}
+
+/**
+ * Cron for an immediate deny window in the schedule timezone.
+ * Uses a minute range through :59 so delayed project writes on slower hosts (e.g. EC2)
+ * still land inside an active window for this shutdown cycle.
+ */
 export function cronScheduleForInstant(when: Date, timeZone: string): string {
-  const minute = formatInTimeZone(when, timeZone, 'm');
-  const hour = formatInTimeZone(when, timeZone, 'H');
-  return `${minute} ${hour} * * *`;
+  const minute = Number(formatInTimeZone(when, timeZone, 'm'));
+  const hour = Number(formatInTimeZone(when, timeZone, 'H'));
+  return `${minute}-59 ${hour} * * *`;
 }
 
 /** Argo CD duration string (e.g. "10h") covering stop until startup (+ buffer). */
@@ -39,15 +49,17 @@ export function denyWindowDuration(from: Date, until: Date): string {
 
 export function buildScheduleDenySyncWindow(input: {
   appName: string;
-  blockFrom: Date;
   blockUntil: Date;
   timeZone: string;
+  /** When the deny window is written to Argo CD — defaults to now. */
+  windowStart?: Date;
 }): ArgoSyncWindowSpec {
+  const windowStart = floorToScheduleMinute(input.windowStart ?? new Date(), input.timeZone);
   return {
     kind: 'deny',
-    schedule: cronScheduleForInstant(input.blockFrom, input.timeZone),
-    duration: denyWindowDuration(input.blockFrom, input.blockUntil),
-    // Argo CD: manualSync=true *allows* manual sync during a deny window (UI: "Enable manual sync").
+    schedule: cronScheduleForInstant(windowStart, input.timeZone),
+    duration: denyWindowDuration(windowStart, input.blockUntil),
+    // manualSync=false blocks manual Sync in Argo CD during an active deny window.
     manualSync: false,
     applications: [input.appName],
     timeZone: input.timeZone || 'UTC',
@@ -63,6 +75,9 @@ export function isManagedScheduleDenyWindow(
   window: ArgoSyncWindowSpec,
   appName: string
 ): boolean {
+  if (window.description === SECURENEXUS_SYNC_WINDOW_DESCRIPTION) {
+    return !window.applications?.length || window.applications.includes(appName);
+  }
   if (window.kind !== 'deny') return false;
   if (!window.applications?.length || !window.applications.includes(appName)) return false;
   if (window.namespaces?.length || window.clusters?.length) return false;
