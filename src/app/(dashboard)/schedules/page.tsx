@@ -41,7 +41,6 @@ import {
   ScheduleNextRunCell,
   ScheduleShutdownAtCell,
   ScheduleStartupAtCell,
-  ScheduleRepeatsCell,
   ScheduleStatusCell,
 } from '@/components/pod-scheduler/schedule-table-cells';
 
@@ -341,7 +340,6 @@ export default function SchedulesPage() {
                   <th className="px-5 py-3 text-left font-medium">Target</th>
                   <th className="px-5 py-3 text-left font-medium">Shutdown</th>
                   <th className="px-5 py-3 text-left font-medium whitespace-nowrap">Startup</th>
-                  <th className="px-5 py-3 text-left font-medium">Repeats</th>
                   <th className="min-w-[7.5rem] px-5 py-3 text-left font-medium whitespace-nowrap">Status</th>
                   <th className="px-5 py-3 text-left font-medium">Next run</th>
                   <th className="px-5 py-3 text-right font-medium">Actions</th>
@@ -350,14 +348,14 @@ export default function SchedulesPage() {
               <tbody>
                 {schedules.length === 0 && (
                   <tr>
-                    <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                    <td colSpan={11} className="p-8 text-center text-muted-foreground">
                       No schedules configured
                     </td>
                   </tr>
                 )}
                 {schedules.length > 0 && filteredSchedules.length === 0 && (
                   <tr>
-                    <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                    <td colSpan={11} className="p-8 text-center text-muted-foreground">
                       {searchQuery
                         ? <>No schedules match &ldquo;{searchQuery}&rdquo;</>
                         : 'No schedules match the selected filters'}
@@ -389,9 +387,6 @@ export default function SchedulesPage() {
                     </td>
                     <td className="px-5 py-3.5 whitespace-nowrap">
                       <ScheduleStartupAtCell schedule={s} />
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <ScheduleRepeatsCell schedule={s} />
                     </td>
                     <td className="px-5 py-3.5 whitespace-nowrap">
                       <ScheduleStatusCell schedule={s} />

@@ -15,7 +15,6 @@ import type { Schedule } from '@/lib/api-client';
 import {
   DAY_LABELS,
   cn,
-  daysOfWeekSummary,
   formatNextRunAt,
   formatRelativeTime,
   formatTime12h,
@@ -34,6 +33,7 @@ import {
   ScheduleStatusCell,
   ScheduleShutdownAtCell,
   ScheduleStartupAtCell,
+  ScheduleRepeatsCell,
 } from '@/components/pod-scheduler/schedule-table-cells';
 
 export interface ScheduleLiveInfo {
@@ -137,7 +137,6 @@ function ScheduleDetailBody({
   const { clusterName, accountId } = parseClusterDisplay(schedule.cluster);
   const env = inferScheduleEnvironment(schedule.namespace, schedule.cluster);
   const weekdayDays = schedule.daysOfWeek.filter((d) => !schedule.weekendDays.includes(d));
-  const { label: daysLabel, tooltip: daysTooltip } = daysOfWeekSummary(schedule.daysOfWeek);
 
   return (
     <div className="space-y-5">
@@ -192,6 +191,7 @@ function ScheduleDetailBody({
 
       <DetailSection title="Schedule">
         <DetailRow label="Type" value={recurrenceLabel(schedule.recurrence)} />
+        <DetailRow label="Repeats" value={<ScheduleRepeatsCell schedule={schedule} />} />
         <DetailRow label="Timezone" value={schedule.timezone} mono />
 
         {schedule.recurrence === 'split' ? (
@@ -272,14 +272,6 @@ function ScheduleDetailBody({
           <>
             <DetailRow label="Shutdown" value={formatTime12h(schedule.shutdownTime)} />
             <DetailRow label="Startup" value={formatTime12h(schedule.startupTime)} />
-            <DetailRow
-              label="Days"
-              value={
-                <span title={daysTooltip !== daysLabel ? daysTooltip : undefined}>
-                  {daysLabel}
-                </span>
-              }
-            />
           </>
         )}
       </DetailSection>

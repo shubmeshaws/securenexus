@@ -132,25 +132,8 @@ export function daysOfWeekSummary(days: number[]): { label: string; tooltip: str
   return { label: tooltip, tooltip };
 }
 
-const ENV_NAMESPACE_PATTERNS: [RegExp, string][] = [
-  [/^prod(uction)?$/i, 'Production'],
-  [/^dev(elop(ment)?)?$/i, 'Development'],
-  [/^(stg|staging)$/i, 'Staging'],
-  [/^uat$/i, 'UAT'],
-  [/^qa|test(ing)?$/i, 'QA'],
-  [/^dr|disaster[-_]?recovery$/i, 'DR'],
-];
-
 /** Best-effort environment label from namespace or cluster name prefix. */
-export function inferScheduleEnvironment(namespace: string, cluster: string): string {
-  const { clusterName } = parseClusterDisplay(cluster);
-  for (const [pattern, label] of ENV_NAMESPACE_PATTERNS) {
-    if (pattern.test(namespace)) return label;
-  }
-  const clusterMatch = clusterName.match(/^(prod|dev|stg|staging|uat|qa|dr|test)-/i);
-  if (clusterMatch) return clusterMatch[1].toUpperCase();
-  return namespace;
-}
+export { inferScheduleEnvironment } from './schedule-environment';
 
 /** Parse EKS-style cluster names like `123456789012/my-cluster`. */
 export function parseClusterDisplay(cluster: string | null | undefined): {
