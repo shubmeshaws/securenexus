@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, ShieldCheck } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import type { SyncWindowReconcileResult } from '@/lib/schedule-sync-window-recon
 import type { SyncWindowReconcileJobState } from '@/lib/schedule-sync-window-job';
 
 const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const POLL_TIMEOUT_MS = 25 * 60 * 1000;
 
 const NO_CACHE_FETCH: RequestInit = {
   cache: 'no-store',
@@ -35,10 +35,23 @@ function reconcileStatusUrl(): string {
   return `/api/schedules/reconcile-sync-windows?_=${Date.now()}`;
 }
 
+function formatProgress(job: SyncWindowReconcileJobState): string | null {
+  const p = job.progress;
+  if (!p || !job.running) return null;
+  if (p.phase === 'schedules') {
+    return `Processing schedules (${p.schedulesDone}/${p.schedulesTotal})…`;
+  }
+  if (p.phase === 'instant-runs') {
+    return `Processing instant runs (${p.instantRunsDone}/${p.instantRunsTotal})…`;
+  }
+  return 'Finishing…';
+}
+
 export function ScheduleSyncWindowRepair() {
   const [repairing, setRepairing] = useState(false);
   const [result, setResult] = useState<SyncWindowReconcileResult | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [schedulesScanned, setSchedulesScanned] = useState<number | null>(null);
   const pollAbortRef = useRef(false);
 
@@ -48,16 +61,20 @@ export function ScheduleSyncWindowRepair() {
     };
   }, []);
 
-  async function pollUntilDone(startedAt: number) {
+  const pollUntilDone = useCallback(async (startedAt: number) => {
     while (!pollAbortRef.current) {
       if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
-        throw new Error('Repair is still running on the server. Check logs and try again in a minute.');
+        throw new Error(
+          'Repair is still running on the server (large number of schedules). Click Repair sync blocks again in a minute to pick up the result.'
+        );
       }
 
       const job = await apiFetch<SyncWindowReconcileJobState>(
         reconcileStatusUrl(),
         NO_CACHE_FETCH
       );
+      setProgressLabel(formatProgress(job));
+
       if (job.result) {
         setSchedulesScanned(job.result.schedulesScanned);
         return job.result;
@@ -72,29 +89,32 @@ export function ScheduleSyncWindowRepair() {
       await sleep(POLL_INTERVAL_MS);
     }
     throw new Error('Repair cancelled');
-  }
+  }, []);
 
-  async function runRepair() {
+  const runRepair = useCallback(async () => {
     pollAbortRef.current = false;
     setRepairing(true);
     setJobError(null);
     setResult(null);
     setSchedulesScanned(null);
+    setProgressLabel(null);
 
     try {
       const startedAt = Date.now();
-      await apiFetch<SyncWindowReconcileJobState>(reconcileStatusUrl(), {
+      const kickoff = await apiFetch<SyncWindowReconcileJobState>(reconcileStatusUrl(), {
         ...NO_CACHE_FETCH,
         method: 'POST',
       });
+      setProgressLabel(formatProgress(kickoff));
       const data = await pollUntilDone(startedAt);
       setResult(data);
     } catch (err) {
       setJobError(err instanceof Error ? err.message : 'Repair failed');
     } finally {
       setRepairing(false);
+      setProgressLabel(null);
     }
-  }
+  }, [pollUntilDone]);
 
   return (
     <>
@@ -104,7 +124,7 @@ export function ScheduleSyncWindowRepair() {
         ) : (
           <AppIcon icon={ShieldCheck} size="sm" />
         )}
-        Repair sync blocks
+        {repairing && progressLabel ? progressLabel : 'Repair sync blocks'}
       </Button>
 
       <Dialog

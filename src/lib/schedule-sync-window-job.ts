@@ -1,5 +1,6 @@
 import {
   reconcileStoppedScheduleSyncWindows,
+  type SyncWindowReconcileProgress,
   type SyncWindowReconcileResult,
 } from './schedule-sync-window-reconcile';
 
@@ -9,6 +10,7 @@ export type SyncWindowReconcileJobState = {
   finishedAt: string | null;
   result: SyncWindowReconcileResult | null;
   error: string | null;
+  progress: SyncWindowReconcileProgress | null;
 };
 
 let job: SyncWindowReconcileJobState = {
@@ -17,6 +19,7 @@ let job: SyncWindowReconcileJobState = {
   finishedAt: null,
   result: null,
   error: null,
+  progress: null,
 };
 
 export function getSyncWindowReconcileJob(): SyncWindowReconcileJobState {
@@ -33,9 +36,12 @@ export function startSyncWindowReconcileJob(): boolean {
     finishedAt: null,
     result: null,
     error: null,
+    progress: null,
   };
 
-  void reconcileStoppedScheduleSyncWindows()
+  void reconcileStoppedScheduleSyncWindows((progress) => {
+    job = { ...job, progress };
+  })
     .then((result) => {
       job = {
         ...job,
@@ -43,6 +49,13 @@ export function startSyncWindowReconcileJob(): boolean {
         finishedAt: new Date().toISOString(),
         result,
         error: null,
+        progress: {
+          schedulesTotal: result.schedulesScanned,
+          schedulesDone: result.schedulesScanned,
+          instantRunsTotal: result.instantRunsProcessed,
+          instantRunsDone: result.instantRunsProcessed,
+          phase: 'done',
+        },
       };
     })
     .catch((err) => {

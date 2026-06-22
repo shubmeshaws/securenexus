@@ -1,9 +1,10 @@
 import prisma from './prisma';
 import { addHours } from 'date-fns';
 import type { InstantRun } from '@prisma/client';
-import { applyManualSyncDenyForSchedule } from './scheduler-actions';
+import { applyManualSyncDenyForScheduleRepair } from './scheduler-actions';
 import { isNonEksSchedule } from './workload-utils';
 import argocdClient, { appMatchesK8sCluster, type ArgoCDAppSummary } from './argocd-client';
+import { listEnabledArgoCDInstances } from './argocd-instances';
 import { runWithConcurrency } from './concurrency';
 
 export interface SyncWindowReconcileResult {
@@ -14,6 +15,14 @@ export interface SyncWindowReconcileResult {
   instantAppsUpdated: number;
   errors: string[];
 }
+
+export type SyncWindowReconcileProgress = {
+  schedulesTotal: number;
+  schedulesDone: number;
+  instantRunsTotal: number;
+  instantRunsDone: number;
+  phase: 'schedules' | 'instant-runs' | 'done';
+};
 
 type ArgoAppRef = { name: string; instanceId: string };
 
@@ -45,7 +54,9 @@ function resolveInstantRunApps(run: InstantRun, allApps: ArgoCDAppSummary[]): Ar
 }
 
 /** Backfill Argo CD manual-sync deny windows for schedules/runs already in a stopped state. */
-export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowReconcileResult> {
+export async function reconcileStoppedScheduleSyncWindows(
+  onProgress?: (progress: SyncWindowReconcileProgress) => void
+): Promise<SyncWindowReconcileResult> {
   const now = new Date();
   const result: SyncWindowReconcileResult = {
     schedulesScanned: 0,
@@ -56,7 +67,9 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
     errors: [],
   };
 
-  const [schedules, instantRuns, allApps] = await Promise.all([
+  const report = (progress: SyncWindowReconcileProgress) => onProgress?.(progress);
+
+  const [schedules, instantRuns, allApps, instances] = await Promise.all([
     prisma.schedule.findMany({
       where: {
         platformType: { not: 'non_eks' },
@@ -69,8 +82,10 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
     }),
     prisma.instantRun.findMany({ where: { active: true } }),
     argocdClient.listApplications(),
+    listEnabledArgoCDInstances(),
   ]);
 
+  const instanceMap = new Map(instances.map((i) => [i.id, i]));
   const candidates = schedules.filter(
     (schedule) => !isNonEksSchedule(schedule) && scheduleNeedsSyncWindowReconcile(schedule)
   );
@@ -80,10 +95,34 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
     `[Argo reconcile] starting: ${candidates.length} schedule(s), ${instantRuns.length} instant run(s)`
   );
 
+  report({
+    schedulesTotal: candidates.length,
+    schedulesDone: 0,
+    instantRunsTotal: instantRuns.length,
+    instantRunsDone: 0,
+    phase: 'schedules',
+  });
+
+  let schedulesDone = 0;
   const scheduleOutcomes: { apps: string[]; errors: string[] }[] = [];
 
-  await runWithConcurrency(candidates, 2, async (schedule) => {
-    const outcome = await applyManualSyncDenyForSchedule(schedule, now);
+  await runWithConcurrency(candidates, 4, async (schedule) => {
+    const outcome = await applyManualSyncDenyForScheduleRepair(
+      schedule,
+      allApps,
+      instanceMap,
+      now
+    );
+
+    schedulesDone++;
+    report({
+      schedulesTotal: candidates.length,
+      schedulesDone,
+      instantRunsTotal: instantRuns.length,
+      instantRunsDone: 0,
+      phase: 'schedules',
+    });
+
     if (!outcome.apps.length && !outcome.errors.length) {
       scheduleOutcomes.push({
         apps: [],
@@ -106,14 +145,32 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
     result.errors.push(...outcome.errors);
   }
 
-  const instantOutcomes: { apps: string[]; errors: string[] }[] = [];
+  report({
+    schedulesTotal: candidates.length,
+    schedulesDone: candidates.length,
+    instantRunsTotal: instantRuns.length,
+    instantRunsDone: 0,
+    phase: 'instant-runs',
+  });
+
+  let instantRunsDone = 0;
+  const instantOutcomes: { processed: boolean; apps: number; errors: string[] }[] = [];
 
   await runWithConcurrency(instantRuns, 4, async (run) => {
     const targets = resolveInstantRunApps(run, allApps);
     if (!targets.length) {
       instantOutcomes.push({
-        apps: [],
+        processed: false,
+        apps: 0,
         errors: [`instant:${run.appName}: no linked Argo CD app found`],
+      });
+      instantRunsDone++;
+      report({
+        schedulesTotal: candidates.length,
+        schedulesDone: candidates.length,
+        instantRunsTotal: instantRuns.length,
+        instantRunsDone,
+        phase: 'instant-runs',
       });
       return;
     }
@@ -136,23 +193,41 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
         apps.push(app.name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        errors.push(`${app.name}: ${message}`);
+        errors.push(`instant:${run.appName}: ${app.name}: ${message}`);
       }
     }
 
     instantOutcomes.push({
-      apps,
-      errors: errors.map((error) => `instant:${run.appName}: ${error}`),
+      processed: apps.length > 0,
+      apps: apps.length,
+      errors,
+    });
+
+    instantRunsDone++;
+    report({
+      schedulesTotal: candidates.length,
+      schedulesDone: candidates.length,
+      instantRunsTotal: instantRuns.length,
+      instantRunsDone,
+      phase: 'instant-runs',
     });
   });
 
   for (const outcome of instantOutcomes) {
-    if (outcome.apps.length) {
+    if (outcome.processed) {
       result.instantRunsProcessed++;
-      result.instantAppsUpdated += outcome.apps.length;
+      result.instantAppsUpdated += outcome.apps;
     }
     result.errors.push(...outcome.errors);
   }
+
+  report({
+    schedulesTotal: candidates.length,
+    schedulesDone: candidates.length,
+    instantRunsTotal: instantRuns.length,
+    instantRunsDone: instantRuns.length,
+    phase: 'done',
+  });
 
   console.log(
     `[Argo reconcile] done: scanned ${result.schedulesScanned}, updated ${result.schedulesProcessed} schedule(s) / ` +

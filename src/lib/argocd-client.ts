@@ -7,7 +7,6 @@ import {
 } from '@/lib/argocd-instances';
 import {
   buildScheduleDenySyncWindow,
-  denyWindowCoversApp,
   mergeScheduleDenySyncWindow,
   removeScheduleDenySyncWindows,
   type ArgoSyncWindowSpec,
@@ -458,49 +457,61 @@ class InstanceArgoCDClient {
     blockUntil: Date;
     timeZone: string;
   }): Promise<void> {
-    const projectName = await this.getApplicationProjectName(input.appName);
-    const windowStart = new Date();
-    const nextWindow = buildScheduleDenySyncWindow({
-      appName: input.appName,
+    return this.addScheduleManualSyncDenyWindows({
+      appNames: [input.appName],
       blockUntil: input.blockUntil,
       timeZone: input.timeZone,
-      windowStart,
     });
+  }
 
-    try {
-      await this.mutateProjectSpec(projectName, (project) => {
+  /** One project PUT for many apps — avoids 409 duplicate schedule rows on EC2. */
+  async addScheduleManualSyncDenyWindows(input: {
+    appNames: string[];
+    blockUntil: Date;
+    timeZone: string;
+  }): Promise<void> {
+    const appNames = Array.from(new Set(input.appNames.filter(Boolean)));
+    if (!appNames.length) return;
+
+    const byProject = new Map<string, string[]>();
+    for (const appName of appNames) {
+      const projectName = await this.getApplicationProjectName(appName);
+      const bucket = byProject.get(projectName) ?? [];
+      bucket.push(appName);
+      byProject.set(projectName, bucket);
+    }
+
+    for (const [projectName, projectApps] of Array.from(byProject.entries())) {
+      const windowStart = new Date();
+      const nextWindow = buildScheduleDenySyncWindow({
+        appNames: projectApps,
+        blockUntil: input.blockUntil,
+        timeZone: input.timeZone,
+        windowStart,
+      });
+
+      const applyMerge = (project: Record<string, unknown>) => {
         const spec = (project.spec as Record<string, unknown>) ?? {};
         spec.syncWindows = mergeScheduleDenySyncWindow(
           this.readProjectSyncWindows(project),
           nextWindow
         );
         project.spec = spec;
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes('already exists')) {
-        const project = await this.getProjectRaw(projectName);
-        if (
-          denyWindowCoversApp(
-            this.readProjectSyncWindows(project),
-            input.appName,
-            nextWindow.schedule,
-            nextWindow.duration
-          )
-        ) {
-          console.log(
-            `[Argo sync window] deny window already active for ${input.appName} in project ${projectName}`
-          );
-          return;
-        }
-      }
-      throw err;
-    }
+      };
 
-    console.log(
-      `[Argo sync window] deny window set for ${input.appName} in project ${projectName}: ` +
-        `schedule=${nextWindow.schedule} duration=${nextWindow.duration} tz=${nextWindow.timeZone}`
-    );
+      try {
+        await this.mutateProjectSpec(projectName, applyMerge);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes('already exists')) throw err;
+        await this.mutateProjectSpec(projectName, applyMerge);
+      }
+
+      console.log(
+        `[Argo sync window] deny window set in project ${projectName} for ${projectApps.length} app(s): ` +
+          `schedule=${nextWindow.schedule} duration=${nextWindow.duration} tz=${nextWindow.timeZone}`
+      );
+    }
   }
 
   async removeScheduleManualSyncDenyWindows(appName: string): Promise<number> {
@@ -770,6 +781,19 @@ class MultiArgoCDClient {
   ): Promise<void> {
     const { client } = await resolveInstanceForApp(input.appName, instanceId);
     return client.addScheduleManualSyncDenyWindow(input);
+  }
+
+  async addScheduleManualSyncDenyWindows(
+    input: {
+      appNames: string[];
+      blockUntil: Date;
+      timeZone: string;
+    },
+    instanceId?: string
+  ): Promise<void> {
+    if (!input.appNames.length) return;
+    const { client } = await resolveInstanceForApp(input.appNames[0], instanceId);
+    return client.addScheduleManualSyncDenyWindows(input);
   }
 
   async removeScheduleManualSyncDenyWindows(

@@ -142,31 +142,43 @@ async function blockManualSyncForApps(
 ): Promise<{ blocked: string[]; errors: string[] }> {
   const blocked: string[] = [];
   const errors: string[] = [];
+  const byInstance = new Map<string, ScheduleArgoApp[]>();
 
   for (const app of apps) {
+    const group = byInstance.get(app.instanceId) ?? [];
+    group.push(app);
+    byInstance.set(app.instanceId, group);
+  }
+
+  for (const [instanceId, group] of Array.from(byInstance.entries())) {
     try {
-      await argocdClient.addScheduleManualSyncDenyWindow(
+      await argocdClient.addScheduleManualSyncDenyWindows(
         {
-          appName: app.name,
-          blockFrom: input.now,
+          appNames: group.map((app) => app.name),
           blockUntil: input.blockUntil,
           timeZone: input.timeZone,
         },
-        app.instanceId
+        instanceId
       );
-      blocked.push(app.name);
-      console.log(
-        `[${input.logPrefix}] manual sync deny window set for ${app.name} until ${input.blockUntil.toISOString()}`
-      );
+      for (const app of group) {
+        blocked.push(app.name);
+        console.log(
+          `[${input.logPrefix}] manual sync deny window set for ${app.name} until ${input.blockUntil.toISOString()}`
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes('already exists')) {
-        blocked.push(app.name);
-        console.log(`[${input.logPrefix}] manual sync deny window already active for ${app.name}`);
-        continue;
+      for (const app of group) {
+        if (message.includes('already exists')) {
+          blocked.push(app.name);
+          console.log(`[${input.logPrefix}] manual sync deny window already active for ${app.name}`);
+        } else {
+          errors.push(`${app.name}: ${message}`);
+          console.error(
+            `[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`
+          );
+        }
       }
-      errors.push(`${app.name}: ${message}`);
-      console.error(`[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`);
     }
   }
 
@@ -201,6 +213,53 @@ export async function applyManualSyncDenyForSchedule(
   if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
 
   const targets = await resolveScheduleArgoAppsForSyncDeny(schedule);
+  return applyManualSyncDenyForApps(schedule, targets, now);
+}
+
+async function resolveScheduleArgoAppsFromCatalog(
+  schedule: Schedule,
+  allApps: ArgoCDAppSummary[],
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
+): Promise<ScheduleArgoApp[]> {
+  if (schedule.pausedArgoApps.length > 0) {
+    const fromStored = await resolveArgoAppsForResume(schedule, schedule.pausedArgoApps);
+    if (fromStored.length) return fromStored;
+  }
+
+  const scoped = filterAppsForSchedule(schedule, allApps, instanceMap);
+
+  if (isNamespaceSchedule(schedule)) {
+    return scoped
+      .filter((app) => app.destinationNamespace === schedule.namespace)
+      .map((app) => ({ name: app.name, instanceId: app.instanceId }));
+  }
+
+  const exact = scoped.find((app) => app.name === schedule.appName);
+  if (exact) return [{ name: exact.name, instanceId: exact.instanceId }];
+
+  const fuzzy = scoped.find(
+    (app) =>
+      app.destinationNamespace === schedule.namespace &&
+      (app.name === schedule.appName ||
+        app.name.includes(schedule.appName) ||
+        schedule.appName.includes(app.name))
+  );
+  return fuzzy ? [{ name: fuzzy.name, instanceId: fuzzy.instanceId }] : [];
+}
+
+/** Repair path: catalog + pausedArgoApps first; K8s tracking only when catalog finds nothing. */
+export async function applyManualSyncDenyForScheduleRepair(
+  schedule: Schedule,
+  allApps: ArgoCDAppSummary[],
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>,
+  now = new Date()
+): Promise<{ apps: string[]; errors: string[] }> {
+  if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
+
+  let targets = await resolveScheduleArgoAppsFromCatalog(schedule, allApps, instanceMap);
+  if (!targets.length) {
+    targets = await collectScheduleArgoApps(schedule);
+  }
   return applyManualSyncDenyForApps(schedule, targets, now);
 }
 
@@ -267,12 +326,11 @@ interface WorkloadTarget {
   kind: WorkloadKind;
 }
 
-async function appsForSchedule(schedule: Schedule): Promise<ArgoCDAppSummary[]> {
-  const [apps, instances] = await Promise.all([
-    argocdClient.listApplications(),
-    listEnabledArgoCDInstances(),
-  ]);
-  const instanceMap = new Map(instances.map((i) => [i.id, i]));
+function filterAppsForSchedule(
+  schedule: Schedule,
+  apps: ArgoCDAppSummary[],
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
+): ArgoCDAppSummary[] {
   return apps.filter((app) => {
     if (schedule.argocdInstanceId && app.instanceId !== schedule.argocdInstanceId) {
       return false;
@@ -281,6 +339,15 @@ async function appsForSchedule(schedule: Schedule): Promise<ArgoCDAppSummary[]> 
     if (instance && !instanceMatchesCluster(instance, schedule.cluster)) return false;
     return appMatchesK8sCluster(app, schedule.cluster);
   });
+}
+
+async function appsForSchedule(schedule: Schedule): Promise<ArgoCDAppSummary[]> {
+  const [apps, instances] = await Promise.all([
+    argocdClient.listApplications(),
+    listEnabledArgoCDInstances(),
+  ]);
+  const instanceMap = new Map(instances.map((i) => [i.id, i]));
+  return filterAppsForSchedule(schedule, apps, instanceMap);
 }
 
 async function resolveArgoApp(

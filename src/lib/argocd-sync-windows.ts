@@ -48,20 +48,21 @@ export function denyWindowDuration(from: Date, until: Date): string {
 }
 
 export function buildScheduleDenySyncWindow(input: {
-  appName: string;
+  appNames: string[];
   blockUntil: Date;
   timeZone: string;
   /** When the deny window is written to Argo CD — defaults to now. */
   windowStart?: Date;
 }): ArgoSyncWindowSpec {
+  const appNames = Array.from(new Set(input.appNames.filter(Boolean)));
   const windowStart = floorToScheduleMinute(input.windowStart ?? new Date(), input.timeZone);
   return {
     kind: 'deny',
     schedule: cronScheduleForInstant(windowStart, input.timeZone),
     duration: denyWindowDuration(windowStart, input.blockUntil),
-    // manualSync=false blocks manual Sync in Argo CD during an active deny window.
+    // manualSync=false blocks both manual and automated sync during an active deny window.
     manualSync: false,
-    applications: [input.appName],
+    applications: appNames,
     timeZone: input.timeZone || 'UTC',
     description: SECURENEXUS_SYNC_WINDOW_DESCRIPTION,
   };
@@ -84,29 +85,70 @@ export function isManagedScheduleDenyWindow(
   return true;
 }
 
-/** Argo CD allows only one deny window per schedule+duration per project — merge app lists. */
-function isCoalescableScheduleDenyWindow(
-  existing: ArgoSyncWindowSpec,
-  next: ArgoSyncWindowSpec
-): boolean {
-  if (existing.kind !== 'deny' || next.kind !== 'deny') return false;
-  if (existing.schedule !== next.schedule || existing.duration !== next.duration) return false;
-  if (existing.manualSync === true || next.manualSync === true) return false;
-  if (existing.namespaces?.length || existing.clusters?.length) return false;
-  if (next.namespaces?.length || next.clusters?.length) return false;
-  return true;
+function isSecureNexusManagedDenyRow(window: ArgoSyncWindowSpec): boolean {
+  if (window.kind !== 'deny') return false;
+  if (window.namespaces?.length || window.clusters?.length) return false;
+  if (window.description === SECURENEXUS_SYNC_WINDOW_DESCRIPTION) return true;
+  if (window.manualSync === true) return false;
+  return Boolean(window.applications?.length);
 }
 
-function withoutManagedApp(
+function parseDurationHours(duration: string): number {
+  const match = /^(\d+)h$/.exec(duration.trim());
+  return match ? Number(match[1]) : 0;
+}
+
+function longerDuration(a: string, b: string): string {
+  return parseDurationHours(a) >= parseDurationHours(b) ? a : b;
+}
+
+/**
+ * Merge SecureNexus deny windows into a single project-level row (Argo allows one
+ * schedule+duration key per project). Always refreshes schedule/duration to `next`.
+ */
+export function mergeScheduleDenySyncWindow(
   existing: ArgoSyncWindowSpec[],
-  appName: string
+  next: ArgoSyncWindowSpec
 ): ArgoSyncWindowSpec[] {
-  return existing.flatMap((row) => {
-    if (!isManagedScheduleDenyWindow(row, appName)) return [row];
-    const apps = (row.applications ?? []).filter((name) => name !== appName);
-    if (!apps.length) return [];
-    return [{ ...row, applications: apps }];
-  });
+  const nextApps = next.applications?.length ? next.applications : [];
+  if (!nextApps.length) return [...existing, next];
+
+  const nonManaged: ArgoSyncWindowSpec[] = [];
+  const managedApps = new Set<string>();
+  let managedDuration = next.duration;
+
+  for (const row of existing) {
+    if (isSecureNexusManagedDenyRow(row)) {
+      for (const name of row.applications ?? []) managedApps.add(name);
+      managedDuration = longerDuration(managedDuration, row.duration);
+      continue;
+    }
+
+    const remainingApps = (row.applications ?? []).filter((name) => !nextApps.includes(name));
+    if (row.kind === 'deny' && remainingApps.length !== (row.applications?.length ?? 0)) {
+      if (remainingApps.length) nonManaged.push({ ...row, applications: remainingApps });
+      for (const name of row.applications ?? []) {
+        if (nextApps.includes(name)) managedApps.add(name);
+      }
+      continue;
+    }
+
+    nonManaged.push(row);
+  }
+
+  for (const name of nextApps) managedApps.add(name);
+
+  const merged: ArgoSyncWindowSpec = {
+    kind: 'deny',
+    schedule: next.schedule,
+    duration: managedDuration,
+    manualSync: false,
+    applications: Array.from(managedApps),
+    timeZone: next.timeZone || 'UTC',
+    description: SECURENEXUS_SYNC_WINDOW_DESCRIPTION,
+  };
+
+  return [...nonManaged, merged];
 }
 
 export function denyWindowCoversApp(
@@ -123,32 +165,8 @@ export function denyWindowCoversApp(
       row.duration === duration &&
       !row.namespaces?.length &&
       !row.clusters?.length &&
-      (row.applications?.includes(appName) || isManagedScheduleDenyWindow(row, appName))
+      row.applications?.includes(appName)
   );
-}
-
-export function mergeScheduleDenySyncWindow(
-  existing: ArgoSyncWindowSpec[],
-  next: ArgoSyncWindowSpec
-): ArgoSyncWindowSpec[] {
-  const appName = next.applications?.[0];
-  if (!appName) return [...existing, next];
-
-  const withoutApp = withoutManagedApp(existing, appName);
-  const twinIdx = withoutApp.findIndex((row) => isCoalescableScheduleDenyWindow(row, next));
-  if (twinIdx >= 0) {
-    const twin = withoutApp[twinIdx];
-    const applications = Array.from(new Set([...(twin.applications ?? []), appName]));
-    const merged: ArgoSyncWindowSpec = {
-      ...twin,
-      applications,
-      manualSync: false,
-      description: SECURENEXUS_SYNC_WINDOW_DESCRIPTION,
-    };
-    return [...withoutApp.slice(0, twinIdx), merged, ...withoutApp.slice(twinIdx + 1)];
-  }
-
-  return [...withoutApp, next];
 }
 
 export function removeScheduleDenySyncWindows(
