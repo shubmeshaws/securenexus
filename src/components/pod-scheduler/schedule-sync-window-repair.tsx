@@ -19,8 +19,20 @@ import type { SyncWindowReconcileJobState } from '@/lib/schedule-sync-window-job
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
+const NO_CACHE_FETCH: RequestInit = {
+  cache: 'no-store',
+  headers: {
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+  },
+};
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function reconcileStatusUrl(): string {
+  return `/api/schedules/reconcile-sync-windows?_=${Date.now()}`;
 }
 
 export function ScheduleSyncWindowRepair() {
@@ -42,7 +54,10 @@ export function ScheduleSyncWindowRepair() {
         throw new Error('Repair is still running on the server. Check logs and try again in a minute.');
       }
 
-      const job = await apiFetch<SyncWindowReconcileJobState>('/api/schedules/reconcile-sync-windows');
+      const job = await apiFetch<SyncWindowReconcileJobState>(
+        reconcileStatusUrl(),
+        NO_CACHE_FETCH
+      );
       if (job.result) {
         setSchedulesScanned(job.result.schedulesScanned);
         return job.result;
@@ -68,7 +83,8 @@ export function ScheduleSyncWindowRepair() {
 
     try {
       const startedAt = Date.now();
-      await apiFetch<SyncWindowReconcileJobState>('/api/schedules/reconcile-sync-windows', {
+      await apiFetch<SyncWindowReconcileJobState>(reconcileStatusUrl(), {
+        ...NO_CACHE_FETCH,
         method: 'POST',
       });
       const data = await pollUntilDone(startedAt);
