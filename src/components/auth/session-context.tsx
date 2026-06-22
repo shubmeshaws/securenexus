@@ -17,7 +17,7 @@ export interface SessionUser {
   permissions: UserPermissions;
 }
 
-const SESSION_POLL_MS = 60_000;
+const SESSION_POLL_MS = 120_000;
 
 const SessionContext = createContext<SessionUser | null>(null);
 
@@ -45,8 +45,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     },
     refetchInterval: SESSION_POLL_MS,
-    staleTime: 30_000,
-    refetchOnWindowFocus: true,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
     retry: false,
   });
 

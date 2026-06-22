@@ -5,6 +5,8 @@ import { useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { usePathname } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { AppIcon } from '@/components/ui/app-icon';
 import {
   getPageRefreshQueryKeys,
   queryMatchesRefreshKeys,
@@ -40,19 +42,21 @@ export function PageRefreshButton({ className }: { className?: string }) {
   if (!refreshKeys.length) return null;
 
   return (
-    <button
+    <Button
       type="button"
+      size="sm"
+      variant="warning"
       onClick={() => void handleRefresh()}
       disabled={spinning}
       aria-label="Refresh page data"
-      className={cn(
-        'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors',
-        'hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60',
-        className
-      )}
+      className={cn('shrink-0', className)}
     >
-      <RefreshCw className={cn('h-3.5 w-3.5', spinning && 'animate-spin')} strokeWidth={2} />
-      <span className="hidden sm:inline">Refresh</span>
-    </button>
+      <AppIcon
+        icon={RefreshCw}
+        size="sm"
+        className={cn(spinning && 'animate-spin')}
+      />
+      Refresh
+    </Button>
   );
 }

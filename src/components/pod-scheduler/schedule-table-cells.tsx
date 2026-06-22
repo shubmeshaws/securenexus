@@ -15,8 +15,9 @@ import {
   inferScheduleEnvironment,
   parseClusterDisplay,
 } from '@/lib/utils';
-import { isOnetimeSchedule, isWindowSchedule, isWindowOnce } from '@/lib/schedule-recurrence';
+import { isOnetimeSchedule, isWindowSchedule, isWindowOnce, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel, formatWindowScheduleSummary } from '@/lib/schedule-window';
+import { formatCombinedScheduleSummary } from '@/lib/schedule-combined';
 import {
   formatWorkloadKeyLabel,
   isNamespaceSchedule,
@@ -165,6 +166,7 @@ export function ScheduleShutdownAtCell({
     Schedule,
     | 'recurrence'
     | 'shutdownTime'
+    | 'startupTime'
     | 'weekendShutdownTime'
     | 'weekendDays'
     | 'daysOfWeek'
@@ -172,9 +174,40 @@ export function ScheduleShutdownAtCell({
     | 'oneTimeStartupAt'
     | 'timezone'
     | 'shutdownDayOfWeek'
+    | 'startupDayOfWeek'
     | 'windowRepeatWeekly'
+    | 'overnightDays'
+    | 'overnightShutdownTime'
+    | 'overnightStartupTime'
   >;
 }) {
+  if (isCombinedSchedule(schedule)) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-default whitespace-nowrap border-b border-dashed border-muted-foreground/40 text-xs text-foreground">
+              {dayLabel(schedule.shutdownDayOfWeek)} {formatTime12h(schedule.shutdownTime)}
+              <span className="text-muted-foreground"> + nights</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs space-y-1">
+            <p className="text-[11px]">
+              Long stop: {dayLabel(schedule.shutdownDayOfWeek)} {formatTime12h(schedule.shutdownTime)} →{' '}
+              {dayLabel(schedule.startupDayOfWeek)} {formatTime12h(schedule.startupTime)}
+            </p>
+            {(schedule.overnightDays?.length ?? 0) > 0 && (
+              <p className="text-[11px]">
+                Nights: {(schedule.overnightDays ?? []).map((d) => dayLabel(d)).join(', ')}{' '}
+                {formatTime12h(schedule.overnightShutdownTime ?? '00:00')}–
+                {formatTime12h(schedule.overnightStartupTime ?? '07:00')}
+              </p>
+            )}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
   if (isWindowSchedule(schedule) && schedule.windowRepeatWeekly !== false && schedule.shutdownDayOfWeek) {
     return (
       <span className="whitespace-nowrap text-xs text-foreground">
@@ -217,8 +250,28 @@ export function ScheduleStartupAtCell({
     | 'timezone'
     | 'startupDayOfWeek'
     | 'windowRepeatWeekly'
+    | 'overnightDays'
+    | 'overnightShutdownTime'
+    | 'overnightStartupTime'
   >;
 }) {
+  if (isCombinedSchedule(schedule)) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-default whitespace-nowrap border-b border-dashed border-muted-foreground/40 text-xs text-foreground">
+              {dayLabel(schedule.startupDayOfWeek)} {formatTime12h(schedule.startupTime)}
+              <span className="text-muted-foreground"> + nights</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-[11px]">
+            See shutdown column for full combined window details
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
   if (isWindowSchedule(schedule) && schedule.windowRepeatWeekly !== false && schedule.startupDayOfWeek) {
     return (
       <span className="whitespace-nowrap text-xs text-foreground">
@@ -259,11 +312,19 @@ export function ScheduleRepeatsCell({
     | 'startupDayOfWeek'
     | 'shutdownTime'
     | 'startupTime'
+    | 'overnightDays'
+    | 'overnightShutdownTime'
+    | 'overnightStartupTime'
   >;
 }) {
   if (isOnetimeSchedule(schedule)) {
     const label = schedule.oneTimeCompleted ? 'One-time (done)' : 'One-time';
     return <span className="text-xs text-muted-foreground">{label}</span>;
+  }
+  if (isCombinedSchedule(schedule)) {
+    return (
+      <span className="text-xs text-muted-foreground">{formatCombinedScheduleSummary(schedule)}</span>
+    );
   }
   if (isWindowSchedule(schedule)) {
     const label = isWindowOnce(schedule)
@@ -310,35 +371,42 @@ export function ScheduleNextRunCell({ schedule }: { schedule: Pick<Schedule, 'ne
   );
 }
 
+const SCHEDULE_STATUS_BADGE_CLASS =
+  'inline-flex h-6 min-w-[6.75rem] items-center justify-center whitespace-nowrap rounded-md border-0 px-2.5 text-[10px] font-semibold leading-none tracking-wide shadow-sm';
+
+function ScheduleStatusBadge({
+  variant,
+  label,
+}: {
+  variant: 'manualStopSolid' | 'failedSolid' | 'completedSolid' | 'successSolid' | 'neutralSolid';
+  label: string;
+}) {
+  return (
+    <Badge variant={variant} className={SCHEDULE_STATUS_BADGE_CLASS}>
+      {label}
+    </Badge>
+  );
+}
+
 export function ScheduleStatusCell({
   schedule,
 }: {
-  schedule: Pick<Schedule, 'enabled' | 'liveActive' | 'oneTimeCompleted'>;
+  schedule: Pick<
+    Schedule,
+    'enabled' | 'liveActive' | 'oneTimeCompleted' | 'liveStopSource'
+  >;
 }) {
+  if (schedule.liveStopSource === 'manual') {
+    return <ScheduleStatusBadge variant="manualStopSolid" label="Manual stop" />;
+  }
   if (schedule.liveActive) {
-    return (
-      <Badge variant="failed" className="rounded-full text-[10px] font-semibold">
-        Stopped
-      </Badge>
-    );
+    return <ScheduleStatusBadge variant="failedSolid" label="Scheduled stop" />;
   }
   if (schedule.oneTimeCompleted) {
-    return (
-      <Badge variant="unknown" className="rounded-full text-[10px] font-medium">
-        Completed
-      </Badge>
-    );
+    return <ScheduleStatusBadge variant="completedSolid" label="Completed" />;
   }
   if (schedule.enabled) {
-    return (
-      <Badge variant="success" className="rounded-full text-[10px] font-medium">
-        Enabled
-      </Badge>
-    );
+    return <ScheduleStatusBadge variant="successSolid" label="Enabled" />;
   }
-  return (
-    <Badge variant="unknown" className="rounded-full text-[10px] font-medium">
-      Disabled
-    </Badge>
-  );
+  return <ScheduleStatusBadge variant="neutralSolid" label="Disabled" />;
 }

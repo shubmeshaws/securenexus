@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, ICON_STROKE } from '@/lib/icons';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -50,6 +50,23 @@ const TIMEZONES = [
 const NATIVE_SELECT_CLASS =
   'flex h-10 w-full appearance-none rounded-xl border border-border bg-background px-4 py-2 text-sm text-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/30 disabled:cursor-not-allowed disabled:opacity-50';
 
+type WorkloadTypeFilter = 'Deployment' | 'StatefulSet' | 'Job';
+
+const ALL_WORKLOAD_TYPE_FILTERS: WorkloadTypeFilter[] = ['Deployment', 'StatefulSet', 'Job'];
+
+const WORKLOAD_TYPE_FILTER_LABELS: Record<WorkloadTypeFilter, string> = {
+  Deployment: 'Deployments',
+  StatefulSet: 'StatefulSets',
+  Job: 'Jobs',
+};
+
+function workloadMatchesTypeFilter(kind: string, filters: WorkloadTypeFilter[]): boolean {
+  if (kind === 'Deployment') return filters.includes('Deployment');
+  if (kind === 'StatefulSet') return filters.includes('StatefulSet');
+  if (kind === 'CronJob' || kind === 'ScaledJob') return filters.includes('Job');
+  return false;
+}
+
 interface AwsCredentialOption {
   id: string;
   name: string;
@@ -81,6 +98,16 @@ function parseEc2SelectValue(value: string): { instanceId: string; region: strin
 interface WorkloadOption {
   name: string;
   kind: WorkloadKind;
+}
+
+interface NamespacedWorkload extends WorkloadOption {
+  namespace: string;
+}
+
+type NamespaceSelectionMode = 'single' | 'multiple';
+
+function namespacedWorkloadKey(namespace: string, kind: string, name: string): string {
+  return `${namespace}::${workloadKey(kind, name)}`;
 }
 
 function scheduleToForm(schedule: Schedule | null | undefined) {
@@ -117,6 +144,9 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       shutdownDayOfWeek: 5,
       startupDayOfWeek: 1,
       windowRepeatWeekly: true,
+      overnightDays: [2, 3, 4, 5] as number[],
+      overnightShutdownTime: '00:00',
+      overnightStartupTime: '07:00',
       syncPolicy: 'automated' as 'automated' | 'none',
       argocdInstanceId: null as string | null,
       targetReplicas: 2,
@@ -162,6 +192,13 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
     shutdownDayOfWeek: schedule.shutdownDayOfWeek ?? 5,
     startupDayOfWeek: schedule.startupDayOfWeek ?? 1,
     windowRepeatWeekly: schedule.windowRepeatWeekly ?? true,
+    overnightDays: schedule.overnightDays?.length
+      ? schedule.overnightDays
+      : recurrence === 'combined'
+        ? [2, 3, 4, 5]
+        : [],
+    overnightShutdownTime: schedule.overnightShutdownTime ?? '00:00',
+    overnightStartupTime: schedule.overnightStartupTime ?? '07:00',
     syncPolicy: schedule.syncPolicy ?? 'automated',
     argocdInstanceId: schedule.argocdInstanceId ?? null,
     targetReplicas: schedule.targetReplicas ?? 2,
@@ -189,8 +226,15 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [name, setName] = useState(initial.name);
   const [platformType, setPlatformType] = useState<PlatformType>(initial.platformType);
   const [cluster, setCluster] = useState(initial.cluster);
+  const [namespaceMode, setNamespaceMode] = useState<NamespaceSelectionMode>('single');
   const [namespace, setNamespace] = useState(initial.namespace);
+  const [selectedNamespaces, setSelectedNamespaces] = useState<string[]>(
+    initial.namespace ? [initial.namespace] : []
+  );
   const [scope, setScope] = useState<ScheduleScope>(initial.scope);
+  const [workloadTypeFilters, setWorkloadTypeFilters] = useState<WorkloadTypeFilter[]>([
+    ...ALL_WORKLOAD_TYPE_FILTERS,
+  ]);
   const [appName, setAppName] = useState(initial.appName);
   const [workloadKind, setWorkloadKind] = useState<WorkloadKind>(initial.workloadKind);
   const [excludedWorkloads, setExcludedWorkloads] = useState<string[]>(initial.excludedWorkloads);
@@ -217,6 +261,9 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [shutdownDayOfWeek, setShutdownDayOfWeek] = useState(initial.shutdownDayOfWeek);
   const [startupDayOfWeek, setStartupDayOfWeek] = useState(initial.startupDayOfWeek);
   const [windowRepeatWeekly, setWindowRepeatWeekly] = useState(initial.windowRepeatWeekly);
+  const [overnightDays, setOvernightDays] = useState<number[]>(initial.overnightDays);
+  const [overnightShutdownTime, setOvernightShutdownTime] = useState(initial.overnightShutdownTime);
+  const [overnightStartupTime, setOvernightStartupTime] = useState(initial.overnightStartupTime);
   const [syncPolicy, setSyncPolicy] = useState<'automated' | 'none'>(initial.syncPolicy);
   const [argocdInstanceId, setArgoCDInstanceId] = useState<string | null>(initial.argocdInstanceId);
   const [enabled, setEnabled] = useState(initial.enabled);
@@ -299,16 +346,6 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
     },
   });
 
-  const { data: workloadsData, isLoading: workloadsLoading } = useQuery({
-    queryKey: ['workloads', cluster, namespace],
-    queryFn: () =>
-      apiFetch<{ workloads: WorkloadOption[] }>(
-        `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces/${encodeURIComponent(namespace)}/workloads`
-      ),
-    enabled: platformType === 'eks' && Boolean(cluster) && Boolean(namespace),
-    staleTime: 60_000,
-  });
-
   const clusterOptions = useMemo(() => {
     const options = new Set((clustersData?.clusters ?? []).map((c) => c.name));
     if (cluster) options.add(cluster);
@@ -318,33 +355,193 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const namespaceOptions = useMemo(() => {
     const options = new Set(nsData?.namespaces ?? []);
     if (namespace) options.add(namespace);
-    return Array.from(options);
-  }, [nsData, namespace]);
+    selectedNamespaces.forEach((ns) => options.add(ns));
+    return Array.from(options).sort((a, b) => a.localeCompare(b));
+  }, [nsData, namespace, selectedNamespaces]);
+
+  const activeNamespaces = useMemo(() => {
+    if (namespaceMode === 'single') return namespace ? [namespace] : [];
+    return selectedNamespaces;
+  }, [namespaceMode, namespace, selectedNamespaces]);
+
+  const hasNamespaceSelection = activeNamespaces.length > 0;
+  const isMultiNamespace = namespaceMode === 'multiple' && activeNamespaces.length > 1;
+
+  const workloadQueries = useQueries({
+    queries: activeNamespaces.map((ns) => ({
+      queryKey: ['workloads', cluster, ns],
+      queryFn: () =>
+        apiFetch<{ workloads: WorkloadOption[] }>(
+          `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces/${encodeURIComponent(ns)}/workloads`
+        ),
+      enabled: platformType === 'eks' && Boolean(cluster) && Boolean(ns),
+      staleTime: 60_000,
+    })),
+  });
+
+  const workloadsByNamespace = useMemo(() => {
+    const map = new Map<string, WorkloadOption[]>();
+    activeNamespaces.forEach((ns, index) => {
+      map.set(ns, workloadQueries[index]?.data?.workloads ?? []);
+    });
+    return map;
+  }, [activeNamespaces, workloadQueries]);
+
+  const workloadsLoading = workloadQueries.some(
+    (query, index) => Boolean(activeNamespaces[index]) && query.isLoading
+  );
+
+  const allNamespacedWorkloads = useMemo(() => {
+    const items: NamespacedWorkload[] = [];
+    for (const ns of activeNamespaces) {
+      for (const workload of workloadsByNamespace.get(ns) ?? []) {
+        items.push({ ...workload, namespace: ns });
+      }
+    }
+    return items.sort((a, b) =>
+      a.namespace === b.namespace
+        ? a.name.localeCompare(b.name)
+        : a.namespace.localeCompare(b.namespace)
+    );
+  }, [activeNamespaces, workloadsByNamespace]);
 
   const workloadOptions = useMemo(() => {
-    const fromApi = workloadsData?.workloads ?? [];
+    if (namespaceMode === 'multiple') {
+      return allNamespacedWorkloads.map(({ namespace: ns, ...workload }) => workload);
+    }
+    const fromApi = workloadsByNamespace.get(namespace) ?? [];
     if (!appName || scope === 'namespace') return fromApi;
     const exists = fromApi.some((w) => w.name === appName && w.kind === workloadKind);
     if (exists) return fromApi;
     return [{ name: appName, kind: workloadKind }, ...fromApi];
-  }, [workloadsData, appName, workloadKind, scope]);
+  }, [
+    namespaceMode,
+    allNamespacedWorkloads,
+    workloadsByNamespace,
+    namespace,
+    appName,
+    workloadKind,
+    scope,
+  ]);
 
   const scalableWorkloads = useMemo(
-    () => workloadOptions.filter((w) => w.kind !== 'DaemonSet'),
-    [workloadOptions]
+    () =>
+      (namespaceMode === 'multiple' ? allNamespacedWorkloads : workloadOptions).filter(
+        (w) => w.kind !== 'DaemonSet'
+      ),
+    [namespaceMode, allNamespacedWorkloads, workloadOptions]
   );
 
+  const filteredScalableWorkloads = useMemo(
+    () => scalableWorkloads.filter((w) => workloadMatchesTypeFilter(w.kind, workloadTypeFilters)),
+    [scalableWorkloads, workloadTypeFilters]
+  );
+
+  const uniqueWorkloadChoices = useMemo(() => {
+    const seen = new Set<string>();
+    const choices: { key: string; name: string; kind: WorkloadKind; namespaces: string[] }[] = [];
+    for (const workload of allNamespacedWorkloads) {
+      if (workload.kind === 'DaemonSet') continue;
+      if (!workloadMatchesTypeFilter(workload.kind, workloadTypeFilters)) continue;
+      const key = workloadKey(workload.kind, workload.name);
+      if (seen.has(key)) {
+        const existing = choices.find((choice) => choice.key === key);
+        existing?.namespaces.push(workload.namespace);
+        continue;
+      }
+      seen.add(key);
+      choices.push({
+        key,
+        name: workload.name,
+        kind: workload.kind,
+        namespaces: [workload.namespace],
+      });
+    }
+    return choices.sort((a, b) => a.name.localeCompare(b.name));
+  }, [allNamespacedWorkloads, workloadTypeFilters]);
+
+  const selectableWorkloads = useMemo(() => {
+    if (scope === 'namespace') return filteredScalableWorkloads;
+
+    if (namespaceMode === 'multiple') {
+      return uniqueWorkloadChoices.map((choice) => ({
+        name: choice.name,
+        kind: choice.kind,
+      }));
+    }
+
+    let filtered = scalableWorkloads.filter((w) =>
+      workloadMatchesTypeFilter(w.kind, workloadTypeFilters)
+    );
+    if (appName) {
+      const exists = filtered.some((w) => w.name === appName && w.kind === workloadKind);
+      if (!exists) {
+        filtered = [{ name: appName, kind: workloadKind }, ...filtered];
+      }
+    }
+    return filtered;
+  }, [
+    scope,
+    namespaceMode,
+    filteredScalableWorkloads,
+    uniqueWorkloadChoices,
+    scalableWorkloads,
+    workloadTypeFilters,
+    appName,
+    workloadKind,
+  ]);
+
   useEffect(() => {
-    if (scope !== 'workload' || !appName || !workloadsData?.workloads?.length) return;
-    const match = workloadsData.workloads.find((w) => w.name === appName);
+    if (scope !== 'workload' || !appName) return;
+    if (!workloadMatchesTypeFilter(workloadKind, workloadTypeFilters)) {
+      setAppName('');
+    }
+  }, [workloadTypeFilters, scope, appName, workloadKind]);
+
+  function toggleWorkloadTypeFilter(filter: WorkloadTypeFilter) {
+    setWorkloadTypeFilters((prev) => {
+      if (prev.includes(filter)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((item) => item !== filter);
+      }
+      return ALL_WORKLOAD_TYPE_FILTERS.filter(
+        (item) => item === filter || prev.includes(item)
+      );
+    });
+  }
+
+  function resetWorkloadTypeFilters() {
+    setWorkloadTypeFilters([...ALL_WORKLOAD_TYPE_FILTERS]);
+  }
+
+  useEffect(() => {
+    if (scope !== 'workload' || !appName || namespaceMode === 'multiple') return;
+    const match = (workloadsByNamespace.get(namespace) ?? []).find((w) => w.name === appName);
     if (match) setWorkloadKind(match.kind);
-  }, [workloadsData, appName, scope]);
+  }, [workloadsByNamespace, appName, scope, namespace, namespaceMode]);
 
   const workloadValue = appName ? workloadKey(workloadKind, appName) : '';
 
-  function toggleExcluded(key: string) {
+  function toggleSelectedNamespace(ns: string) {
+    setSelectedNamespaces((prev) =>
+      prev.includes(ns) ? prev.filter((item) => item !== ns) : [...prev, ns].sort()
+    );
+    setAppName('');
+    setWorkloadKind('Deployment');
+    setExcludedWorkloads([]);
+    resetWorkloadTypeFilters();
+  }
+
+  function excludedStorageKey(ns: string, kind: string, name: string): string {
+    return namespaceMode === 'multiple'
+      ? namespacedWorkloadKey(ns, kind, name)
+      : workloadKey(kind, name);
+  }
+
+  function toggleExcludedForWorkload(ns: string, kind: string, name: string) {
+    const key = excludedStorageKey(ns, kind, name);
     setExcludedWorkloads((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key].sort()
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key].sort()
     );
   }
 
@@ -387,7 +584,19 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
               oneTimeShutdownAt,
               oneTimeStartupAt,
             }
-          : recurrence === 'window'
+          : recurrence === 'combined'
+            ? {
+                ...shared,
+                shutdownTime,
+                startupTime,
+                shutdownDayOfWeek,
+                startupDayOfWeek,
+                overnightDays,
+                overnightShutdownTime,
+                overnightStartupTime,
+                windowRepeatWeekly: true,
+              }
+            : recurrence === 'window'
             ? {
                 ...shared,
                 shutdownTime,
@@ -454,6 +663,52 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         return { created: targets.length };
       }
 
+      if (!isNonEks && !isEdit && namespaceMode === 'multiple') {
+        if (selectedNamespaces.length === 0) {
+          throw new Error('Select at least one namespace');
+        }
+
+        let created = 0;
+        for (const ns of selectedNamespaces) {
+          if (scope === 'workload') {
+            const exists = (workloadsByNamespace.get(ns) ?? []).some(
+              (workload) => workload.name === appName && workload.kind === workloadKind
+            );
+            if (!exists) continue;
+          }
+
+          const nsExcluded =
+            scope === 'namespace'
+              ? excludedWorkloads
+                  .filter((key) => key.startsWith(`${ns}::`))
+                  .map((key) => key.slice(ns.length + 2))
+              : [];
+
+          await apiFetch('/api/schedules', {
+            method: 'POST',
+            body: JSON.stringify({
+              ...body,
+              namespace: ns,
+              name: selectedNamespaces.length === 1 ? name : `${name} · ${ns}`,
+              appName: scope === 'namespace' ? NAMESPACE_SCOPE_MARKER : appName,
+              workloadKind: scope === 'namespace' ? 'Namespace' : workloadKind,
+              excludedWorkloads: nsExcluded,
+            }),
+          });
+          created += 1;
+        }
+
+        if (created === 0) {
+          throw new Error(
+            scope === 'workload'
+              ? 'Selected workload was not found in any of the chosen namespaces'
+              : 'No schedules were created'
+          );
+        }
+
+        return { created };
+      }
+
       return apiFetch('/api/schedules', { method: 'POST', body: JSON.stringify(body) });
     },
     onSuccess: () => {
@@ -490,6 +745,12 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
     );
   }
 
+  function toggleOvernightDay(day: number) {
+    setOvernightDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b)
+    );
+  }
+
   return (
     <form
       className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 scrollbar-thin"
@@ -522,6 +783,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                 mode: 'window',
                 title: 'Stop day → Start day',
                 desc: 'Stop on one day (e.g. Fri) and start on another (e.g. Mon). Optional weekly repeat.',
+              },
+              {
+                mode: 'combined',
+                title: 'Long stop + nightly',
+                desc: 'Cross-day stop (e.g. Fri→Mon) plus overnight stops on selected days. Repeats weekly.',
               },
               {
                 mode: 'onetime',
@@ -747,9 +1013,12 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           onChange={(e) => {
             setCluster(e.target.value);
             setNamespace('');
+            setSelectedNamespaces([]);
+            setNamespaceMode('single');
             setAppName('');
             setWorkloadKind('Deployment');
             setExcludedWorkloads([]);
+            resetWorkloadTypeFilters();
             clusterTest.reset();
           }}
         >
@@ -799,31 +1068,102 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
       </div>
 
       <div className="space-y-2">
-        <Label>Namespace</Label>
-        <select
-          className={NATIVE_SELECT_CLASS}
-          value={namespace}
-          disabled={!cluster || (nsLoading && !namespaceOptions.length)}
-          onChange={(e) => {
-            setNamespace(e.target.value);
-            setAppName('');
-            setWorkloadKind('Deployment');
-            setExcludedWorkloads([]);
-          }}
-        >
-          <option value="" disabled>
-            {!cluster
-              ? 'Select cluster first'
-              : nsLoading && !namespaceOptions.length
-                ? 'Loading namespaces…'
-                : 'Select namespace'}
-          </option>
-          {namespaceOptions.map((ns) => (
-            <option key={ns} value={ns}>
-              {ns}
+        {!isEdit ? (
+          <>
+            <Label>Namespace selection</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { mode: 'single' as const, title: 'Single namespace', desc: 'One namespace per schedule' },
+                  { mode: 'multiple' as const, title: 'Multiple namespaces', desc: 'Create one schedule per namespace' },
+                ] as const
+              ).map(({ mode, title, desc }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={!cluster}
+                  onClick={() => {
+                    setNamespaceMode(mode);
+                    if (mode === 'single') {
+                      setSelectedNamespaces([]);
+                    } else {
+                      setNamespace('');
+                    }
+                    setAppName('');
+                    setWorkloadKind('Deployment');
+                    setExcludedWorkloads([]);
+                    resetWorkloadTypeFilters();
+                  }}
+                  className={cn(
+                    'rounded-xl border px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                    namespaceMode === mode
+                      ? 'border-blue-500/40 bg-blue-500/10 text-foreground'
+                      : 'border-border bg-background text-muted-foreground hover:border-border/80'
+                  )}
+                >
+                  <span className="block font-medium">{title}</span>
+                  <span className="mt-0.5 block text-[10px] opacity-80">{desc}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <Label>Namespace</Label>
+        )}
+
+        {namespaceMode === 'single' || isEdit ? (
+          <select
+            className={NATIVE_SELECT_CLASS}
+            value={namespace}
+            disabled={!cluster || (nsLoading && !namespaceOptions.length)}
+            onChange={(e) => {
+              setNamespace(e.target.value);
+              setAppName('');
+              setWorkloadKind('Deployment');
+              setExcludedWorkloads([]);
+              resetWorkloadTypeFilters();
+            }}
+          >
+            <option value="" disabled>
+              {!cluster
+                ? 'Select cluster first'
+                : nsLoading && !namespaceOptions.length
+                  ? 'Loading namespaces…'
+                  : 'Select namespace'}
             </option>
-          ))}
-        </select>
+            {namespaceOptions.map((ns) => (
+              <option key={ns} value={ns}>
+                {ns}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="max-h-40 space-y-2 overflow-y-auto rounded-xl border border-border p-3 scrollbar-thin">
+            {!cluster ? (
+              <p className="text-xs text-muted-foreground">Select a cluster first.</p>
+            ) : nsLoading && !namespaceOptions.length ? (
+              <p className="text-xs text-muted-foreground">Loading namespaces…</p>
+            ) : namespaceOptions.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No namespaces found.</p>
+            ) : (
+              namespaceOptions.map((ns) => (
+                <label key={ns} className="flex items-center gap-2 text-xs text-foreground/90">
+                  <Checkbox
+                    checked={selectedNamespaces.includes(ns)}
+                    onCheckedChange={() => toggleSelectedNamespace(ns)}
+                  />
+                  <span className="font-mono">{ns}</span>
+                </label>
+              ))
+            )}
+          </div>
+        )}
+
+        {namespaceMode === 'multiple' && selectedNamespaces.length > 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            {selectedNamespaces.length} namespace(s) selected — one schedule will be created for each.
+          </p>
+        ) : null}
         {nsFetching && namespaceOptions.length > 0 ? (
           <p className="text-[10px] text-muted-foreground">Refreshing namespaces…</p>
         ) : null}
@@ -842,10 +1182,11 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <select
           className={NATIVE_SELECT_CLASS}
           value={scope}
-          disabled={!namespace}
+          disabled={!hasNamespaceSelection}
           onChange={(e) => {
             const next = e.target.value as ScheduleScope;
             setScope(next);
+            resetWorkloadTypeFilters();
             if (next === 'namespace') {
               setAppName('');
               setWorkloadKind('Deployment');
@@ -859,13 +1200,42 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         </select>
       </div>
 
+      {hasNamespaceSelection ? (
+        <div className="space-y-2">
+          <Label>Workload type</Label>
+          <div className="flex flex-wrap gap-2">
+            {ALL_WORKLOAD_TYPE_FILTERS.map((filter) => {
+              const active = workloadTypeFilters.includes(filter);
+              return (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => toggleWorkloadTypeFilter(filter)}
+                  className={cn(
+                    'rounded-lg border px-3 py-1.5 text-xs transition-colors',
+                    active
+                      ? 'border-blue-500/40 bg-blue-500/10 font-medium text-foreground'
+                      : 'border-border bg-background text-muted-foreground hover:border-border/80'
+                  )}
+                >
+                  {WORKLOAD_TYPE_FILTER_LABELS[filter]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Filter the list below. Jobs includes CronJobs and ScaledJobs.
+          </p>
+        </div>
+      ) : null}
+
       {scope === 'workload' ? (
         <div className="space-y-2">
           <Label>Workload</Label>
           <select
             className={NATIVE_SELECT_CLASS}
             value={workloadValue}
-            disabled={!namespace || (workloadsLoading && !workloadOptions.length)}
+            disabled={!hasNamespaceSelection || (workloadsLoading && !selectableWorkloads.length)}
             onChange={(e) => {
               const parsed = parseWorkloadKey(e.target.value);
               if (!parsed) return;
@@ -874,14 +1244,32 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             }}
           >
             <option value="" disabled>
-              {workloadsLoading && !workloadOptions.length ? 'Loading workloads…' : 'Select workload'}
+              {workloadsLoading && !selectableWorkloads.length
+                ? 'Loading workloads…'
+                : selectableWorkloads.length
+                  ? 'Select workload'
+                  : 'No workloads match the selected filters'}
             </option>
-            {workloadOptions.map((w) => (
-              <option key={workloadKey(w.kind, w.name)} value={workloadKey(w.kind, w.name)}>
-                {w.name} ({w.kind})
-              </option>
-            ))}
+            {selectableWorkloads.map((w) => {
+              const choice = uniqueWorkloadChoices.find(
+                (item) => item.name === w.name && item.kind === w.kind
+              );
+              const namespaceHint =
+                namespaceMode === 'multiple' && choice
+                  ? ` · ${choice.namespaces.length} namespace(s)`
+                  : '';
+              return (
+                <option key={workloadKey(w.kind, w.name)} value={workloadKey(w.kind, w.name)}>
+                  {w.name} ({w.kind}){namespaceHint}
+                </option>
+              );
+            })}
           </select>
+          {namespaceMode === 'multiple' && appName ? (
+            <p className="text-[10px] text-muted-foreground">
+              Creates one schedule per selected namespace where this workload exists.
+            </p>
+          ) : null}
           {appName && (
             <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
               Kind
@@ -895,20 +1283,67 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <div className="space-y-2">
           <Label>Exclude workloads (optional)</Label>
           <p className="text-[10px] text-muted-foreground">
-            All Deployments, StatefulSets, CronJobs, and ScaledJobs in the namespace will be scheduled. Uncheck any to exclude. DaemonSets are always skipped.
+            All Deployments, StatefulSets, CronJobs, and ScaledJobs in{' '}
+            {isMultiNamespace ? 'each selected namespace' : 'the namespace'} will be scheduled.
+            Uncheck any to exclude. DaemonSets are always skipped.
           </p>
-          {!namespace ? (
+          {!hasNamespaceSelection ? (
             <p className="text-xs text-muted-foreground">Select a namespace first.</p>
-          ) : scalableWorkloads.length === 0 ? (
+          ) : filteredScalableWorkloads.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               {namespaceLiveUnavailable
                 ? 'Could not load workloads — the cluster API is unreachable from the server (check VPN/network and credentials).'
-                : 'No scalable workloads found in this namespace.'}
+                : scalableWorkloads.length === 0
+                  ? 'No scalable workloads found in the selected namespace(s).'
+                  : 'No workloads match the selected filters.'}
             </p>
+          ) : namespaceMode === 'multiple' ? (
+            <div className="max-h-52 space-y-3 overflow-y-auto rounded-xl border border-border p-3 scrollbar-thin">
+              {activeNamespaces.map((ns) => {
+                const workloads = filteredScalableWorkloads.filter(
+                  (workload): workload is NamespacedWorkload =>
+                    'namespace' in workload && workload.namespace === ns
+                );
+                if (!workloads.length) {
+                  return (
+                    <div key={ns} className="space-y-1">
+                      <p className="font-mono text-[10px] font-medium text-muted-foreground">{ns}</p>
+                      <p className="text-[10px] text-muted-foreground">No matching workloads.</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={ns} className="space-y-2">
+                    <p className="font-mono text-[10px] font-medium text-muted-foreground">{ns}</p>
+                    {workloads.map((workload) => {
+                      const key = excludedStorageKey(ns, workload.kind, workload.name);
+                      const excluded = excludedWorkloads.includes(key);
+                      return (
+                        <label
+                          key={key}
+                          className="flex items-center gap-2 text-xs text-foreground/90"
+                        >
+                          <Checkbox
+                            checked={!excluded}
+                            onCheckedChange={() =>
+                              toggleExcludedForWorkload(ns, workload.kind, workload.name)
+                            }
+                          />
+                          <span className="font-mono">{workload.name}</span>
+                          <Badge variant="secondary" className="font-mono text-[9px]">
+                            {workload.kind}
+                          </Badge>
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <div className="max-h-40 space-y-2 overflow-y-auto rounded-xl border border-border p-3 scrollbar-thin">
-              {scalableWorkloads.map((w) => {
-                const key = workloadKey(w.kind, w.name);
+              {filteredScalableWorkloads.map((w) => {
+                const key = excludedStorageKey(namespace, w.kind, w.name);
                 const excluded = excludedWorkloads.includes(key);
                 return (
                   <label
@@ -917,7 +1352,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
                   >
                     <Checkbox
                       checked={!excluded}
-                      onCheckedChange={() => toggleExcluded(key)}
+                      onCheckedChange={() => toggleExcludedForWorkload(namespace, w.kind, w.name)}
                     />
                     <span className="font-mono">{w.name}</span>
                     <Badge variant="secondary" className="font-mono text-[9px]">
@@ -990,6 +1425,108 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
             This schedule runs once: shutdown at the first datetime, then startup at the second.
             It is disabled automatically after startup completes.
+          </p>
+        </>
+      ) : recurrence === 'combined' ? (
+        <>
+          <div className="space-y-3 rounded-xl border border-border p-3">
+            <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Long stop window
+            </Label>
+            <p className="text-[10px] text-muted-foreground">
+              Resources stay down from stop day/time until start day/time (e.g. Fri 11:30 PM → Mon 7 AM).
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Stop day</Label>
+                <select
+                  className={NATIVE_SELECT_CLASS}
+                  value={shutdownDayOfWeek}
+                  onChange={(e) => setShutdownDayOfWeek(Number(e.target.value))}
+                >
+                  {DAY_LABELS.map((label, i) => (
+                    <option key={label} value={i + 1}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Stop time</Label>
+                <Input type="time" value={shutdownTime} onChange={(e) => setShutdownTime(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Start day</Label>
+                <select
+                  className={NATIVE_SELECT_CLASS}
+                  value={startupDayOfWeek}
+                  onChange={(e) => setStartupDayOfWeek(Number(e.target.value))}
+                >
+                  {DAY_LABELS.map((label, i) => (
+                    <option key={label} value={i + 1}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Start time</Label>
+                <Input type="time" value={startupTime} onChange={(e) => setStartupTime(e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <div className="space-y-3 rounded-xl border border-border p-3">
+            <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Nightly stops
+            </Label>
+            <p className="text-[10px] text-muted-foreground">
+              On selected days, stop at the first time and start at the second (same day). Pick any days — not
+              limited to weekday/weekend groups.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Stop time</Label>
+                <Input
+                  type="time"
+                  value={overnightShutdownTime}
+                  onChange={(e) => setOvernightShutdownTime(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Start time</Label>
+                <Input
+                  type="time"
+                  value={overnightStartupTime}
+                  onChange={(e) => setOvernightStartupTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] text-muted-foreground">Days with nightly stop</Label>
+              <div className="flex flex-wrap gap-3">
+                {DAY_LABELS.map((label, i) => {
+                  const day = i + 1;
+                  return (
+                    <label key={day} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Checkbox
+                        checked={overnightDays.includes(day)}
+                        onCheckedChange={() => toggleOvernightDay(day)}
+                      />
+                      {label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <p className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-muted-foreground">
+            Example: long stop {DAY_LABELS[shutdownDayOfWeek - 1]} {formatTime12h(shutdownTime)} →{' '}
+            {DAY_LABELS[startupDayOfWeek - 1]} {formatTime12h(startupTime)}, plus nightly{' '}
+            {formatTime12h(overnightShutdownTime)}–{formatTime12h(overnightStartupTime)} on{' '}
+            {overnightDays.length
+              ? overnightDays.map((d) => DAY_LABELS[d - 1]).join(', ')
+              : 'no days selected'}
+            . Repeats every week; today&apos;s timeline is evaluated from the current day and time.
           </p>
         </>
       ) : recurrence === 'window' ? (
@@ -1293,7 +1830,13 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
           Cancel
         </Button>
         <Button type="submit" className="flex-1" disabled={mutation.isPending}>
-          {mutation.isPending ? 'Saving...' : isEdit ? 'Update' : 'Create'}
+          {mutation.isPending
+            ? 'Saving...'
+            : isEdit
+              ? 'Update'
+              : namespaceMode === 'multiple' && selectedNamespaces.length > 1
+                ? `Create ${selectedNamespaces.length} schedules`
+                : 'Create'}
         </Button>
       </div>
     </form>

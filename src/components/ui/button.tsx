@@ -20,6 +20,8 @@ const buttonVariants = cva(
           'bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500',
         danger:
           'bg-gradient-to-r from-red-600 to-rose-600 text-white hover:from-red-500 hover:to-rose-500',
+        warning:
+          'bg-amber-400 text-amber-950 shadow-sm hover:bg-amber-500 active:bg-amber-500',
       },
       size: {
         default: 'h-10 px-5 py-2',

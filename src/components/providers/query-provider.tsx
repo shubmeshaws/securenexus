@@ -9,9 +9,9 @@ export function QueryProvider({ children }: { children: ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 30_000,
+            staleTime: 90_000,
             retry: 1,
-            refetchOnWindowFocus: true,
+            refetchOnWindowFocus: false,
             refetchIntervalInBackground: false,
           },
         },
@@ -22,14 +22,28 @@ export function QueryProvider({ children }: { children: ReactNode }) {
 }
 
 /** Default page refresh (infrastructure, clusters, activity). */
-export const POLL_INTERVAL = 60_000;
+export const POLL_INTERVAL = 120_000;
 
-/** Schedules / live badge — aligned with dashboard refresh cadence. */
-export const SCHEDULE_POLL_INTERVAL = 30_000;
+/** Schedules / live status — live data still refreshes; manual refresh always available. */
+export const SCHEDULE_POLL_INTERVAL = 120_000;
 
 export const scheduleLiveQueryOptions = {
   refetchInterval: SCHEDULE_POLL_INTERVAL,
   refetchIntervalInBackground: false,
-  refetchOnWindowFocus: true,
-  staleTime: 20_000,
+  refetchOnWindowFocus: false,
+  staleTime: 90_000,
+} as const;
+
+export const overviewQueryOptions = {
+  refetchInterval: SCHEDULE_POLL_INTERVAL,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: false,
+  staleTime: 90_000,
+} as const;
+
+export const dashboardInsightsQueryOptions = {
+  staleTime: 90_000,
+  refetchInterval: 120_000,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: false,
 } as const;

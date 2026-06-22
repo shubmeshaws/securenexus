@@ -38,6 +38,8 @@ const EVENT_LABELS: Record<ActivityAction, string> = {
   'schedule-shutdown': 'Scheduled shutdown',
   'schedule-startup': 'Scheduled startup',
   'schedule-run': 'Manual schedule run',
+  'instant-start': 'Instant start',
+  'instant-stop': 'Instant stop',
   'scale-down': 'Scale down',
   'scale-up': 'Scale up',
   'sync-off': 'Sync disabled',

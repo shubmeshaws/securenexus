@@ -51,6 +51,7 @@ export function UserAccessDialog({
             scheduleStart: user.permissions?.scheduleStart ?? false,
             scheduleStop: user.permissions?.scheduleStop ?? false,
             liveScheduleStop: user.permissions?.liveScheduleStop ?? false,
+            instantSchedule: user.permissions?.instantSchedule ?? false,
           }
     );
   }, [user, isAdmin]);
@@ -108,6 +109,19 @@ export function UserAccessDialog({
               onCheckedChange={(checked) => toggle('liveScheduleStop', checked)}
               disabled={isAdmin || saving}
               aria-label={PERMISSION_LABELS.liveScheduleStop}
+            />
+          </div>
+
+          <p className="pt-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Instant Schedule
+          </p>
+          <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3">
+            <span className="text-sm text-foreground">{PERMISSION_LABELS.instantSchedule}</span>
+            <Switch
+              checked={draft.instantSchedule}
+              onCheckedChange={(checked) => toggle('instantSchedule', checked)}
+              disabled={isAdmin || saving}
+              aria-label={PERMISSION_LABELS.instantSchedule}
             />
           </div>
 

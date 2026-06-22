@@ -5,30 +5,33 @@ import argocdClient from '@/lib/argocd-client';
 import { getEnvironmentHours } from '@/lib/environment-metrics';
 import { sortSchedulesForDashboard } from '@/lib/schedule-dashboard';
 
-async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+const OVERVIEW_CACHE_TTL_MS = 90_000;
 
-  try {
-    const allSchedulesPromise = prisma.schedule.findMany({ where: { enabled: true } });
+type OverviewPayload = Awaited<ReturnType<typeof buildOverviewPayload>>;
 
-    const [allSchedules, registeredClusters, environment, argocdResult] = await Promise.all([
-      allSchedulesPromise,
-      prisma.cluster.count({ where: { status: 'connected' } }).catch(() => 0),
-      getEnvironmentHours(),
-      argocdClient.listApplications().then(
-        (apps) => ({ reachable: true as const, apps }),
-        (err) => ({
-          reachable: false as const,
-          apps: [] as Awaited<ReturnType<typeof argocdClient.listApplications>>,
-          message: err instanceof Error ? err.message : 'ArgoCD unreachable',
-        })
-      ),
-    ]);
+let overviewCache: { data: OverviewPayload; at: number } | null = null;
 
-    const schedules = sortSchedulesForDashboard(allSchedules);
-    const argocdApps = argocdResult.apps;
+async function buildOverviewPayload() {
+  const allSchedulesPromise = prisma.schedule.findMany({ where: { enabled: true } });
 
-    return res.status(200).json({
+  const [allSchedules, registeredClusters, environment, argocdResult] = await Promise.all([
+    allSchedulesPromise,
+    prisma.cluster.count({ where: { status: 'connected' } }).catch(() => 0),
+    getEnvironmentHours(),
+    argocdClient.listApplications().then(
+      (apps) => ({ reachable: true as const, apps }),
+      (err) => ({
+        reachable: false as const,
+        apps: [] as Awaited<ReturnType<typeof argocdClient.listApplications>>,
+        message: err instanceof Error ? err.message : 'ArgoCD unreachable',
+      })
+    ),
+  ]);
+
+  const schedules = sortSchedulesForDashboard(allSchedules);
+  const argocdApps = argocdResult.apps;
+
+  return {
       summary: {
         totalApps: argocdApps.length || schedules.length,
         running: argocdApps.filter((app) => ['Healthy', 'Progressing'].includes(app.healthStatus)).length,
@@ -52,7 +55,20 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
         : 'message' in argocdResult
           ? argocdResult.message
           : 'ArgoCD unreachable',
-    });
+    };
+}
+
+async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+
+  if (overviewCache && Date.now() - overviewCache.at < OVERVIEW_CACHE_TTL_MS) {
+    return res.status(200).json(overviewCache.data);
+  }
+
+  try {
+    const payload = await buildOverviewPayload();
+    overviewCache = { data: payload, at: Date.now() };
+    return res.status(200).json(payload);
   } catch (err) {
     const environment = await getEnvironmentHours().catch(() => ({
       state: 'running' as const,

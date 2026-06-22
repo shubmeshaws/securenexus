@@ -3,6 +3,7 @@ export interface UserPermissions {
   scheduleStart: boolean;
   scheduleStop: boolean;
   liveScheduleStop: boolean;
+  instantSchedule: boolean;
 }
 
 export const EMPTY_PERMISSIONS: UserPermissions = {
@@ -10,6 +11,7 @@ export const EMPTY_PERMISSIONS: UserPermissions = {
   scheduleStart: false,
   scheduleStop: false,
   liveScheduleStop: false,
+  instantSchedule: false,
 };
 
 export const FULL_PERMISSIONS: UserPermissions = {
@@ -17,6 +19,7 @@ export const FULL_PERMISSIONS: UserPermissions = {
   scheduleStart: true,
   scheduleStop: true,
   liveScheduleStop: true,
+  instantSchedule: true,
 };
 
 /** Default permissions for new Google SSO users (viewer role). */
@@ -25,6 +28,7 @@ export const DEFAULT_NEW_USER_PERMISSIONS: UserPermissions = {
   scheduleStart: false,
   scheduleStop: false,
   liveScheduleStop: true,
+  instantSchedule: false,
 };
 
 export const PERMISSION_LABELS: Record<keyof UserPermissions, string> = {
@@ -32,6 +36,7 @@ export const PERMISSION_LABELS: Record<keyof UserPermissions, string> = {
   scheduleStart: 'Schedule — Start',
   scheduleStop: 'Schedule — Stop',
   liveScheduleStop: 'Live Schedule — Stop',
+  instantSchedule: 'Instant Schedule',
 };
 
 export function parseUserPermissions(raw: unknown): UserPermissions {
@@ -42,6 +47,7 @@ export function parseUserPermissions(raw: unknown): UserPermissions {
     scheduleStart: Boolean(obj.scheduleStart),
     scheduleStop: Boolean(obj.scheduleStop),
     liveScheduleStop: Boolean(obj.liveScheduleStop),
+    instantSchedule: Boolean(obj.instantSchedule),
   };
 }
 

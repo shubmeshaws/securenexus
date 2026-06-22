@@ -51,6 +51,9 @@ interface LiveScheduleItem {
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
   oneTimeCompleted: boolean;
+  overnightDays: number[];
+  overnightShutdownTime: string | null;
+  overnightStartupTime: string | null;
   timezone: string;
   daysOfWeek: number[];
   lastRun: string | null;
@@ -99,10 +102,16 @@ export function ActiveSchedulesContent() {
     ...scheduleLiveQueryOptions,
   });
 
+  const needsFullSchedules = Boolean(searchQuery.trim()) || detailLiveSchedule !== null;
+
   const { data: allSchedulesData } = useQuery({
     queryKey: ['schedules'],
     queryFn: () => apiFetch<{ schedules: Schedule[] }>('/api/schedules'),
-    ...scheduleLiveQueryOptions,
+    enabled: needsFullSchedules,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchInterval: needsFullSchedules ? scheduleLiveQueryOptions.refetchInterval : false,
+    refetchIntervalInBackground: false,
   });
 
   const stopMutation = useMutation({

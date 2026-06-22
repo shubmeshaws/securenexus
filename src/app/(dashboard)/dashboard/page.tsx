@@ -10,7 +10,10 @@ import {
 } from '@/lib/icons';
 import { Badge } from '@/components/ui/badge';
 import { apiFetch, type DashboardInsights, type OverviewData } from '@/lib/api-client';
-import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
+import {
+  dashboardInsightsQueryOptions,
+  overviewQueryOptions,
+} from '@/components/providers/query-provider';
 import { DegradedBanner } from '@/components/pod-scheduler/degraded-banner';
 import {
   PageHeader,
@@ -68,7 +71,8 @@ export default function PodSchedulerOverviewPage() {
   } = useQuery({
     queryKey: ['overview'],
     queryFn: () => apiFetch<OverviewData>('/api/schedules/overview'),
-    ...scheduleLiveQueryOptions,
+    ...overviewQueryOptions,
+    enabled: tab === 'overview',
     retry: 1,
   });
 
@@ -81,11 +85,8 @@ export default function PodSchedulerOverviewPage() {
     queryFn: () =>
       apiFetch<DashboardInsights>(appendDashboardDateQuery('/api/dashboard/insights', dateRange)),
     placeholderData: (previousData) => previousData,
-    enabled: rangeReady,
-    staleTime: 20_000,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
+    enabled: tab === 'overview' && rangeReady,
+    ...dashboardInsightsQueryOptions,
   });
 
   const summary = overview?.summary ?? {
@@ -170,11 +171,12 @@ export default function PodSchedulerOverviewPage() {
     <div className="space-y-5">
       <DashboardTabs active={tab} onChange={setTab} />
 
-      <div className={tab === 'overview' ? 'space-y-5' : 'hidden'} aria-hidden={tab !== 'overview'}>
+      {tab === 'overview' ? (
+      <div className="space-y-5">
       <PageHeader
         title="Dashboard"
         titleMeta={uptimeTitleMeta}
-        description="Live data from your clusters, schedules, and activity logs — refreshed every 30 seconds."
+        description="Live data from your clusters, schedules, and activity logs — refreshed every minute."
         action={
           overview ? (
             <span className="live-pill inline-flex items-center gap-1.5">
@@ -424,14 +426,15 @@ export default function PodSchedulerOverviewPage() {
             </GlassPanel>
           </div>
       </div>
+      ) : null}
 
-      <div className={tab === 'node-changes' ? undefined : 'hidden'} aria-hidden={tab !== 'node-changes'}>
+      {tab === 'node-changes' ? (
         <DashboardNodeChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
-      </div>
+      ) : null}
 
-      <div className={tab === 'pod-changes' ? undefined : 'hidden'} aria-hidden={tab !== 'pod-changes'}>
+      {tab === 'pod-changes' ? (
         <DashboardPodChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
-      </div>
+      ) : null}
     </div>
   );
 }

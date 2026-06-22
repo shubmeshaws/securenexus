@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ICON_STROKE, Icons } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
-import { POLL_INTERVAL } from '@/components/providers/query-provider';
+import { SCHEDULE_POLL_INTERVAL } from '@/components/providers/query-provider';
 import { cn } from '@/lib/utils';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { useSidebar } from './sidebar-context';
@@ -53,9 +53,10 @@ export function AppSidebar() {
   const { data: liveData } = useQuery({
     queryKey: ['schedules-live'],
     queryFn: () => apiFetch<{ total: number }>('/api/schedules/live'),
-    refetchInterval: POLL_INTERVAL,
+    refetchInterval: SCHEDULE_POLL_INTERVAL,
     refetchIntervalInBackground: false,
-    staleTime: 30_000,
+    staleTime: 45_000,
+    refetchOnWindowFocus: false,
   });
   const liveCount = liveData?.total ?? 0;
 

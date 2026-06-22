@@ -16,7 +16,7 @@ export const PAGE_REFRESH_QUERY_KEYS: Record<string, readonly (readonly string[]
     ['namespaces'],
   ],
   '/clusters': [['registered-clusters'], ['clusters']],
-  '/schedules': [['schedules'], ['schedules-live']],
+  '/schedules': [['schedules'], ['schedules-live'], ['instant-schedules']],
   '/active-schedules': [['schedules-live'], ['schedules']],
   '/resource-audit': [['resource-audit'], ['resource-audit-summary']],
   '/activity': [['activity']],

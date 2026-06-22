@@ -48,8 +48,12 @@ type RegisteredCluster = NonNullable<Awaited<ReturnType<typeof prisma.cluster.fi
 let registeredClustersCache: { at: number; byName: Map<string, RegisteredCluster> } | null = null;
 const REGISTERED_CACHE_TTL_MS = 30_000;
 
+const kubeConfigCache = new Map<string, { at: number; config: k8s.KubeConfig }>();
+const KUBECONFIG_CACHE_TTL_MS = 10 * 60_000;
+
 export function invalidateKubeConfigCache() {
   registeredClustersCache = null;
+  kubeConfigCache.clear();
 }
 
 async function getRegisteredCluster(clusterName: string): Promise<RegisteredCluster | null> {
@@ -128,6 +132,11 @@ function loadKubeConfigFromBase64(base64: string, contextName?: string | null): 
 }
 
 async function getConfigForCluster(clusterName: string): Promise<k8s.KubeConfig> {
+  const cached = kubeConfigCache.get(clusterName);
+  if (cached && Date.now() - cached.at < KUBECONFIG_CACHE_TTL_MS) {
+    return cached.config;
+  }
+
   const registered = await getRegisteredCluster(clusterName);
   if (!registered) {
     throw new Error(
@@ -147,13 +156,18 @@ async function getConfigForCluster(clusterName: string): Promise<k8s.KubeConfig>
     kubeconfigB64: registeredB64,
     region: registered.region,
   });
-  if (fromAwsIntegration) return fromAwsIntegration;
+  const config =
+    fromAwsIntegration ??
+    (registeredB64
+      ? loadKubeConfigFromBase64(registeredB64, registered.contextName ?? clusterName)
+      : null);
 
-  if (!registeredB64) {
+  if (!config) {
     throw new Error(`Cluster "${clusterName}" has no kubeconfig stored. Re-add the cluster with a valid kubeconfig.`);
   }
 
-  return loadKubeConfigFromBase64(registeredB64, registered.contextName ?? clusterName);
+  kubeConfigCache.set(clusterName, { at: Date.now(), config });
+  return config;
 }
 
 function mapDeployment(

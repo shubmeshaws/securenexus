@@ -73,13 +73,16 @@ export interface Schedule {
   weekendShutdownTime: string | null;
   weekendStartupTime: string | null;
   weekendDays: number[];
-  recurrence: 'daily' | 'onetime' | 'split' | 'window';
+  recurrence: 'daily' | 'onetime' | 'split' | 'window' | 'combined';
   oneTimeShutdownAt: string | null;
   oneTimeStartupAt: string | null;
   oneTimeCompleted: boolean;
   shutdownDayOfWeek: number | null;
   startupDayOfWeek: number | null;
   windowRepeatWeekly: boolean;
+  overnightDays: number[];
+  overnightShutdownTime: string | null;
+  overnightStartupTime: string | null;
   timezone: string;
   daysOfWeek: number[];
   syncPolicy: 'automated' | 'none';
@@ -88,6 +91,9 @@ export interface Schedule {
   enabled: boolean;
   teamsAlertEnabled: boolean;
   liveActive: boolean;
+  liveStopSource: 'manual' | 'scheduled' | null;
+  liveStoppedBy: string | null;
+  liveStoppedByName?: string | null;
   savedReplicas: number | null;
   lastRun: string | null;
   nextRun: string | null;
@@ -186,6 +192,7 @@ export interface AdminUser {
     scheduleStart: boolean;
     scheduleStop: boolean;
     liveScheduleStop: boolean;
+    instantSchedule: boolean;
   };
 }
 

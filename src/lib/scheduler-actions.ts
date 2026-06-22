@@ -1,6 +1,7 @@
 import argocdClient, { appMatchesK8sCluster } from './argocd-client';
 import { instanceMatchesCluster, listEnabledArgoCDInstances } from './argocd-instances';
 import type { ArgoCDAppSummary } from './argocd-client';
+import { AUTOMATIC_CRON_TRIGGER } from './alert-display';
 import {
   deleteStatefulSet,
   getArgoAppNamesForNamespace,
@@ -25,6 +26,8 @@ import {
 } from './workload-utils';
 import { Prisma, type Schedule } from '@prisma/client';
 import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
+import { runWithConcurrency } from './concurrency';
+import { resolveWorkloadOpConcurrency } from './schedule-execution-pool';
 
 function scheduleTeamsAlertFlag(schedule: Schedule) {
   return { teamsAlertEnabled: schedule.teamsAlertEnabled };
@@ -362,14 +365,7 @@ async function executeEc2Shutdown(
     throw new Error('EC2 schedule is missing AWS account or instance');
   }
 
-  const liveUpdate = options?.clearLive
-    ? { liveActive: false, liveStartupAt: null }
-    : options?.markLive
-      ? {
-          liveActive: true,
-          liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
-        }
-      : {};
+  const liveUpdate = buildLiveScheduleUpdate(schedule, triggeredBy, options);
 
   try {
     await stopEc2Instance(credentialId, instanceId, region);
@@ -422,7 +418,12 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
 
     await prisma.schedule.update({
       where: { id: schedule.id },
-      data: { liveActive: false, liveStartupAt: null },
+      data: {
+        liveActive: false,
+        liveStartupAt: null,
+        liveStopSource: null,
+        liveStoppedBy: null,
+      },
     });
 
     await logActivity({
@@ -457,6 +458,45 @@ export interface ShutdownOptions {
   clearLive?: boolean;
 }
 
+function isAutomaticScheduleTrigger(triggeredBy: string): boolean {
+  return (
+    triggeredBy === AUTOMATIC_CRON_TRIGGER ||
+    triggeredBy === 'scheduler' ||
+    (!triggeredBy.includes('@') &&
+      triggeredBy !== 'manual' &&
+      triggeredBy !== 'bulk-action' &&
+      triggeredBy !== 'infra-control' &&
+      triggeredBy !== 'live-stop')
+  );
+}
+
+function buildLiveScheduleUpdate(
+  schedule: Schedule,
+  triggeredBy: string,
+  options?: ShutdownOptions
+): Record<string, unknown> {
+  if (options?.clearLive) {
+    const scheduled = isAutomaticScheduleTrigger(triggeredBy);
+    return {
+      liveActive: false,
+      liveStartupAt: null,
+      ...(scheduled
+        ? { liveStopSource: null, liveStoppedBy: null }
+        : { liveStopSource: 'manual', liveStoppedBy: triggeredBy }),
+    };
+  }
+  if (options?.markLive) {
+    const scheduled = isAutomaticScheduleTrigger(triggeredBy);
+    return {
+      liveActive: true,
+      liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
+      liveStopSource: scheduled ? 'scheduled' : 'manual',
+      liveStoppedBy: scheduled ? null : triggeredBy,
+    };
+  }
+  return {};
+}
+
 export async function executeShutdown(
   schedule: Schedule,
   triggeredBy: string,
@@ -476,14 +516,7 @@ export async function executeShutdown(
     const priorWorkloadSaves = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
     const alertSchedule = fresh ?? schedule;
 
-    const liveUpdate = options?.clearLive
-      ? { liveActive: false, liveStartupAt: null }
-      : options?.markLive
-        ? {
-            liveActive: true,
-            liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
-          }
-        : {};
+    const liveUpdate = buildLiveScheduleUpdate(schedule, triggeredBy, options);
 
     let argoNote = '';
     let pausedArgoApps: string[] = [];
@@ -500,7 +533,7 @@ export async function executeShutdown(
     if (isNamespace) {
       const replicasMap: Record<string, number> = {};
 
-      for (const target of targets) {
+      await runWithConcurrency(targets, resolveWorkloadOpConcurrency(), async (target) => {
         const key = workloadKey(target.kind, target.name);
         const current = await getWorkloadDesiredReplicas(
           schedule.cluster,
@@ -520,7 +553,7 @@ export async function executeShutdown(
           target.name,
           0
         );
-      }
+      });
 
       await prisma.schedule.update({
         where: { id: schedule.id },
@@ -672,7 +705,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     if (isNamespace) {
       const savedMap = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
 
-      for (const target of targets) {
+      await runWithConcurrency(targets, resolveWorkloadOpConcurrency(), async (target) => {
         const key = workloadKey(target.kind, target.name);
         const replicas = resolveStartupReplicas(schedule, savedMap[key]);
         await scaleWorkload(
@@ -682,7 +715,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
           target.name,
           replicas
         );
-      }
+      });
     } else {
       const kind = schedule.workloadKind as WorkloadKind;
       const replicas = resolveStartupReplicas(schedule, fresh?.savedReplicas);
@@ -806,11 +839,13 @@ export async function runScheduleNow(
       lastRun: now,
       nextRun,
       ...(mode === 'shutdown'
-        ? {
-            liveActive: true,
-            liveStartupAt: computeCurrentLiveStartupAt(schedule, now),
-          }
-        : { liveActive: false, liveStartupAt: null }),
+        ? buildLiveScheduleUpdate(schedule, triggeredBy, { markLive: true })
+        : {
+            liveActive: false,
+            liveStartupAt: null,
+            liveStopSource: null,
+            liveStoppedBy: null,
+          }),
     },
   });
 }
@@ -824,6 +859,9 @@ export async function stopLiveSchedule(scheduleId: string, triggeredBy: string):
   const nextRun = computeNextRun(schedule);
   await prisma.schedule.update({
     where: { id: scheduleId },
-    data: { lastRun: new Date(), nextRun, liveActive: false, liveStartupAt: null },
+    data: {
+      lastRun: new Date(),
+      nextRun,
+    },
   });
 }

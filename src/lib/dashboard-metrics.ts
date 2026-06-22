@@ -57,7 +57,7 @@ export interface DashboardInsightsResult {
   };
 }
 
-const INSIGHTS_CACHE_TTL_MS = 30_000;
+const INSIGHTS_CACHE_TTL_MS = 60_000;
 let insightsCache: { key: string; at: number; data: DashboardInsightsResult } | null = null;
 
 export function invalidateDashboardInsightsCache() {

@@ -1,8 +1,8 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 
-export type ScheduleRecurrence = 'daily' | 'onetime' | 'split' | 'window';
+export type ScheduleRecurrence = 'daily' | 'onetime' | 'split' | 'window' | 'combined';
 
-/** Weekly-repeating schedules (daily + weekday/weekend split + window) — i.e. not one-time. */
+/** Weekly-repeating schedules — i.e. not one-time. */
 export function isDailySchedule(schedule: { recurrence?: string | null }): boolean {
   return schedule.recurrence !== 'onetime' && !isWindowOnce(schedule);
 }
@@ -22,6 +22,11 @@ export function isWindowOnce(schedule: {
 /** Stop-day → start-day schedule (Fri stop, Mon start, etc.). */
 export function isWindowSchedule(schedule: { recurrence?: string | null }): boolean {
   return schedule.recurrence === 'window';
+}
+
+/** Long stop window + daily overnight stops on selected days. */
+export function isCombinedSchedule(schedule: { recurrence?: string | null }): boolean {
+  return schedule.recurrence === 'combined';
 }
 
 /** Schedules that auto-disable after the startup run completes. */

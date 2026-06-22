@@ -5,6 +5,7 @@ import {
   isDailySchedule,
   isOnetimeSchedule,
   isWindowSchedule,
+  isCombinedSchedule,
   isWindowOnce,
   matchesScheduleMinute,
 } from './schedule-recurrence';
@@ -15,6 +16,14 @@ import {
   shouldRunWindowShutdown,
   shouldRunWindowStartup,
 } from './schedule-window';
+import {
+  computeCurrentLiveStartupAtCombined,
+  computeNextRunCombined,
+  isInCombinedStoppedPeriod,
+  shouldRunCombinedShutdown,
+  shouldRunCombinedStartup,
+  combinedActiveDays,
+} from './schedule-combined';
 import prisma from './prisma';
 import type { Schedule } from '@prisma/client';
 
@@ -102,6 +111,7 @@ function computeNextRunOnetime(schedule: Schedule, fromDate = new Date()): Date 
 export function computeNextRun(schedule: Schedule, fromDate = new Date()): Date | null {
   if (!schedule.enabled) return null;
   if (isOnetimeSchedule(schedule)) return computeNextRunOnetime(schedule, fromDate);
+  if (isCombinedSchedule(schedule)) return computeNextRunCombined(schedule, fromDate);
   if (isWindowSchedule(schedule)) return computeNextRunWindow(schedule, fromDate);
   return computeNextRunDaily(schedule, fromDate);
 }
@@ -112,6 +122,10 @@ export function computeCurrentLiveStartupAt(schedule: Schedule, now = new Date()
 
   if (isOnetimeSchedule(schedule)) {
     return schedule.oneTimeStartupAt;
+  }
+
+  if (isCombinedSchedule(schedule)) {
+    return computeCurrentLiveStartupAtCombined(schedule, now);
   }
 
   if (isWindowSchedule(schedule)) {
@@ -151,6 +165,12 @@ export function computeNextStartupAt(schedule: Schedule, fromDate = new Date()):
   if (isOnetimeSchedule(schedule)) {
     if (schedule.oneTimeCompleted || !schedule.oneTimeStartupAt) return null;
     return schedule.oneTimeStartupAt > fromDate ? schedule.oneTimeStartupAt : null;
+  }
+
+  if (isCombinedSchedule(schedule)) {
+    const startup = computeCurrentLiveStartupAtCombined(schedule, fromDate);
+    if (startup && startup > fromDate) return startup;
+    return null;
   }
 
   if (isWindowSchedule(schedule)) {
@@ -198,6 +218,11 @@ export function shouldRunShutdown(schedule: Schedule, now = new Date()): boolean
     return matchesScheduleMinute(schedule, schedule.oneTimeShutdownAt, now);
   }
 
+  if (isCombinedSchedule(schedule)) {
+    if (!schedule.enabled) return false;
+    return shouldRunCombinedShutdown(schedule, now);
+  }
+
   if (isWindowSchedule(schedule)) {
     if (!schedule.enabled || (isWindowOnce(schedule) && schedule.oneTimeCompleted)) return false;
     return shouldRunWindowShutdown(schedule, now);
@@ -233,6 +258,12 @@ export function isScheduleDayToday(schedule: Schedule, now = new Date()): boolea
     const shutdownKey = `${shutdownZoned.getFullYear()}-${shutdownZoned.getMonth()}-${shutdownZoned.getDate()}`;
     const startupKey = `${startupZoned.getFullYear()}-${startupZoned.getMonth()}-${startupZoned.getDate()}`;
     return todayKey === shutdownKey || todayKey === startupKey;
+  }
+
+  if (isCombinedSchedule(schedule)) {
+    const tz = schedule.timezone || 'UTC';
+    const zoned = toZonedTime(now, tz);
+    return combinedActiveDays(schedule).includes(isoDayOfWeek(zoned));
   }
 
   if (isWindowSchedule(schedule)) {
@@ -271,6 +302,10 @@ export function isScheduleActiveNow(schedule: Schedule, now = new Date()): boole
     return isScheduleActiveNowOnetime(schedule, now);
   }
 
+  if (isCombinedSchedule(schedule)) {
+    return !isInCombinedStoppedPeriod(schedule, now);
+  }
+
   if (isWindowSchedule(schedule)) {
     if (isWindowOnce(schedule) && schedule.oneTimeCompleted) return true;
     return !isInWindowStoppedPeriod(schedule, now);
@@ -305,6 +340,9 @@ export function isScheduleInStoppedWindow(schedule: Schedule, now = new Date()):
     const startupAt = schedule.oneTimeStartupAt;
     if (!shutdownAt || !startupAt) return false;
     return now >= shutdownAt && now < startupAt;
+  }
+  if (isCombinedSchedule(schedule)) {
+    return isInCombinedStoppedPeriod(schedule, now);
   }
   if (isWindowSchedule(schedule)) {
     if (isWindowOnce(schedule) && schedule.oneTimeCompleted) return false;
@@ -380,6 +418,11 @@ export function shouldRunStartup(schedule: Schedule, now = new Date()): boolean 
     return matchesScheduleMinute(schedule, schedule.oneTimeStartupAt, now);
   }
 
+  if (isCombinedSchedule(schedule)) {
+    if (!schedule.enabled) return false;
+    return shouldRunCombinedStartup(schedule, now);
+  }
+
   if (isWindowSchedule(schedule)) {
     if (!schedule.enabled || (isWindowOnce(schedule) && schedule.oneTimeCompleted)) return false;
     return shouldRunWindowStartup(schedule, now);
@@ -410,7 +453,11 @@ export function shouldRunStartupCatchup(schedule: Schedule, now = new Date()): b
     const tz = schedule.timezone || 'UTC';
     const zoned = toZonedTime(now, tz);
     const dayOfWeek = getDay(zoned) === 0 ? 7 : getDay(zoned);
-    if (isWindowSchedule(schedule)) {
+    if (isCombinedSchedule(schedule)) {
+      const dow = isoDayOfWeek(zoned);
+      const active = combinedActiveDays(schedule);
+      if (!active.includes(dow) && !isInCombinedStoppedPeriod(schedule, now)) return false;
+    } else if (isWindowSchedule(schedule)) {
       const dow = isoDayOfWeek(zoned);
       if (dow !== schedule.startupDayOfWeek) return false;
     } else if (!schedule.daysOfWeek.includes(dayOfWeek)) {
@@ -428,7 +475,7 @@ export function isOvernightSchedule(schedule: Schedule): boolean {
     if (!shutdownAt || !startupAt) return false;
     return startupAt > shutdownAt && startupAt.getTime() - shutdownAt.getTime() > 12 * 60 * 60 * 1000;
   }
-  if (isWindowSchedule(schedule)) {
+  if (isCombinedSchedule(schedule) || isWindowSchedule(schedule)) {
     return true;
   }
   return isOvernightScheduleTimes(schedule.shutdownTime, schedule.startupTime);

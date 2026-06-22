@@ -88,7 +88,7 @@ export default function ScheduleActionsChart({
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['schedule-actions', dateRange],
     queryFn: () => apiFetch<ScheduleActionsChartResponse>(actionsUrl),
-    refetchInterval: 60_000,
+    refetchInterval: false,
     placeholderData: (previousData) =>
       previousData ?? getScheduleActionsPlaceholder({ days: placeholderDays }),
     enabled: rangeReady,

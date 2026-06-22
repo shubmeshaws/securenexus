@@ -6,8 +6,7 @@ import {
   type NodeCountTrendResponse,
   type NodePodTrendSeries,
 } from './node-count-trend-data';
-import { listRegisteredClusterNames, sampleRegisteredClusters } from './node-count-sampler';
-import { sampleRegisteredClusterPods } from './pod-count-sampler';
+import { listRegisteredClusterNames } from './node-count-sampler';
 import {
   getNodeSampleCaptureStartAt,
   getNodeSampleCaptureStartConfig,
@@ -18,7 +17,7 @@ import {
 import { formatTime12h, IST_TIMEZONE } from './utils';
 import prisma from './prisma';
 
-const CACHE_TTL_MS = 30_000;
+const CACHE_TTL_MS = 60_000;
 let trendCache: { key: string; at: number; data: NodeCountTrendResponse } | null = null;
 
 interface HourlySample {
@@ -180,12 +179,7 @@ export async function getNodeCountTrendData(
     return emptyResponse('', availableClusters);
   }
 
-  try {
-    await Promise.all([sampleRegisteredClusters(), sampleRegisteredClusterPods()]);
-  } catch (err) {
-    console.error('[NodeCountTrend] Live sample failed (serving stored samples):', err);
-  }
-
+  // Serve stored samples only — live K8s sampling runs on the 15-min cron job.
   const now = new Date();
   const todayDate = todayCalendarDate();
 

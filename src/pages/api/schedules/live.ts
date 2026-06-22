@@ -3,7 +3,7 @@ import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/
 import prisma from '@/lib/prisma';
 import { computeCurrentLiveStartupAt, isLiveScheduleVisible } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
-import { isOnetimeSchedule, isWindowSchedule } from '@/lib/schedule-recurrence';
+import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
@@ -42,6 +42,9 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
         startupDayOfWeek: schedule.startupDayOfWeek,
         windowRepeatWeekly: schedule.windowRepeatWeekly,
         oneTimeCompleted: schedule.oneTimeCompleted,
+        overnightDays: schedule.overnightDays,
+        overnightShutdownTime: schedule.overnightShutdownTime,
+        overnightStartupTime: schedule.overnightStartupTime,
         timezone: schedule.timezone,
         daysOfWeek: schedule.daysOfWeek,
         lastRun: schedule.lastRun?.toISOString() ?? null,
@@ -49,11 +52,13 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
         startupAt: startupAt?.toISOString() ?? null,
         message: isOnetimeSchedule(schedule) && startupAt
           ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-          : isWindowSchedule(schedule) && startupAt
+          : isCombinedSchedule(schedule) && startupAt
             ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-            : isWindowSchedule(schedule) && schedule.startupDayOfWeek
-              ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
-              : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
+            : isWindowSchedule(schedule) && startupAt
+              ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
+              : isWindowSchedule(schedule) && schedule.startupDayOfWeek
+                ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
+                : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
       };
     });
 

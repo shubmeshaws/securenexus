@@ -22,7 +22,7 @@ import {
   inferScheduleEnvironment,
   parseClusterDisplay,
 } from '@/lib/utils';
-import { isOnetimeSchedule, isWindowSchedule, isWindowOnce } from '@/lib/schedule-recurrence';
+import { isOnetimeSchedule, isWindowSchedule, isWindowOnce, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
 import {
   formatWorkloadKeyLabel,
@@ -58,6 +58,7 @@ function recurrenceLabel(recurrence: Schedule['recurrence']): string {
   if (recurrence === 'split') return 'Weekday + Weekend';
   if (recurrence === 'onetime') return 'One-time';
   if (recurrence === 'window') return 'Stop day → Start day';
+  if (recurrence === 'combined') return 'Long stop + nightly';
   return 'Daily';
 }
 
@@ -142,6 +143,12 @@ function ScheduleDetailBody({
     <div className="space-y-5">
       <DetailSection title="Overview">
         <DetailRow label="Status" value={<ScheduleStatusCell schedule={schedule} />} />
+        {schedule.liveStopSource === 'manual' && (
+          <DetailRow
+            label="Stopped by"
+            value={schedule.liveStoppedByName ?? schedule.liveStoppedBy ?? 'Unknown user'}
+          />
+        )}
         <DetailRow
           label="Platform"
           value={schedule.platformType === 'non_eks' ? 'Manual (Non-EKS / EC2)' : 'EKS'}
@@ -208,41 +215,11 @@ function ScheduleDetailBody({
               <>
                 <DetailRow
                   label="Shutdown at"
-                  value={
-                    <ScheduleShutdownAtCell
-                      schedule={{
-                        recurrence: schedule.recurrence,
-                        shutdownTime: schedule.shutdownTime,
-                        weekendShutdownTime: schedule.weekendShutdownTime,
-                        weekendDays: schedule.weekendDays,
-                        daysOfWeek: schedule.daysOfWeek,
-                        oneTimeShutdownAt: schedule.oneTimeShutdownAt,
-                        oneTimeStartupAt: schedule.oneTimeStartupAt,
-                        timezone: schedule.timezone,
-                        shutdownDayOfWeek: schedule.shutdownDayOfWeek,
-                        windowRepeatWeekly: schedule.windowRepeatWeekly,
-                      }}
-                    />
-                  }
+                  value={<ScheduleShutdownAtCell schedule={schedule} />}
                 />
                 <DetailRow
                   label="Startup at"
-                  value={
-                    <ScheduleStartupAtCell
-                      schedule={{
-                        recurrence: schedule.recurrence,
-                        startupTime: schedule.startupTime,
-                        weekendStartupTime: schedule.weekendStartupTime,
-                        weekendDays: schedule.weekendDays,
-                        daysOfWeek: schedule.daysOfWeek,
-                        oneTimeStartupAt: schedule.oneTimeStartupAt,
-                        oneTimeShutdownAt: schedule.oneTimeShutdownAt,
-                        timezone: schedule.timezone,
-                        startupDayOfWeek: schedule.startupDayOfWeek,
-                        windowRepeatWeekly: schedule.windowRepeatWeekly,
-                      }}
-                    />
-                  }
+                  value={<ScheduleStartupAtCell schedule={schedule} />}
                 />
                 <DetailRow label="Repeat" value="Once only" />
               </>
@@ -259,6 +236,22 @@ function ScheduleDetailBody({
                 <DetailRow label="Repeat" value="Every week" />
               </>
             )}
+          </>
+        ) : schedule.recurrence === 'combined' ? (
+          <>
+            <DetailRow
+              label="Long stop"
+              value={`${dayLabel(schedule.shutdownDayOfWeek)} ${formatTime12h(schedule.shutdownTime)} → ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)}`}
+            />
+            <DetailRow
+              label="Nightly stops"
+              value={
+                (schedule.overnightDays?.length ?? 0) > 0
+                  ? `${schedule.overnightDays.map((d) => dayLabel(d)).join(', ')} · ${formatTime12h(schedule.overnightShutdownTime ?? '00:00')}–${formatTime12h(schedule.overnightStartupTime ?? '07:00')}`
+                  : 'None'
+              }
+            />
+            <DetailRow label="Repeat" value="Every week" />
           </>
         ) : schedule.recurrence === 'onetime' ? (
           <>
@@ -397,11 +390,6 @@ export function ScheduleDetailDrawer({
               </h2>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <ScheduleStatusCell schedule={schedule} />
-                {schedule.liveActive && (
-                  <Badge variant="failed" className="rounded-full text-[10px]">
-                    Live stop active
-                  </Badge>
-                )}
               </div>
             </div>
             <button

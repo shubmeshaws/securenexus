@@ -6,6 +6,7 @@ import {
   timeFromZonedInstant,
 } from './schedule-recurrence';
 import { startupAfterShutdown } from './schedule-window';
+import { combinedActiveDays } from './schedule-combined';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import { setHours, setMinutes, getDay, addDays } from 'date-fns';
 
@@ -92,11 +93,25 @@ const windowTimingSchema = z.object({
   daysOfWeek: z.array(z.number().int().min(1).max(7)).optional().default([]),
 });
 
+const combinedTimingSchema = z.object({
+  recurrence: z.literal('combined'),
+  shutdownTime: timeString,
+  startupTime: timeString,
+  shutdownDayOfWeek: z.number().int().min(1).max(7),
+  startupDayOfWeek: z.number().int().min(1).max(7),
+  overnightDays: z.array(z.number().int().min(1).max(7)).optional().default([]),
+  overnightShutdownTime: timeString,
+  overnightStartupTime: timeString,
+  windowRepeatWeekly: z.literal(true).optional().default(true),
+  daysOfWeek: z.array(z.number().int().min(1).max(7)).optional().default([]),
+});
+
 const scheduleBaseSchema = z.discriminatedUnion('recurrence', [
   scheduleIdentitySchema.merge(dailyTimingSchema),
   scheduleIdentitySchema.merge(splitTimingSchema),
   scheduleIdentitySchema.merge(onetimeTimingSchema),
   scheduleIdentitySchema.merge(windowTimingSchema),
+  scheduleIdentitySchema.merge(combinedTimingSchema),
 ]);
 
 type ScheduleInput = z.infer<typeof scheduleBaseSchema>;
@@ -288,6 +303,78 @@ function normalizeScheduleInput(data: ScheduleInput) {
       oneTimeShutdownAt: null,
       oneTimeStartupAt: null,
       oneTimeCompleted: false,
+      overnightDays: [] as number[],
+      overnightShutdownTime: null,
+      overnightStartupTime: null,
+    };
+  }
+
+  if (scoped.recurrence === 'combined') {
+    const shutdownDay = scoped.shutdownDayOfWeek;
+    const startupDay = scoped.startupDayOfWeek;
+    const overnightDays = scoped.overnightDays ?? [];
+
+    const [oShH, oShM] = scoped.overnightShutdownTime.split(':').map(Number);
+    const [oStH, oStM] = scoped.overnightStartupTime.split(':').map(Number);
+    if (oShH * 60 + oShM >= oStH * 60 + oStM) {
+      throw new z.ZodError([
+        {
+          code: 'custom',
+          message: 'Overnight startup must be after overnight shutdown on the same day',
+          path: ['overnightStartupTime'],
+        },
+      ]);
+    }
+
+    const refShutdown = windowShutdownInstant(shutdownDay, scoped.shutdownTime, scoped.timezone);
+    const refStartup = startupAfterShutdown(
+      {
+        recurrence: 'window',
+        timezone: scoped.timezone,
+        shutdownTime: scoped.shutdownTime,
+        startupTime: scoped.startupTime,
+        shutdownDayOfWeek: shutdownDay,
+        startupDayOfWeek: startupDay,
+        windowRepeatWeekly: true,
+        oneTimeShutdownAt: null,
+        oneTimeStartupAt: null,
+        oneTimeCompleted: false,
+        enabled: true,
+      },
+      refShutdown
+    );
+    if (!refStartup || refStartup <= refShutdown) {
+      throw new z.ZodError([
+        {
+          code: 'custom',
+          message: 'Long stop: startup day/time must be after shutdown day/time',
+          path: ['startupDayOfWeek'],
+        },
+      ]);
+    }
+
+    const combined = {
+      recurrence: 'combined' as const,
+      shutdownDayOfWeek: shutdownDay,
+      startupDayOfWeek: startupDay,
+      shutdownTime: scoped.shutdownTime,
+      startupTime: scoped.startupTime,
+      overnightDays,
+      overnightShutdownTime: scoped.overnightShutdownTime,
+      overnightStartupTime: scoped.overnightStartupTime,
+      windowRepeatWeekly: true as const,
+      weekendShutdownTime: null,
+      weekendStartupTime: null,
+      weekendDays: [] as number[],
+      oneTimeShutdownAt: null,
+      oneTimeStartupAt: null,
+      oneTimeCompleted: false,
+    };
+
+    return {
+      ...scoped,
+      ...combined,
+      daysOfWeek: combinedActiveDays(combined),
     };
   }
 
@@ -300,6 +387,9 @@ function normalizeScheduleInput(data: ScheduleInput) {
     shutdownDayOfWeek: null,
     startupDayOfWeek: null,
     windowRepeatWeekly: true,
+    overnightDays: [] as number[],
+    overnightShutdownTime: null,
+    overnightStartupTime: null,
     oneTimeShutdownAt: null,
     oneTimeStartupAt: null,
     oneTimeCompleted: false,
@@ -368,12 +458,15 @@ export const updateScheduleBodySchema = z
     targetReplicas: z.number().int().min(0).max(100).optional(),
     enabled: z.boolean().optional(),
     teamsAlertEnabled: z.boolean().optional(),
-    recurrence: z.enum(['daily', 'onetime', 'split', 'window']).optional(),
+    recurrence: z.enum(['daily', 'onetime', 'split', 'window', 'combined']).optional(),
     shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     shutdownDayOfWeek: z.number().int().min(1).max(7).optional(),
     startupDayOfWeek: z.number().int().min(1).max(7).optional(),
     windowRepeatWeekly: z.boolean().optional(),
+    overnightDays: z.array(z.number().int().min(1).max(7)).optional(),
+    overnightShutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    overnightStartupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     weekendShutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     weekendStartupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     weekendDays: z.array(z.number().int().min(1).max(7)).optional(),
@@ -510,6 +603,25 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
     } as ScheduleInput);
   }
 
+  if (recurrence === 'combined') {
+    return wrapNormalize({
+      ...base,
+      workloadKind: base.workloadKind as ScheduleInput['workloadKind'],
+      recurrence: 'combined',
+      shutdownTime: patch.shutdownTime ?? existing.shutdownTime,
+      startupTime: patch.startupTime ?? existing.startupTime,
+      shutdownDayOfWeek: patch.shutdownDayOfWeek ?? existing.shutdownDayOfWeek ?? 5,
+      startupDayOfWeek: patch.startupDayOfWeek ?? existing.startupDayOfWeek ?? 1,
+      overnightDays: patch.overnightDays ?? existing.overnightDays ?? [],
+      overnightShutdownTime:
+        patch.overnightShutdownTime ?? existing.overnightShutdownTime ?? '00:00',
+      overnightStartupTime:
+        patch.overnightStartupTime ?? existing.overnightStartupTime ?? '07:00',
+      windowRepeatWeekly: true,
+      daysOfWeek: patch.daysOfWeek ?? existing.daysOfWeek,
+    } as ScheduleInput);
+  }
+
   return wrapNormalize({
     ...base,
     workloadKind: base.workloadKind as ScheduleInput['workloadKind'],
@@ -527,4 +639,14 @@ export const argocdLoginSchema = z.object({
 
 export const runScheduleSchema = z.object({
   mode: z.enum(['shutdown', 'startup']).optional().default('shutdown'),
+});
+
+export const instantStartSchema = z.object({
+  cluster: z.string().min(1),
+  namespace: z.string().min(1),
+  appName: z.string().min(1),
+  workloadKind: z
+    .enum(['Deployment', 'StatefulSet', 'CronJob', 'ScaledJob'])
+    .default('Deployment'),
+  targetReplicas: z.number().int().min(1).max(100).default(1),
 });

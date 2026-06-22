@@ -18,6 +18,10 @@ import type { Schedule } from '@prisma/client';
 import { pruneActivityLogsByRetention } from './activity';
 import { pruneResourceAuditDataByRetention } from './resource-audit-retention';
 import { pruneNodeSamplesByRetention } from './node-sample-retention';
+import {
+  runInSchedulePool,
+  SCHEDULE_EXECUTION_CONCURRENCY,
+} from './schedule-execution-pool';
 
 const SCHEDULER_GLOBAL_KEY = '__secureNexusSchedulerStarted__';
 const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -55,10 +59,63 @@ async function tryClaimScheduleRun(schedule: Schedule, now: Date): Promise<boole
   return claim.count > 0;
 }
 
+async function executeClaimedSchedule(
+  schedule: Schedule,
+  now: Date,
+  mode: 'shutdown' | 'startup',
+  runShutdown: boolean,
+  runStartup: boolean,
+  previousLastRun: Date | null
+): Promise<SchedulerTickResult> {
+  try {
+    if (runShutdown) {
+      await executeShutdown(schedule, AUTOMATIC_CRON_TRIGGER, { markLive: true });
+    } else {
+      await executeStartup(schedule, AUTOMATIC_CRON_TRIGGER);
+    }
+
+    await prisma.schedule.update({
+      where: { id: schedule.id },
+      data: {
+        nextRun: computeNextRun(schedule, now),
+        liveActive: runShutdown,
+        liveStartupAt: runShutdown ? computeCurrentLiveStartupAt(schedule, now) : null,
+        ...(runShutdown
+          ? { liveStopSource: 'scheduled', liveStoppedBy: null }
+          : { liveStopSource: null, liveStoppedBy: null }),
+        ...(runStartup && completesAfterStartup(schedule)
+          ? { oneTimeCompleted: true, enabled: false, nextRun: null }
+          : {}),
+      },
+    });
+
+    console.log(`[PodScheduler] Ran ${mode} for schedule "${schedule.name}"`);
+    return { scheduleId: schedule.id, name: schedule.name, mode, status: 'success' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : `${mode} failed`;
+    console.error(`[Scheduler] Error running ${mode} for ${schedule.name}:`, err);
+    await prisma.schedule.update({
+      where: { id: schedule.id },
+      data: { lastRun: previousLastRun },
+    });
+    return { scheduleId: schedule.id, name: schedule.name, mode, status: 'failed', message };
+  }
+}
+
 async function tickSchedules(): Promise<SchedulerTickResult[]> {
   const results: SchedulerTickResult[] = [];
   const schedules = await prisma.schedule.findMany({ where: { enabled: true } });
   const now = new Date();
+
+  type PendingRun = {
+    schedule: Schedule;
+    mode: 'shutdown' | 'startup';
+    runShutdown: boolean;
+    runStartup: boolean;
+    previousLastRun: Date | null;
+  };
+
+  const pending: PendingRun[] = [];
 
   for (const schedule of schedules) {
     const runShutdown = shouldRunShutdown(schedule, now);
@@ -81,39 +138,31 @@ async function tickSchedules(): Promise<SchedulerTickResult[]> {
       continue;
     }
 
-    try {
-      if (runShutdown) {
-        await executeShutdown(schedule, AUTOMATIC_CRON_TRIGGER, { markLive: true });
-      } else {
-        await executeStartup(schedule, AUTOMATIC_CRON_TRIGGER);
-      }
-
-      await prisma.schedule.update({
-        where: { id: schedule.id },
-        data: {
-          nextRun: computeNextRun(schedule, now),
-          liveActive: runShutdown,
-          liveStartupAt: runShutdown ? computeCurrentLiveStartupAt(schedule, now) : null,
-          ...(runStartup && completesAfterStartup(schedule)
-            ? { oneTimeCompleted: true, enabled: false, nextRun: null }
-            : {}),
-        },
-      });
-
-      console.log(`[PodScheduler] Ran ${mode} for schedule "${schedule.name}"`);
-      results.push({ scheduleId: schedule.id, name: schedule.name, mode, status: 'success' });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : `${mode} failed`;
-      console.error(`[Scheduler] Error running ${mode} for ${schedule.name}:`, err);
-      await prisma.schedule.update({
-        where: { id: schedule.id },
-        data: { lastRun: previousLastRun },
-      });
-      results.push({ scheduleId: schedule.id, name: schedule.name, mode, status: 'failed', message });
-    }
+    pending.push({ schedule, mode, runShutdown, runStartup, previousLastRun });
   }
 
-  return results;
+  if (pending.length === 0) {
+    return results;
+  }
+
+  // Ticks may overlap (e.g. 9:00 batch still running when 9:02 tick fires).
+  // Global pool caps total concurrent schedule executions across all ticks.
+  const runResults = await Promise.all(
+    pending.map((item) =>
+      runInSchedulePool(() =>
+        executeClaimedSchedule(
+          item.schedule,
+          now,
+          item.mode,
+          item.runShutdown,
+          item.runStartup,
+          item.previousLastRun
+        )
+      )
+    )
+  );
+
+  return [...results, ...runResults];
 }
 
 export async function runSchedulerTick(): Promise<SchedulerTickResult[]> {
@@ -126,7 +175,9 @@ export function initScheduler() {
   if (tickJob) return;
 
   g[SCHEDULER_GLOBAL_KEY] = true;
-  console.log('[PodScheduler] Initializing schedule runner (every minute)...');
+  console.log(
+    `[PodScheduler] Initializing schedule runner (every minute, concurrency=${SCHEDULE_EXECUTION_CONCURRENCY})...`
+  );
   tickJob = cron.schedule('* * * * *', async () => {
     try {
       await tickSchedules();

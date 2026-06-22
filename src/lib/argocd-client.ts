@@ -76,6 +76,13 @@ export interface ArgoCDConnectionConfig {
 
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
+const APPS_LIST_CACHE_TTL_MS = 90_000;
+let appsListCache: { at: number; apps: ArgoCDAppSummary[] } | null = null;
+
+export function invalidateArgoAppsCache() {
+  appsListCache = null;
+}
+
 async function argoFetch(
   url: string,
   options: RequestInit & { insecureTls?: boolean; timeoutMs?: number } = {}
@@ -619,21 +626,31 @@ class MultiArgoCDClient {
   }
 
   async listApplications(): Promise<ArgoCDAppSummary[]> {
+    if (appsListCache && Date.now() - appsListCache.at < APPS_LIST_CACHE_TTL_MS) {
+      return appsListCache.apps;
+    }
+
     const instances = await resolveInstances();
     if (!instances.length) {
       throw new Error('No ArgoCD instances configured. Add them in Admin → Settings.');
     }
 
+    const settled = await Promise.allSettled(
+      instances.map(async (instance) => {
+        const listed = await clientFor(instance).listApplications();
+        return listed;
+      })
+    );
+
     const apps: ArgoCDAppSummary[] = [];
     const errors: string[] = [];
-
-    for (const instance of instances) {
-      try {
-        const listed = await clientFor(instance).listApplications();
-        apps.push(...listed);
-      } catch (err) {
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      if (result.status === 'fulfilled') {
+        apps.push(...result.value);
+      } else {
         errors.push(
-          `${instance.name}: ${err instanceof Error ? err.message : 'unreachable'}`
+          `${instances[i].name}: ${result.reason instanceof Error ? result.reason.message : 'unreachable'}`
         );
       }
     }
@@ -642,6 +659,7 @@ class MultiArgoCDClient {
       throw new Error(errors.join('; ') || 'All ArgoCD instances unreachable');
     }
 
+    appsListCache = { at: Date.now(), apps };
     return apps;
   }
 

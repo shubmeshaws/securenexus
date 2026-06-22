@@ -26,13 +26,16 @@ model Schedule {
   ec2Region       String?
   shutdownTime    String    // 24h format HH:mm (daily) or derived display for one-time
   startupTime     String    // 24h format HH:mm (daily) or derived display for one-time
-  recurrence      String    @default("daily") // daily | onetime | split | window
+  recurrence      String    @default("daily") // daily | onetime | split | window | combined
   weekendShutdownTime String? // split mode: weekend-window shutdown HH:mm (other days use shutdownTime)
   weekendStartupTime  String? // split mode: weekend-window startup HH:mm (other days use startupTime)
   weekendDays     Int[]     @default([]) // split mode: ISO days (1=Mon…7=Sun) that use the weekend window
-  shutdownDayOfWeek Int?    // window mode: ISO day (1=Mon…7=Sun) to shut down
-  startupDayOfWeek  Int?    // window mode: ISO day (1=Mon…7=Sun) to start up
+  shutdownDayOfWeek Int?    // window/combined: ISO day (1=Mon…7=Sun) for long stop
+  startupDayOfWeek  Int?    // window/combined: ISO day (1=Mon…7=Sun) for long start
   windowRepeatWeekly Boolean @default(true) // window mode: repeat every week; false = one-time window
+  overnightDays   Int[]     @default([]) // combined: ISO days with same-day overnight stop (e.g. Tue–Fri 00:00–07:00)
+  overnightShutdownTime String? // combined: overnight stop HH:mm
+  overnightStartupTime  String? // combined: overnight start HH:mm
   oneTimeShutdownAt DateTime?
   oneTimeStartupAt  DateTime?
   oneTimeCompleted  Boolean   @default(false)
@@ -46,6 +49,8 @@ model Schedule {
   teamsAlertEnabled Boolean @default(true) // send Teams alerts for this schedule's shutdown/startup
   liveActive      Boolean   @default(false) // visible on Live Schedules (stopped window)
   liveStartupAt   DateTime? // fixed startup target for live countdown (set on shutdown)
+  liveStopSource  String?   // manual | scheduled — how the current live stop was triggered
+  liveStoppedBy   String?   // email of user who ran manual shutdown (when liveStopSource=manual)
   savedReplicas   Int?      // replicas before shutdown, restored on startup
   lastRun         DateTime?
   nextRun         DateTime?
@@ -57,6 +62,26 @@ model Schedule {
   @@index([cluster, namespace, appName])
   @@index([platformType])
   @@index([awsCredentialId])
+}
+
+/// Ephemeral start/stop of a single workload — does not modify Schedule records.
+model InstantRun {
+  id               String    @id @default(cuid())
+  cluster          String
+  namespace        String
+  appName          String
+  workloadKind     String    @default("Deployment")
+  replicasBefore   Int       @default(0)
+  targetReplicas   Int       @default(1)
+  pausedArgoApps   String[]  @default([])
+  active           Boolean   @default(true)
+  startedBy        String
+  startedAt        DateTime  @default(now())
+  stoppedAt        DateTime?
+  stoppedBy        String?
+
+  @@index([active])
+  @@index([cluster, namespace, appName])
 }
 
 model AwsCredential {

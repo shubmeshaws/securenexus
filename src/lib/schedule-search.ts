@@ -6,8 +6,9 @@ import {
   inferScheduleEnvironment,
   parseClusterDisplay,
 } from '@/lib/utils';
-import { isWindowOnce, isWindowSchedule } from '@/lib/schedule-recurrence';
+import { isWindowOnce, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { formatWindowScheduleSummary } from '@/lib/schedule-window';
+import { formatCombinedScheduleSummary } from '@/lib/schedule-combined';
 import { formatWorkloadKeyLabel, isNamespaceSchedule } from '@/lib/workload-utils';
 
 function scheduleTargetLabel(schedule: Schedule): string {
@@ -22,7 +23,8 @@ function scheduleTargetLabel(schedule: Schedule): string {
 }
 
 function scheduleStatusLabel(schedule: Schedule): string {
-  if (schedule.liveActive) return 'Stopped live';
+  if (schedule.liveStopSource === 'manual') return 'Manual stopped';
+  if (schedule.liveActive) return 'Scheduled stop';
   if (schedule.oneTimeCompleted) return 'Completed one-time';
   return schedule.enabled ? 'Enabled' : 'Disabled';
 }
@@ -30,6 +32,9 @@ function scheduleStatusLabel(schedule: Schedule): string {
 function scheduleRepeatsLabel(schedule: Schedule): string {
   if (schedule.recurrence === 'onetime') {
     return schedule.oneTimeCompleted ? 'One-time (done)' : 'One-time';
+  }
+  if (isCombinedSchedule(schedule)) {
+    return formatCombinedScheduleSummary(schedule);
   }
   if (isWindowSchedule(schedule)) {
     return schedule.windowRepeatWeekly === false

@@ -125,7 +125,7 @@ function ClusterNode({
         `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces`
       ),
     enabled: expanded,
-    refetchInterval: POLL_INTERVAL,
+    refetchInterval: expanded ? POLL_INTERVAL : false,
   });
 
   const namespaces = data?.namespaces ?? [];
@@ -207,7 +207,7 @@ function NamespaceNode({
         `/api/k8s/clusters/${encodeURIComponent(cluster)}/namespaces/${encodeURIComponent(namespace)}/deployments`
       ),
     enabled: expanded,
-    refetchInterval: POLL_INTERVAL,
+    refetchInterval: expanded ? POLL_INTERVAL : false,
   });
 
   const deployments = data?.deployments ?? [];

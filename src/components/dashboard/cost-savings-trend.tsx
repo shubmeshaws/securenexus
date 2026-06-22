@@ -115,7 +115,7 @@ export default function CostSavingsTrend({
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['cost-savings-trend', dateRange],
     queryFn: () => apiFetch<CostSavingsTrendResponse>(trendUrl),
-    refetchInterval: 60_000,
+    refetchInterval: false,
     placeholderData: (previousData) => previousData ?? COST_SAVINGS_TREND_PLACEHOLDER,
     enabled: rangeReady,
   });

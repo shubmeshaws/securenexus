@@ -34,6 +34,8 @@ const ACTION_LABELS: Record<string, string> = {
   'schedule-run': 'Schedule Run',
   'schedule-shutdown': 'Scheduled Shutdown',
   'schedule-startup': 'Scheduled Startup',
+  'instant-start': 'Instant Start',
+  'instant-stop': 'Instant Stop',
   'cluster-add': 'Cluster Added',
   'cluster-remove': 'Cluster Removed',
   'user-create': 'User Created',

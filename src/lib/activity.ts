@@ -12,6 +12,8 @@ export type ActivityAction =
   | 'schedule-run'
   | 'schedule-shutdown'
   | 'schedule-startup'
+  | 'instant-start'
+  | 'instant-stop'
   | 'infra-shutdown'
   | 'infra-startup'
   | 'resource-change'

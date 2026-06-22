@@ -108,7 +108,7 @@ export default function NodeCountTrend({
   const { data, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ['node-count-trend', dateRange, cluster, calendarDate],
     queryFn: () => apiFetch<NodeCountTrendResponse>(queryUrl),
-    refetchInterval: 60_000,
+    refetchInterval: false,
     placeholderData: (previousData) => previousData ?? NODE_COUNT_TREND_PLACEHOLDER,
     enabled: rangeReady,
   });

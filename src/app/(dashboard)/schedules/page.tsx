@@ -11,6 +11,7 @@ import {
   PenLine,
   ScanSearch,
   Trash2,
+  Bolt,
 } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
@@ -22,20 +23,16 @@ import {
   DashboardFilterSelect,
 } from '@/components/dashboard/dashboard-filters';
 import { ScheduleFormDrawer } from '@/components/pod-scheduler/schedule-form-drawer';
+import {
+  ActiveInstantRunsPanel,
+  InstantScheduleDrawer,
+} from '@/components/pod-scheduler/instant-schedule-drawer';
 import { ScheduleDetailDrawer } from '@/components/pod-scheduler/schedule-detail-drawer';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { PageHeader, GlassPanel } from '@/components/pod-scheduler/ui-primitives';
 import { usePermissions } from '@/components/auth/session-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   ScheduleClusterCell,
   ScheduleAccountIdCell,
@@ -58,7 +55,7 @@ const STATUS_FILTER_OPTIONS: { value: ScheduleStatusKey; label: string }[] = [
 ];
 
 function scheduleStatusKey(s: Schedule): ScheduleStatusKey {
-  if (s.liveActive) return 'stopped';
+  if (s.liveActive || s.liveStopSource === 'manual') return 'stopped';
   if (s.oneTimeCompleted) return 'completed';
   return s.enabled ? 'enabled' : 'disabled';
 }
@@ -71,6 +68,7 @@ export default function SchedulesPage() {
   const queryClient = useQueryClient();
   const permissions = usePermissions();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [instantDrawerOpen, setInstantDrawerOpen] = useState(false);
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
   const [detailSchedule, setDetailSchedule] = useState<Schedule | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
@@ -108,9 +106,18 @@ export default function SchedulesPage() {
       queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
       queryClient.invalidateQueries({ queryKey: ['overview'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
-      setRunSchedule(null);
     },
   });
+
+  async function handleRunConfirm() {
+    if (!runSchedule) return;
+    try {
+      await runMutation.mutateAsync(runSchedule);
+      setRunSchedule(null);
+    } catch {
+      // Keep dialog open on failure so the user can retry or cancel.
+    }
+  }
 
   const schedules = data?.schedules ?? [];
 
@@ -151,14 +158,20 @@ export default function SchedulesPage() {
 
   function scheduleRowClass(schedule: Schedule) {
     const isManual = schedule.platformType === 'non_eks';
+    const isManuallyStopped = schedule.liveStopSource === 'manual';
     return cn(
       'cursor-pointer border-b border-border transition-colors hover:bg-muted/30',
       schedule.liveActive &&
         'bg-red-500/[0.04] hover:bg-red-500/[0.07] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]',
+      isManuallyStopped &&
+        !schedule.liveActive &&
+        'bg-amber-500/[0.07] hover:bg-amber-500/[0.1] dark:bg-amber-500/10 dark:hover:bg-amber-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(245,158,11)]',
       !schedule.liveActive &&
+        !isManuallyStopped &&
         isManual &&
         'bg-sky-500/[0.07] hover:bg-sky-500/[0.1] dark:bg-sky-500/10 dark:hover:bg-sky-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(14,165,233)]',
       !schedule.liveActive &&
+        !isManuallyStopped &&
         !isManual &&
         'bg-amber-500/[0.07] hover:bg-amber-500/[0.1] dark:bg-amber-500/10 dark:hover:bg-amber-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(245,158,11)]'
     );
@@ -170,20 +183,41 @@ export default function SchedulesPage() {
         title="Schedules"
         description="Configure automated start/stop windows for your EKS infrastructure."
         action={
-          permissions.scheduleEdit ? (
-            <Button
-              size="sm"
-              onClick={() => {
-                setEditSchedule(null);
-                setDrawerOpen(true);
-              }}
-            >
-              <AppIcon icon={Icons.actions.add} size="sm" />
-              Add Schedule
-            </Button>
+          permissions.scheduleEdit || permissions.instantSchedule ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {permissions.instantSchedule && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setInstantDrawerOpen(true)}
+                >
+                  <AppIcon icon={Bolt} size="sm" />
+                  Instant Schedule
+                </Button>
+              )}
+              {permissions.scheduleEdit && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEditSchedule(null);
+                    setDrawerOpen(true);
+                  }}
+                >
+                  <AppIcon icon={Icons.actions.add} size="sm" />
+                  Add Schedule
+                </Button>
+              )}
+            </div>
           ) : undefined
         }
       />
+
+      {permissions.instantSchedule && (
+        <ActiveInstantRunsPanel
+          canStop={permissions.instantSchedule}
+          onStartClick={() => setInstantDrawerOpen(true)}
+        />
+      )}
 
       {isLoading ? (
         <div className="flex justify-center py-20">
@@ -308,7 +342,7 @@ export default function SchedulesPage() {
                   <th className="px-5 py-3 text-left font-medium">Shutdown</th>
                   <th className="px-5 py-3 text-left font-medium whitespace-nowrap">Startup</th>
                   <th className="px-5 py-3 text-left font-medium">Repeats</th>
-                  <th className="px-5 py-3 text-left font-medium">Status</th>
+                  <th className="min-w-[7.5rem] px-5 py-3 text-left font-medium whitespace-nowrap">Status</th>
                   <th className="px-5 py-3 text-left font-medium">Next run</th>
                   <th className="px-5 py-3 text-right font-medium">Actions</th>
                 </tr>
@@ -359,7 +393,7 @@ export default function SchedulesPage() {
                     <td className="px-5 py-3.5">
                       <ScheduleRepeatsCell schedule={s} />
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3.5 whitespace-nowrap">
                       <ScheduleStatusCell schedule={s} />
                     </td>
                     <td className="px-5 py-3.5">
@@ -459,6 +493,11 @@ export default function SchedulesPage() {
         schedule={editSchedule}
       />
 
+      <InstantScheduleDrawer
+        open={instantDrawerOpen}
+        onClose={() => setInstantDrawerOpen(false)}
+      />
+
       <ConfirmDialog
         open={scheduleToDelete !== null}
         onOpenChange={(open) => !open && setScheduleToDelete(null)}
@@ -474,25 +513,18 @@ export default function SchedulesPage() {
         loading={deleteMutation.isPending}
       />
 
-      <Dialog open={runSchedule !== null} onOpenChange={() => setRunSchedule(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Run schedule now?</DialogTitle>
-            <DialogDescription>
-              Execute {runSchedule?.mode} action immediately for this schedule.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRunSchedule(null)}>Cancel</Button>
-            <Button
-              onClick={() => runSchedule && runMutation.mutate(runSchedule)}
-              disabled={runMutation.isPending}
-            >
-              Run now
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={runSchedule !== null}
+        onOpenChange={(open) => !open && setRunSchedule(null)}
+        title="Run schedule now?"
+        description={
+          <>Execute {runSchedule?.mode} action immediately for this schedule.</>
+        }
+        confirmLabel="Run now"
+        destructive={false}
+        loading={runMutation.isPending}
+        onConfirm={handleRunConfirm}
+      />
     </div>
   );
 }
