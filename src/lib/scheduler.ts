@@ -6,7 +6,7 @@ export {
   reloadAllSchedules,
 } from './scheduler-utils';
 
-export { executeShutdown, executeStartup, runScheduleNow, stopLiveSchedule, applyManualSyncDenyForSchedule } from './scheduler-actions';
+export { executeShutdown, executeStartup, runScheduleNow, stopLiveSchedule, applyManualSyncDenyForSchedule, applyManualSyncDenyForApps } from './scheduler-actions';
 
 export {
   initScheduler,

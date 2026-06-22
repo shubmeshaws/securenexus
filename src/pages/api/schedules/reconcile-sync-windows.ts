@@ -1,15 +1,24 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import { requirePermission } from '@/lib/permission-auth';
-import { ensureSchedulerRunning } from '@/lib/scheduler';
-import { reconcileStoppedScheduleSyncWindows } from '@/lib/schedule-sync-window-reconcile';
+import {
+  getSyncWindowReconcileJob,
+  startSyncWindowReconcileJob,
+} from '@/lib/schedule-sync-window-job';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  if (req.method === 'GET') {
+    return res.status(200).json(getSyncWindowReconcileJob());
+  }
 
-  ensureSchedulerRunning();
-  const result = await reconcileStoppedScheduleSyncWindows();
-  return res.status(200).json(result);
+  if (req.method !== 'POST') return methodNotAllowed(res, ['GET', 'POST']);
+
+  const started = startSyncWindowReconcileJob();
+  if (!started) {
+    return res.status(200).json(getSyncWindowReconcileJob());
+  }
+
+  return res.status(202).json(getSyncWindowReconcileJob());
 }
 
 export default requireAuth(requirePermission('scheduleEdit')(handler));

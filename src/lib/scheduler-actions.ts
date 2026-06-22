@@ -196,7 +196,15 @@ export async function applyManualSyncDenyForSchedule(
   if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
 
   const targets = await resolveScheduleArgoAppsForSyncDeny(schedule);
-  if (!targets.length) return { apps: [], errors: [] };
+  return applyManualSyncDenyForApps(schedule, targets, now);
+}
+
+export async function applyManualSyncDenyForApps(
+  schedule: Schedule,
+  targets: ScheduleArgoApp[],
+  now = new Date()
+): Promise<{ apps: string[]; errors: string[] }> {
+  if (isNonEksSchedule(schedule) || !targets.length) return { apps: [], errors: [] };
 
   const { blocked, errors } = await blockManualSyncForApps(targets, {
     blockUntil: resolveManualSyncBlockUntilForReconcile(schedule, now),
