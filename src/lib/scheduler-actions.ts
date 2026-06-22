@@ -160,6 +160,11 @@ async function blockManualSyncForApps(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('already exists')) {
+        blocked.push(app.name);
+        console.log(`[${input.logPrefix}] manual sync deny window already active for ${app.name}`);
+        continue;
+      }
       errors.push(`${app.name}: ${message}`);
       console.error(`[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`);
     }

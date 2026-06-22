@@ -7,6 +7,7 @@ import {
 } from '@/lib/argocd-instances';
 import {
   buildScheduleDenySyncWindow,
+  denyWindowCoversApp,
   mergeScheduleDenySyncWindow,
   removeScheduleDenySyncWindows,
   type ArgoSyncWindowSpec,
@@ -251,6 +252,19 @@ function mapApp(
 class InstanceArgoCDClient {
   constructor(private readonly instance: ArgoCDInstanceConfig) {}
 
+  private projectLockChains = new Map<string, Promise<unknown>>();
+
+  private runProjectLocked<T>(projectName: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.projectLockChains.get(projectName) ?? Promise.resolve();
+    const job = prev.catch(() => undefined).then(fn);
+    this.projectLockChains.set(projectName, job);
+    return job.finally(() => {
+      if (this.projectLockChains.get(projectName) === job) {
+        this.projectLockChains.delete(projectName);
+      }
+    });
+  }
+
   private get baseUrl() {
     return `${this.instance.serverUrl}/api/v1`;
   }
@@ -413,21 +427,23 @@ class InstanceArgoCDClient {
     projectName: string,
     mutate: (project: Record<string, unknown>) => void
   ): Promise<void> {
-    let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const project = await this.getProjectRaw(projectName);
-      mutate(project);
-      try {
-        await this.updateProjectRaw(projectName, project);
-        return;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    return this.runProjectLocked(projectName, async () => {
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const project = await this.getProjectRaw(projectName);
+        mutate(project);
+        try {
+          await this.updateProjectRaw(projectName, project);
+          return;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          }
         }
       }
-    }
-    throw lastError ?? new Error(`Failed to update ArgoCD project ${projectName}`);
+      throw lastError ?? new Error(`Failed to update ArgoCD project ${projectName}`);
+    });
   }
 
   private readProjectSyncWindows(project: Record<string, unknown>): ArgoSyncWindowSpec[] {
@@ -451,11 +467,35 @@ class InstanceArgoCDClient {
       windowStart,
     });
 
-    await this.mutateProjectSpec(projectName, (project) => {
-      const spec = (project.spec as Record<string, unknown>) ?? {};
-      spec.syncWindows = mergeScheduleDenySyncWindow(this.readProjectSyncWindows(project), nextWindow);
-      project.spec = spec;
-    });
+    try {
+      await this.mutateProjectSpec(projectName, (project) => {
+        const spec = (project.spec as Record<string, unknown>) ?? {};
+        spec.syncWindows = mergeScheduleDenySyncWindow(
+          this.readProjectSyncWindows(project),
+          nextWindow
+        );
+        project.spec = spec;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('already exists')) {
+        const project = await this.getProjectRaw(projectName);
+        if (
+          denyWindowCoversApp(
+            this.readProjectSyncWindows(project),
+            input.appName,
+            nextWindow.schedule,
+            nextWindow.duration
+          )
+        ) {
+          console.log(
+            `[Argo sync window] deny window already active for ${input.appName} in project ${projectName}`
+          );
+          return;
+        }
+      }
+      throw err;
+    }
 
     console.log(
       `[Argo sync window] deny window set for ${input.appName} in project ${projectName}: ` +

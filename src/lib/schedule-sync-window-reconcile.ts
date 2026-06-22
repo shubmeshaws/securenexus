@@ -1,10 +1,9 @@
 import prisma from './prisma';
 import { addHours } from 'date-fns';
-import type { InstantRun, Schedule } from '@prisma/client';
-import { applyManualSyncDenyForApps } from './scheduler-actions';
-import { isNamespaceSchedule, isNonEksSchedule } from './workload-utils';
+import type { InstantRun } from '@prisma/client';
+import { applyManualSyncDenyForSchedule } from './scheduler-actions';
+import { isNonEksSchedule } from './workload-utils';
 import argocdClient, { appMatchesK8sCluster, type ArgoCDAppSummary } from './argocd-client';
-import { instanceMatchesCluster, listEnabledArgoCDInstances, type ArgoCDInstanceConfig } from './argocd-instances';
 import { runWithConcurrency } from './concurrency';
 
 export interface SyncWindowReconcileResult {
@@ -18,57 +17,15 @@ export interface SyncWindowReconcileResult {
 
 type ArgoAppRef = { name: string; instanceId: string };
 
-function scheduleNeedsSyncWindowReconcile(schedule: Schedule): boolean {
-  if (isNonEksSchedule(schedule)) return false;
+function scheduleNeedsSyncWindowReconcile(schedule: {
+  liveActive: boolean;
+  liveStopSource: string | null;
+  pausedArgoApps: string[];
+}): boolean {
   if (schedule.liveActive) return true;
   if (schedule.liveStopSource === 'manual') return true;
   if (schedule.pausedArgoApps.length > 0) return true;
   return false;
-}
-
-async function loadArgoAppCatalog(): Promise<ArgoCDAppSummary[]> {
-  return argocdClient.listApplications();
-}
-
-function resolveAppsForReconcile(
-  schedule: Schedule,
-  allApps: ArgoCDAppSummary[],
-  instanceMap: Map<string, ArgoCDInstanceConfig>
-): ArgoAppRef[] {
-  const scoped = allApps.filter((app) => {
-    if (schedule.argocdInstanceId && app.instanceId !== schedule.argocdInstanceId) {
-      return false;
-    }
-    const instance = instanceMap.get(app.instanceId);
-    if (instance && !instanceMatchesCluster(instance, schedule.cluster)) return false;
-    return appMatchesK8sCluster(app, schedule.cluster);
-  });
-
-  if (schedule.pausedArgoApps.length > 0) {
-    const fromPaused = schedule.pausedArgoApps
-      .map((name) => scoped.find((app) => app.name === name) ?? allApps.find((app) => app.name === name))
-      .filter((app): app is ArgoCDAppSummary => Boolean(app))
-      .map((app) => ({ name: app.name, instanceId: app.instanceId }));
-    if (fromPaused.length) return fromPaused;
-  }
-
-  if (isNamespaceSchedule(schedule)) {
-    return scoped
-      .filter((app) => app.destinationNamespace === schedule.namespace)
-      .map((app) => ({ name: app.name, instanceId: app.instanceId }));
-  }
-
-  const exact = scoped.find((app) => app.name === schedule.appName);
-  if (exact) return [{ name: exact.name, instanceId: exact.instanceId }];
-
-  const fuzzy = scoped.find(
-    (app) =>
-      app.destinationNamespace === schedule.namespace &&
-      (app.name === schedule.appName ||
-        app.name.includes(schedule.appName) ||
-        schedule.appName.includes(app.name))
-  );
-  return fuzzy ? [{ name: fuzzy.name, instanceId: fuzzy.instanceId }] : [];
 }
 
 function resolveInstantRunApps(run: InstantRun, allApps: ArgoCDAppSummary[]): ArgoAppRef[] {
@@ -99,7 +56,7 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
     errors: [],
   };
 
-  const [schedules, instantRuns, allApps, instances] = await Promise.all([
+  const [schedules, instantRuns, allApps] = await Promise.all([
     prisma.schedule.findMany({
       where: {
         platformType: { not: 'non_eks' },
@@ -111,12 +68,12 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
       },
     }),
     prisma.instantRun.findMany({ where: { active: true } }),
-    loadArgoAppCatalog(),
-    listEnabledArgoCDInstances(),
+    argocdClient.listApplications(),
   ]);
 
-  const instanceMap = new Map(instances.map((i) => [i.id, i]));
-  const candidates = schedules.filter(scheduleNeedsSyncWindowReconcile);
+  const candidates = schedules.filter(
+    (schedule) => !isNonEksSchedule(schedule) && scheduleNeedsSyncWindowReconcile(schedule)
+  );
   result.schedulesScanned = candidates.length;
 
   console.log(
@@ -125,9 +82,9 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
 
   const scheduleOutcomes: { apps: string[]; errors: string[] }[] = [];
 
-  await runWithConcurrency(candidates, 4, async (schedule) => {
-    const targets = resolveAppsForReconcile(schedule, allApps, instanceMap);
-    if (!targets.length) {
+  await runWithConcurrency(candidates, 2, async (schedule) => {
+    const outcome = await applyManualSyncDenyForSchedule(schedule, now);
+    if (!outcome.apps.length && !outcome.errors.length) {
       scheduleOutcomes.push({
         apps: [],
         errors: [`${schedule.name}: no linked Argo CD app found`],
@@ -135,7 +92,6 @@ export async function reconcileStoppedScheduleSyncWindows(): Promise<SyncWindowR
       return;
     }
 
-    const outcome = await applyManualSyncDenyForApps(schedule, targets, now);
     scheduleOutcomes.push({
       apps: outcome.apps,
       errors: outcome.errors.map((error) => `${schedule.name}: ${error}`),
