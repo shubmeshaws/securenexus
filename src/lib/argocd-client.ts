@@ -920,9 +920,24 @@ class MultiArgoCDClient {
 export const argocdClient = new MultiArgoCDClient();
 export default argocdClient;
 
+/**
+ * Argo CD destinations that mean "the cluster Argo itself runs in". When Argo CD is
+ * deployed inside the cluster it manages (common for dev clusters), its apps use this
+ * in-cluster destination instead of a named external cluster — so it can't be matched
+ * by name. Treat these as matching any schedule cluster; the instance/namespace scoping
+ * (instanceMatchesCluster + destinationNamespace) keeps resolution correct.
+ */
+const IN_CLUSTER_DESTINATIONS = new Set([
+  'in-cluster',
+  'kubernetes.default.svc',
+  'https://kubernetes.default.svc',
+]);
+
 export function appMatchesK8sCluster(app: ArgoCDAppSummary, k8sCluster: string): boolean {
-  const target = k8sCluster.toLowerCase();
-  const appCluster = app.cluster.toLowerCase();
+  const target = k8sCluster.toLowerCase().trim();
+  const appCluster = app.cluster.toLowerCase().trim();
+  if (!appCluster) return true;
+  if (IN_CLUSTER_DESTINATIONS.has(appCluster)) return true;
   return (
     appCluster === target ||
     target.includes(appCluster) ||

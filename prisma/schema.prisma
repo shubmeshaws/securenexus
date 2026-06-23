@@ -18,7 +18,7 @@ model Schedule {
   namespace       String
   scope           String    @default("workload") // workload | namespace
   appName         String    // workload name, EC2 instance name, or "*" for entire namespace
-  workloadKind    String    @default("Deployment") // Deployment | StatefulSet | DaemonSet | Namespace | EC2
+  workloadKind    String    @default("Deployment") // Deployment | StatefulSet | DaemonSet | ScaledObject | Namespace | EC2
   excludedWorkloads String[] @default([]) // workload keys: Kind::name
   savedWorkloadReplicas Json? // per-workload replica counts for namespace scope
   awsCredentialId String?
@@ -46,7 +46,8 @@ model Schedule {
   pausedArgoApps  String[]  @default([]) // Argo apps paused on shutdown, resumed on startup
   targetReplicas  Int       @default(1)
   enabled         Boolean   @default(true)
-  teamsAlertEnabled Boolean @default(true) // send Teams alerts for this schedule's shutdown/startup
+  teamsAlertEnabled Boolean @default(true) // Teams alerts for automatic (scheduled cron) shutdown/startup
+  teamsManualAlertEnabled Boolean @default(false) // Teams alerts for manual stop/start from the UI
   liveActive      Boolean   @default(false) // visible on Live Schedules (stopped window)
   liveStartupAt   DateTime? // fixed startup target for live countdown (set on shutdown)
   liveStopSource  String?   // manual | scheduled — how the current live stop was triggered

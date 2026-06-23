@@ -169,8 +169,12 @@ export interface InstantStartInput {
 export async function executeInstantStart(input: InstantStartInput): Promise<InstantRun> {
   const { cluster, namespace, appName, workloadKind, targetReplicas, startedBy } = input;
 
-  if (workloadKind === 'DaemonSet') {
-    throw new Error('DaemonSets cannot be started via Instant Schedule');
+  if (workloadKind === 'DaemonSet' || workloadKind === 'ScaledObject') {
+    throw new Error(
+      workloadKind === 'DaemonSet'
+        ? 'DaemonSets cannot be started via Instant Schedule'
+        : 'ScaledObjects cannot be started via Instant Schedule — schedule the scale target Deployment instead'
+    );
   }
 
   const existing = await prisma.instantRun.findFirst({

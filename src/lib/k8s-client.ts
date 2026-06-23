@@ -9,9 +9,15 @@ export interface ClusterInfo {
   current: boolean;
 }
 
-export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet' | 'CronJob' | 'ScaledJob';
+export type WorkloadKind =
+  | 'Deployment'
+  | 'StatefulSet'
+  | 'DaemonSet'
+  | 'CronJob'
+  | 'ScaledJob'
+  | 'ScaledObject';
 
-/** KEDA annotation that pauses/resumes a ScaledJob's scale loop. */
+/** KEDA annotation that pauses/resumes ScaledJobs and ScaledObjects. */
 const KEDA_PAUSED_ANNOTATION = 'autoscaling.keda.sh/paused';
 
 export interface WorkloadInfo {
@@ -222,7 +228,8 @@ export async function listWorkloads(cluster: string, namespace: string): Promise
   const batchApi = kc.makeApiClient(k8s.BatchV1Api);
   const customApi = kc.makeApiClient(k8s.CustomObjectsApi);
 
-  const [deployments, statefulSets, daemonSets, cronJobs, scaledJobsRes] = await Promise.all([
+  const [deployments, statefulSets, daemonSets, cronJobs, scaledJobsRes, scaledObjectsRes] =
+    await Promise.all([
     appsApi.listNamespacedDeployment(namespace).catch(() => ({ body: { items: [] as k8s.V1Deployment[] } })),
     appsApi.listNamespacedStatefulSet(namespace).catch(() => ({ body: { items: [] as k8s.V1StatefulSet[] } })),
     appsApi.listNamespacedDaemonSet(namespace).catch(() => ({ body: { items: [] as k8s.V1DaemonSet[] } })),
@@ -230,10 +237,16 @@ export async function listWorkloads(cluster: string, namespace: string): Promise
     customApi
       .listNamespacedCustomObject('keda.sh', 'v1alpha1', namespace, 'scaledjobs')
       .catch(() => null),
+    customApi
+      .listNamespacedCustomObject('keda.sh', 'v1alpha1', namespace, 'scaledobjects')
+      .catch(() => null),
   ]);
 
   const scaledJobItems =
     (scaledJobsRes?.body as { items?: Array<{ metadata?: { name?: string } }> } | undefined)?.items ??
+    [];
+  const scaledObjectItems =
+    (scaledObjectsRes?.body as { items?: Array<{ metadata?: { name?: string } }> } | undefined)?.items ??
     [];
 
   const workloads: WorkloadInfo[] = [];
@@ -257,6 +270,10 @@ export async function listWorkloads(cluster: string, namespace: string): Promise
   for (const sj of scaledJobItems) {
     const name = sj.metadata?.name;
     if (name) workloads.push({ name, kind: 'ScaledJob', namespace, cluster });
+  }
+  for (const so of scaledObjectItems) {
+    const name = so.metadata?.name;
+    if (name) workloads.push({ name, kind: 'ScaledObject', namespace, cluster });
   }
 
   return workloads.sort((a, b) => a.name.localeCompare(b.name));
@@ -548,6 +565,14 @@ export async function getWorkloadDesiredReplicas(
     };
     const paused = body.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
     return paused === 'true' ? 0 : 1;
+  }
+
+  if (kind === 'ScaledObject') {
+    const body = await readScaledObjectBody(cluster, namespace, name);
+    if (body.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION] === 'true') return 0;
+    const target = getScaledObjectScaleTargetFromBody(body);
+    if (!target) return 0;
+    return getWorkloadDesiredReplicas(cluster, namespace, target.kind, target.name);
   }
 
   return 0;
@@ -956,6 +981,117 @@ async function pauseScaledJob(
   await deleteActiveScaledJobJobs(cluster, namespace, name);
 }
 
+type ScaledObjectBody = {
+  metadata?: { annotations?: Record<string, string> };
+  spec?: { scaleTargetRef?: { name?: string; kind?: string } };
+};
+
+async function readScaledObjectBody(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<ScaledObjectBody> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.CustomObjectsApi);
+  const res = await api.getNamespacedCustomObject(
+    'keda.sh',
+    'v1alpha1',
+    namespace,
+    'scaledobjects',
+    name
+  );
+  return res.body as ScaledObjectBody;
+}
+
+function getScaledObjectScaleTargetFromBody(
+  body: ScaledObjectBody
+): { kind: 'Deployment' | 'StatefulSet'; name: string } | null {
+  const ref = body.spec?.scaleTargetRef;
+  if (!ref?.name) return null;
+  const kind = ref.kind === 'StatefulSet' ? 'StatefulSet' : 'Deployment';
+  return { kind, name: ref.name };
+}
+
+export async function getScaledObjectScaleTarget(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<{ kind: 'Deployment' | 'StatefulSet'; name: string } | null> {
+  try {
+    const body = await readScaledObjectBody(cluster, namespace, name);
+    return getScaledObjectScaleTargetFromBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/** Pause/resume a KEDA ScaledObject via the official annotation. */
+async function setScaledObjectPaused(
+  cluster: string,
+  namespace: string,
+  name: string,
+  paused: boolean
+): Promise<void> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.CustomObjectsApi);
+
+  const body = {
+    metadata: {
+      annotations: { [KEDA_PAUSED_ANNOTATION]: paused ? 'true' : 'false' },
+    },
+  };
+
+  await api.patchNamespacedCustomObject(
+    'keda.sh',
+    'v1alpha1',
+    namespace,
+    'scaledobjects',
+    name,
+    body,
+    undefined,
+    undefined,
+    undefined,
+    { headers: { 'Content-Type': 'application/merge-patch+json' } }
+  );
+
+  const verify = await readScaledObjectBody(cluster, namespace, name);
+  const actual = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
+  const expected = paused ? 'true' : 'false';
+  if (actual !== expected) {
+    throw new Error(
+      `Failed to ${paused ? 'pause' : 'resume'} ScaledObject "${name}" (${KEDA_PAUSED_ANNOTATION} is "${actual ?? 'unset'}")`
+    );
+  }
+}
+
+async function pauseScaledObject(cluster: string, namespace: string, name: string): Promise<void> {
+  await setScaledObjectPaused(cluster, namespace, name, true);
+  const target = await getScaledObjectScaleTarget(cluster, namespace, name);
+  if (!target) return;
+  if (target.kind === 'StatefulSet') {
+    await scaleStatefulSet(cluster, namespace, target.name, 0);
+  } else {
+    await scaleDeployment(cluster, namespace, target.name, 0);
+  }
+}
+
+async function resumeScaledObject(
+  cluster: string,
+  namespace: string,
+  name: string,
+  replicas: number
+): Promise<void> {
+  const target = await getScaledObjectScaleTarget(cluster, namespace, name);
+  if (target) {
+    if (target.kind === 'StatefulSet') {
+      await scaleStatefulSet(cluster, namespace, target.name, replicas);
+    } else {
+      await scaleDeployment(cluster, namespace, target.name, replicas);
+    }
+  }
+  await setScaledObjectPaused(cluster, namespace, name, false);
+}
+
 export async function scaleWorkload(
   cluster: string,
   namespace: string,
@@ -979,6 +1115,14 @@ export async function scaleWorkload(
       await pauseScaledJob(cluster, namespace, name);
     } else {
       await setScaledJobPaused(cluster, namespace, name, false);
+    }
+    return;
+  }
+  if (kind === 'ScaledObject') {
+    if (replicas === 0) {
+      await pauseScaledObject(cluster, namespace, name);
+    } else {
+      await resumeScaledObject(cluster, namespace, name, replicas);
     }
     return;
   }

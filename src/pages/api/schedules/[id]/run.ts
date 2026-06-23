@@ -35,7 +35,6 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
       triggeredBy: req.user?.email ?? 'manual',
       status: 'success',
       message: `Manual ${parsed.data.mode} executed`,
-      teamsAlertEnabled: schedule.teamsAlertEnabled,
     });
     const updated = await prisma.schedule.findUnique({ where: { id } });
     return res.status(200).json({ schedule: updated });
@@ -48,7 +47,6 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
       triggeredBy: req.user?.email ?? 'manual',
       status: 'failed',
       message: err instanceof Error ? err.message : 'Run failed',
-      teamsAlertEnabled: schedule.teamsAlertEnabled,
     });
     return res.status(502).json({
       error: err instanceof Error ? err.message : 'Failed to run schedule',

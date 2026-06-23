@@ -50,20 +50,27 @@ const TIMEZONES = [
 const NATIVE_SELECT_CLASS =
   'flex h-10 w-full appearance-none rounded-xl border border-border bg-background px-4 py-2 text-sm text-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/30 disabled:cursor-not-allowed disabled:opacity-50';
 
-type WorkloadTypeFilter = 'Deployment' | 'StatefulSet' | 'Job';
+type WorkloadTypeFilter = 'Deployment' | 'StatefulSet' | 'Job' | 'ScaledObject';
 
-const ALL_WORKLOAD_TYPE_FILTERS: WorkloadTypeFilter[] = ['Deployment', 'StatefulSet', 'Job'];
+const ALL_WORKLOAD_TYPE_FILTERS: WorkloadTypeFilter[] = [
+  'Deployment',
+  'StatefulSet',
+  'Job',
+  'ScaledObject',
+];
 
 const WORKLOAD_TYPE_FILTER_LABELS: Record<WorkloadTypeFilter, string> = {
   Deployment: 'Deployments',
   StatefulSet: 'StatefulSets',
   Job: 'Jobs',
+  ScaledObject: 'ScaledObjects',
 };
 
 function workloadMatchesTypeFilter(kind: string, filters: WorkloadTypeFilter[]): boolean {
   if (kind === 'Deployment') return filters.includes('Deployment');
   if (kind === 'StatefulSet') return filters.includes('StatefulSet');
   if (kind === 'CronJob' || kind === 'ScaledJob') return filters.includes('Job');
+  if (kind === 'ScaledObject') return filters.includes('ScaledObject');
   return false;
 }
 
@@ -152,6 +159,7 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
       targetReplicas: 2,
       enabled: true,
       teamsAlertEnabled: true,
+      teamsManualAlertEnabled: false,
     };
   }
 
@@ -204,6 +212,7 @@ function scheduleToForm(schedule: Schedule | null | undefined) {
     targetReplicas: schedule.targetReplicas ?? 2,
     enabled: schedule.enabled ?? true,
     teamsAlertEnabled: schedule.teamsAlertEnabled ?? true,
+    teamsManualAlertEnabled: schedule.teamsManualAlertEnabled ?? false,
   };
 }
 
@@ -268,6 +277,9 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
   const [argocdInstanceId, setArgoCDInstanceId] = useState<string | null>(initial.argocdInstanceId);
   const [enabled, setEnabled] = useState(initial.enabled);
   const [teamsAlertEnabled, setTeamsAlertEnabled] = useState(initial.teamsAlertEnabled);
+  const [teamsManualAlertEnabled, setTeamsManualAlertEnabled] = useState(
+    initial.teamsManualAlertEnabled
+  );
 
   const { data: argocdInstancesData } = useQuery({
     queryKey: ['argocd-instances-picker'],
@@ -574,6 +586,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         targetReplicas: schedule?.targetReplicas ?? 2,
         enabled,
         teamsAlertEnabled,
+        teamsManualAlertEnabled,
         recurrence,
       };
 
@@ -1224,7 +1237,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
             })}
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Filter the list below. Jobs includes CronJobs and ScaledJobs.
+            Filter the list below. Jobs includes CronJobs and ScaledJobs. ScaledObjects are KEDA autoscaling targets.
           </p>
         </div>
       ) : null}
@@ -1283,7 +1296,7 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
         <div className="space-y-2">
           <Label>Exclude workloads (optional)</Label>
           <p className="text-[10px] text-muted-foreground">
-            All Deployments, StatefulSets, CronJobs, and ScaledJobs in{' '}
+            All Deployments, StatefulSets, CronJobs, ScaledJobs, and ScaledObjects in{' '}
             {isMultiNamespace ? 'each selected namespace' : 'the namespace'} will be scheduled.
             Uncheck any to exclude. DaemonSets are always skipped.
           </p>
@@ -1808,12 +1821,25 @@ function ScheduleFormContent({ schedule, onClose }: ScheduleFormContentProps) {
 
       <div className="flex items-center justify-between rounded-xl border border-border p-3">
         <div>
-          <Label>Send Teams alert</Label>
+          <Label>Automatic schedule alert</Label>
           <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Notify Microsoft Teams on shutdown and startup for this schedule
+            Notify Microsoft Teams when this schedule runs on its automatic shutdown/startup times
           </p>
         </div>
         <Switch checked={teamsAlertEnabled} onCheckedChange={setTeamsAlertEnabled} />
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl border border-border p-3">
+        <div>
+          <Label>Manual schedule alert</Label>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Notify Microsoft Teams when someone manually stops or starts this schedule from the UI
+          </p>
+        </div>
+        <Switch
+          checked={teamsManualAlertEnabled}
+          onCheckedChange={setTeamsManualAlertEnabled}
+        />
       </div>
 
       <div className="flex items-center justify-between">

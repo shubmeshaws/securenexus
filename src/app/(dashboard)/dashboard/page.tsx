@@ -19,7 +19,6 @@ import {
   PageHeader,
   GlassPanel,
   PanelHeader,
-  PanelSubtitle,
   ScrollTable,
   scrollTableBodyHeight,
 } from '@/components/pod-scheduler/ui-primitives';
@@ -37,7 +36,6 @@ import { StoppedDurationBar } from '@/components/dashboard/stopped-duration-bar'
 import {
   appendDashboardDateQuery,
   DEFAULT_DASHBOARD_DATE_RANGE,
-  getDashboardPeriodLabel,
   isDashboardDateRangeReady,
   type DashboardDateRange,
 } from '@/lib/dashboard-date-range';
@@ -55,13 +53,20 @@ function RowCountBadge({ shown, total }: { shown: number; total: number }) {
   );
 }
 
+function StopTableToolbar({ children }: { children?: React.ReactNode }) {
+  return (
+    <div className="flex h-10 shrink-0 items-center justify-end gap-3 overflow-x-auto border-b border-border/60 px-5">
+      {children}
+    </div>
+  );
+}
+
 export default function PodSchedulerOverviewPage() {
   const [tab, setTab] = useState<DashboardTab>('overview');
   const [dateRange, setDateRange] = useState<DashboardDateRange>(DEFAULT_DASHBOARD_DATE_RANGE);
   const [eksClusterFilter, setEksClusterFilter] = useState('');
   const [eksNamespaceFilter, setEksNamespaceFilter] = useState('');
   const rangeReady = isDashboardDateRangeReady(dateRange);
-  const periodLabel = getDashboardPeriodLabel(dateRange);
 
   const {
     data: overview,
@@ -127,7 +132,6 @@ export default function PodSchedulerOverviewPage() {
   const namespaceStopped = insights?.namespaceStopped ?? [];
   const standaloneStopped = insights?.standaloneStopped ?? [];
   const insightsTotals = insights?.totals;
-  const periodSuffix = isInsightsFetching ? ' · updating…' : '';
 
   const eksClusterOptions = useMemo(
     () => Array.from(new Set(namespaceStopped.map((row) => row.cluster))).sort(),
@@ -234,50 +238,45 @@ export default function PodSchedulerOverviewPage() {
                 title="Kubernetes workload stop time"
                 icon={TrendingDown}
                 accent="red"
-                action={
-                  <DashboardFilterBar className="justify-end">
-                    {eksClusterOptions.length > 0 ? (
-                      <>
-                        <DashboardFilterSelect
-                          width="md"
-                          value={eksClusterFilter}
-                          onChange={(e) => setEksClusterFilter(e.target.value)}
-                          aria-label="Filter by cluster"
-                        >
-                          <option value="">All clusters</option>
-                          {eksClusterOptions.map((cluster) => (
-                            <option key={cluster} value={cluster}>
-                              {cluster}
-                            </option>
-                          ))}
-                        </DashboardFilterSelect>
-                        <DashboardFilterSelect
-                          width="sm"
-                          value={eksNamespaceFilter}
-                          onChange={(e) => setEksNamespaceFilter(e.target.value)}
-                          aria-label="Filter by namespace"
-                        >
-                          <option value="">All namespaces</option>
-                          {eksNamespaceOptions.map((namespace) => (
-                            <option key={namespace} value={namespace}>
-                              {namespace}
-                            </option>
-                          ))}
-                        </DashboardFilterSelect>
-                      </>
-                    ) : null}
-                    <RowCountBadge
-                      shown={Math.min(filteredNamespaceStopped.length, VISIBLE_ROWS)}
-                      total={filteredNamespaceStopped.length}
-                    />
-                  </DashboardFilterBar>
-                }
               />
-              <PanelSubtitle className="min-h-[4.25rem]">
-                EKS only — counts actual stop→start windows from schedules, manual runs, and infrastructure actions.
-                Early startup ends the window at the real start time. · {periodLabel}
-                {periodSuffix}
-              </PanelSubtitle>
+              <StopTableToolbar>
+                <DashboardFilterBar className="flex-nowrap justify-end">
+                  {eksClusterOptions.length > 0 ? (
+                    <>
+                      <DashboardFilterSelect
+                        width="md"
+                        value={eksClusterFilter}
+                        onChange={(e) => setEksClusterFilter(e.target.value)}
+                        aria-label="Filter by cluster"
+                      >
+                        <option value="">All clusters</option>
+                        {eksClusterOptions.map((cluster) => (
+                          <option key={cluster} value={cluster}>
+                            {cluster}
+                          </option>
+                        ))}
+                      </DashboardFilterSelect>
+                      <DashboardFilterSelect
+                        width="sm"
+                        value={eksNamespaceFilter}
+                        onChange={(e) => setEksNamespaceFilter(e.target.value)}
+                        aria-label="Filter by namespace"
+                      >
+                        <option value="">All namespaces</option>
+                        {eksNamespaceOptions.map((namespace) => (
+                          <option key={namespace} value={namespace}>
+                            {namespace}
+                          </option>
+                        ))}
+                      </DashboardFilterSelect>
+                    </>
+                  ) : null}
+                  <RowCountBadge
+                    shown={Math.min(filteredNamespaceStopped.length, VISIBLE_ROWS)}
+                    total={filteredNamespaceStopped.length}
+                  />
+                </DashboardFilterBar>
+              </StopTableToolbar>
               {!rangeReady ? (
                 <div
                   className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"
@@ -367,17 +366,13 @@ export default function PodSchedulerOverviewPage() {
                 title="Standalone workload stop time"
                 icon={ServerCog}
                 accent="amber"
-                action={
-                  <RowCountBadge
-                    shown={Math.min(standaloneStopped.length, VISIBLE_ROWS)}
-                    total={standaloneStopped.length}
-                  />
-                }
               />
-              <PanelSubtitle className="min-h-[4.25rem]">
-                Non-EKS EC2 instances — actual stop→start windows from scheduled or manual actions. · {periodLabel}
-                {periodSuffix}
-              </PanelSubtitle>
+              <StopTableToolbar>
+                <RowCountBadge
+                  shown={Math.min(standaloneStopped.length, VISIBLE_ROWS)}
+                  total={standaloneStopped.length}
+                />
+              </StopTableToolbar>
               {!rangeReady ? (
                 <div
                   className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground"

@@ -57,17 +57,17 @@ export function latestNonNullValue(data: (number | null)[]): number | null {
 }
 
 export const YESTERDAY_SERIES_STYLE = {
-  color: '#3B82F6',
-  fillTop: 'rgba(59, 130, 246, 0.32)',
-  fillBottom: 'rgba(59, 130, 246, 0.02)',
-  barBg: 'rgba(59, 130, 246, 0.75)',
+  color: '#6366F1',
+  fillTop: 'rgba(99, 102, 241, 0.32)',
+  fillBottom: 'rgba(99, 102, 241, 0.02)',
+  barBg: 'rgba(99, 102, 241, 0.75)',
 } as const;
 
 export const TODAY_SERIES_STYLE = {
-  color: '#34D399',
-  fillTop: 'rgba(52, 211, 153, 0.32)',
-  fillBottom: 'rgba(52, 211, 153, 0.02)',
-  barBg: 'rgba(52, 211, 153, 0.75)',
+  color: '#22C55E',
+  fillTop: 'rgba(34, 197, 94, 0.32)',
+  fillBottom: 'rgba(34, 197, 94, 0.02)',
+  barBg: 'rgba(34, 197, 94, 0.75)',
 } as const;
 
 /** @deprecated kept for any legacy imports */

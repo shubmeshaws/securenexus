@@ -33,7 +33,12 @@ import {
   DashboardFilterBar,
   DashboardFilterSelect,
   DashboardToggleGroup,
+  DashboardChartToolbar,
 } from '@/components/dashboard/dashboard-filters';
+import {
+  DashboardChartComparisonFooter,
+  DashboardComparisonStat,
+} from '@/components/dashboard/dashboard-comparison-stat';
 import { cn } from '@/lib/utils';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip);
@@ -60,10 +65,16 @@ function NodeCountTrendSkeleton() {
     <GlassPanel className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
         <Skeleton className="h-8 w-52" />
-        <Skeleton className="h-7 w-28 rounded-lg" />
       </div>
-      <Skeleton className="mx-5 mt-3 h-3 w-56" />
+      <div className="flex h-10 items-center justify-end gap-3 border-b border-border/60 px-5">
+        <Skeleton className="h-8 w-40 rounded-lg" />
+        <Skeleton className="h-8 w-28 rounded-lg" />
+      </div>
+      <div className="border-b border-border px-5 pb-3 pt-0">
+        <Skeleton className="h-3 w-56" />
+      </div>
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
+        <Skeleton className="h-5 w-40" />
         <Skeleton className="w-full flex-1 rounded-xl" style={{ minHeight: CHART_HEIGHT_PX }} />
         <div className="grid grid-cols-2 gap-6 px-8">
           <Skeleton className="mx-auto h-12 w-24" />
@@ -71,26 +82,6 @@ function NodeCountTrendSkeleton() {
         </div>
       </div>
     </GlassPanel>
-  );
-}
-
-function ComparisonStat({
-  color,
-  label,
-  value,
-}: {
-  color: string;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-1.5 text-center">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
-        <span>{label}</span>
-      </div>
-      <p className="text-2xl font-semibold tabular-nums tracking-tight text-foreground">{value}</p>
-    </div>
   );
 }
 
@@ -294,8 +285,10 @@ export default function NodeCountTrend({
         title="Node & pod count trend"
         icon={Boxes}
         accent="violet"
-        titleAddon={
-          availableClusters.length > 0 ? (
+      />
+      <DashboardChartToolbar>
+        <DashboardFilterBar className="flex-nowrap justify-end">
+          {availableClusters.length > 0 ? (
             <DashboardFilterSelect
               width="lg"
               value={cluster || chartData.cluster}
@@ -309,37 +302,34 @@ export default function NodeCountTrend({
                 </option>
               ))}
             </DashboardFilterSelect>
-          ) : null
-        }
-        action={
-          <DashboardFilterBar className="justify-end">
-            <DashboardToggleGroup
-              value={seriesMode}
-              onChange={setSeriesMode}
-              capitalize
-              options={[
-                { id: 'nodes' as const, label: 'nodes' },
-                { id: 'pods' as const, label: 'pods' },
-              ]}
-            />
-            <DashboardToggleGroup
-              value={chartMode}
-              onChange={setChartMode}
-              capitalize
-              options={[
-                { id: 'line' as const, label: 'line' },
-                { id: 'bar' as const, label: 'bar' },
-              ]}
-            />
-          </DashboardFilterBar>
-        }
-      />
-      <PanelSubtitle>
+          ) : null}
+          <DashboardToggleGroup
+            value={seriesMode}
+            onChange={setSeriesMode}
+            capitalize
+            options={[
+              { id: 'nodes' as const, label: 'nodes' },
+              { id: 'pods' as const, label: 'pods' },
+            ]}
+          />
+          <DashboardToggleGroup
+            value={chartMode}
+            onChange={setChartMode}
+            capitalize
+            options={[
+              { id: 'line' as const, label: 'line' },
+              { id: 'bar' as const, label: 'bar' },
+            ]}
+          />
+        </DashboardFilterBar>
+      </DashboardChartToolbar>
+      <PanelSubtitle className="min-h-10 shrink-0">
         Hourly {seriesLabel.toLowerCase()} · Today vs yesterday (IST)
         {isFetching ? ' · updating…' : ''}
       </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-2">
+        <div className="mb-3 min-h-5" aria-hidden="true" />
         <div className="relative w-full shrink-0" style={{ height: CHART_HEIGHT_PX }}>
           {!availableClusters.length ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -371,18 +361,18 @@ export default function NodeCountTrend({
         </div>
 
         {hasData && (
-          <div className="mt-4 grid grid-cols-2 gap-6 border-t border-border/50 pt-5">
-            <ComparisonStat
+          <DashboardChartComparisonFooter columns={2}>
+            <DashboardComparisonStat
               color={YESTERDAY_SERIES_STYLE.color}
               label="Yesterday"
               value={yesterdayDisplay}
             />
-            <ComparisonStat
+            <DashboardComparisonStat
               color={TODAY_SERIES_STYLE.color}
               label="Today"
               value={todayDisplay}
             />
-          </div>
+          </DashboardChartComparisonFooter>
         )}
       </div>
     </GlassPanel>

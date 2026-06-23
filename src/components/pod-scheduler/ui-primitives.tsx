@@ -201,7 +201,7 @@ export function PanelSubtitle({
         className
       )}
     >
-      <div className={cn('flex min-w-0 flex-1 items-start gap-3', !alignWithIcon && 'gap-0')}>
+      <div className={cn('flex min-w-0 flex-1 items-center gap-3', !alignWithIcon && 'gap-0')}>
         {alignWithIcon ? <div className="h-7 w-7 shrink-0" aria-hidden="true" /> : null}
         <p className="min-w-0 max-w-3xl text-[11px] leading-relaxed text-muted-foreground">{children}</p>
       </div>

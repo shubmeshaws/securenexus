@@ -4,6 +4,7 @@ export type WorkloadKind =
   | 'DaemonSet'
   | 'CronJob'
   | 'ScaledJob'
+  | 'ScaledObject'
   | 'EC2';
 
 export type ScheduleScope = 'workload' | 'namespace';
@@ -21,7 +22,7 @@ export function parseWorkloadKey(value: string): { kind: WorkloadKind; name: str
   if (sep <= 0) return null;
   const kind = value.slice(0, sep) as WorkloadKind;
   const name = value.slice(sep + 2);
-  if (!name || !['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob'].includes(kind)) return null;
+  if (!name || !['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'ScaledObject'].includes(kind)) return null;
   return { kind, name };
 }
 

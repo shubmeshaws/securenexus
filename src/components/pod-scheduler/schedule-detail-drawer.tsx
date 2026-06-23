@@ -312,8 +312,12 @@ function ScheduleDetailBody({
           </p>
         )}
         <DetailRow
-          label="Teams alerts"
+          label="Automatic Teams alert"
           value={schedule.teamsAlertEnabled ? 'Enabled' : 'Disabled'}
+        />
+        <DetailRow
+          label="Manual Teams alert"
+          value={schedule.teamsManualAlertEnabled ? 'Enabled' : 'Disabled'}
         />
         {schedule.savedReplicas != null && (
           <DetailRow label="Saved replicas" value={String(schedule.savedReplicas)} />

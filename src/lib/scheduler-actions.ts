@@ -7,6 +7,7 @@ import {
   getArgoAppNamesForNamespace,
   getClusterReadyNodeCount,
   getDeploymentArgoAppName,
+  getScaledObjectScaleTarget,
   getStatefulSetArgoAppName,
   getWorkloadDesiredReplicas,
   listWorkloads,
@@ -30,8 +31,25 @@ import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
 import { runWithConcurrency } from './concurrency';
 import { resolveWorkloadOpConcurrency } from './schedule-execution-pool';
 
-function scheduleTeamsAlertFlag(schedule: Schedule) {
-  return { teamsAlertEnabled: schedule.teamsAlertEnabled };
+function isAutomaticScheduleTrigger(triggeredBy: string): boolean {
+  return (
+    triggeredBy === AUTOMATIC_CRON_TRIGGER ||
+    triggeredBy === 'scheduler' ||
+    (!triggeredBy.includes('@') &&
+      triggeredBy !== 'manual' &&
+      triggeredBy !== 'bulk-action' &&
+      triggeredBy !== 'infra-control' &&
+      triggeredBy !== 'live-stop')
+  );
+}
+
+function resolveScheduleTeamsAlert(schedule: Schedule, triggeredBy: string) {
+  const automatic = isAutomaticScheduleTrigger(triggeredBy);
+  return {
+    teamsAlertEnabled: automatic
+      ? schedule.teamsAlertEnabled
+      : schedule.teamsManualAlertEnabled,
+  };
 }
 
 /** Find an Argo app by exact/fuzzy name within a candidate pool. */
@@ -52,15 +70,25 @@ function resolveArgoAppFromPool(
   return byTarget ? { name: byTarget.name, instanceId: byTarget.instanceId } : null;
 }
 
-/** Catalog lookup without strict cluster-name filtering (EC2 cluster labels often differ). */
+/**
+ * Catalog lookup without strict cluster-name filtering (EC2 cluster labels often differ).
+ *
+ * Prefers the schedule's pinned Argo CD instance, but never lets a missing/stale
+ * `argocdInstanceId` (or an instance whose `clusterNames` list doesn't yet include a
+ * newly added cluster) black-hole the deny window: it falls back to a namespace match
+ * across every instance. Each app keeps its own `instanceId`, so the deny window is
+ * still written to the correct Argo CD.
+ */
 async function appsForScheduleRelaxed(schedule: Schedule): Promise<ArgoCDAppSummary[]> {
   const apps = await argocdClient.listApplications();
-  return apps.filter((app) => {
-    if (schedule.argocdInstanceId && app.instanceId !== schedule.argocdInstanceId) {
-      return false;
-    }
-    return app.destinationNamespace === schedule.namespace;
-  });
+  const inNamespace = apps.filter((app) => app.destinationNamespace === schedule.namespace);
+
+  if (schedule.argocdInstanceId) {
+    const pinned = inNamespace.filter((app) => app.instanceId === schedule.argocdInstanceId);
+    if (pinned.length) return pinned;
+  }
+
+  return inNamespace;
 }
 
 async function resolveCatalogAppsInNamespace(
@@ -159,7 +187,7 @@ async function collectScheduleArgoApps(
     }
   } else if (schedule.workloadKind === 'StatefulSet') {
     add(await resolveArgoAppForStatefulSet(schedule));
-  } else if (schedule.workloadKind === 'CronJob' || schedule.workloadKind === 'ScaledJob') {
+  } else if (schedule.workloadKind === 'CronJob' || schedule.workloadKind === 'ScaledJob' || schedule.workloadKind === 'ScaledObject') {
     await addNamespaceMatches();
   } else {
     add(await resolveArgoApp(schedule));
@@ -391,6 +419,7 @@ async function pauseArgoForSchedule(
   }
 
   const paused: string[] = [];
+  const pauseErrors: string[] = [];
   const blockUntil = resolveManualSyncBlockUntilForShutdown(schedule, now);
   const timeZone = schedule.timezone || 'UTC';
 
@@ -399,14 +428,13 @@ async function pauseArgoForSchedule(
       await argocdClient.updateSyncPolicy(app.name, 'none', app.instanceId);
       paused.push(app.name);
     } catch (err) {
-      console.error(
-        `[Argo pause] failed to pause ${app.name}:`,
-        err instanceof Error ? err.message : err
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      pauseErrors.push(`${app.name}: ${message}`);
+      console.error(`[Argo pause] failed to pause ${app.name}:`, message);
     }
   }
 
-  const { blocked: manualBlocked } = await blockManualSyncForApps(targets, {
+  const { blocked: manualBlocked, errors: manualErrors } = await blockManualSyncForApps(targets, {
     blockUntil,
     timeZone,
     now,
@@ -427,6 +455,10 @@ async function pauseArgoForSchedule(
   }
   if (!targets.length && !namespaceBlocked.length) {
     notes.push('no Argo CD apps linked — sync may not be blocked');
+  }
+  const blockingErrors = [...pauseErrors, ...manualErrors];
+  if (blockingErrors.length && !manualBlocked.length && !namespaceBlocked.length) {
+    notes.push(`Argo CD sync block failed: ${blockingErrors.join('; ')}`);
   }
   const note = notes.length ? ` · ${notes.join(' · ')}` : '';
   return { note, apps: Array.from(new Set([...paused, ...manualBlocked])) };
@@ -465,6 +497,40 @@ async function resolveArgoApp(
   schedule: Schedule
 ): Promise<{ name: string; instanceId: string } | null> {
   if (isNamespaceSchedule(schedule)) return null;
+
+  if (schedule.workloadKind === 'ScaledObject') {
+    const target = await getScaledObjectScaleTarget(
+      schedule.cluster,
+      schedule.namespace,
+      schedule.appName
+    );
+    console.log(
+      `[Argo resolve] scaledobject ${schedule.namespace}/${schedule.appName} scaleTarget=${
+        target ? `${target.kind}/${target.name}` : '(none)'
+      }`
+    );
+    if (target?.kind === 'Deployment') {
+      const trackingApp = await getDeploymentArgoAppName(
+        schedule.cluster,
+        schedule.namespace,
+        target.name
+      );
+      if (trackingApp) {
+        const byTracking = await findArgoAppByName(schedule, trackingApp);
+        if (byTracking) return byTracking;
+      }
+    } else if (target?.kind === 'StatefulSet') {
+      const trackingApp = await getStatefulSetArgoAppName(
+        schedule.cluster,
+        schedule.namespace,
+        target.name
+      );
+      if (trackingApp) {
+        const byTracking = await findArgoAppByName(schedule, trackingApp);
+        if (byTracking) return byTracking;
+      }
+    }
+  }
 
   if (schedule.workloadKind === 'Deployment') {
     const trackingApp = await getDeploymentArgoAppName(
@@ -670,7 +736,7 @@ async function executeEc2Shutdown(
       message: `EC2 instance ${schedule.appName} (${instanceId}) stop requested in ${region}`,
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
       startTime: formatScheduleStartupLabel(schedule),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
   } catch (err) {
     await logActivity({
@@ -682,7 +748,7 @@ async function executeEc2Shutdown(
       status: 'failed',
       message: err instanceof Error ? err.message : 'EC2 shutdown failed',
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
     throw err;
   }
@@ -718,7 +784,7 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
       status: 'success',
       message: `EC2 instance ${schedule.appName} (${instanceId}) start requested in ${region}`,
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
   } catch (err) {
     await logActivity({
@@ -730,7 +796,7 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
       status: 'failed',
       message: err instanceof Error ? err.message : 'EC2 startup failed',
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
-      ...scheduleTeamsAlertFlag(schedule),
+      ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
     throw err;
   }
@@ -739,18 +805,6 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
 export interface ShutdownOptions {
   markLive?: boolean;
   clearLive?: boolean;
-}
-
-function isAutomaticScheduleTrigger(triggeredBy: string): boolean {
-  return (
-    triggeredBy === AUTOMATIC_CRON_TRIGGER ||
-    triggeredBy === 'scheduler' ||
-    (!triggeredBy.includes('@') &&
-      triggeredBy !== 'manual' &&
-      triggeredBy !== 'bulk-action' &&
-      triggeredBy !== 'infra-control' &&
-      triggeredBy !== 'live-stop')
-  );
 }
 
 function buildLiveScheduleUpdate(
@@ -910,15 +964,18 @@ export async function executeShutdown(
 
     const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
     const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
+    const isScaledObjectSchedule = !isNamespace && schedule.workloadKind === 'ScaledObject';
     const message = isNamespace
       ? `Scaled ${targets.length} workload(s) to 0 in ${schedule.namespace}${argoNote}`
       : isCronJobSchedule
         ? `Suspended CronJob ${schedule.appName} and removed active jobs${argoNote}`
         : isScaledJobSchedule
           ? `Paused ScaledJob ${schedule.appName} and removed active jobs${argoNote}`
-          : statefulSetDeleted
-            ? `Deleted StatefulSet ${schedule.appName} (PVCs preserved)${argoNote}`
-            : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
+          : isScaledObjectSchedule
+            ? `Paused ScaledObject ${schedule.appName} and scaled target to 0${argoNote}`
+            : statefulSetDeleted
+              ? `Deleted StatefulSet ${schedule.appName} (PVCs preserved)${argoNote}`
+              : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
 
     const activityDetails = buildShutdownActivityDetails(
       isNamespace
@@ -941,7 +998,7 @@ export async function executeShutdown(
       message,
       details: activityDetails,
       startTime: formatScheduleStartupLabel(schedule),
-      ...scheduleTeamsAlertFlag(alertSchedule),
+      ...resolveScheduleTeamsAlert(alertSchedule, triggeredBy),
     });
   } catch (err) {
     const alertSchedule =
@@ -964,7 +1021,7 @@ export async function executeShutdown(
           : undefined,
         null
       ),
-      ...scheduleTeamsAlertFlag(alertSchedule),
+      ...resolveScheduleTeamsAlert(alertSchedule, triggeredBy),
     });
     throw err;
   }
@@ -1047,15 +1104,18 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
     const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
     const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
+    const isScaledObjectSchedule = !isNamespace && schedule.workloadKind === 'ScaledObject';
     const message = isNamespace
       ? `Restored ${targets.length} workload(s) in ${schedule.namespace}${argoNote}`
       : isCronJobSchedule
         ? `Resumed CronJob ${schedule.appName}${argoNote}`
         : isScaledJobSchedule
           ? `Resumed ScaledJob ${schedule.appName}${argoNote}`
-          : statefulSetRecreatedViaArgo
-            ? `Recreating StatefulSet ${schedule.appName} via ArgoCD (existing PVCs reused)${argoNote}`
-            : `Scaled to ${restoredReplicas} replicas${argoNote}`;
+          : isScaledObjectSchedule
+            ? `Resumed ScaledObject ${schedule.appName}${argoNote}`
+            : statefulSetRecreatedViaArgo
+              ? `Recreating StatefulSet ${schedule.appName} via ArgoCD (existing PVCs reused)${argoNote}`
+              : `Scaled to ${restoredReplicas} replicas${argoNote}`;
 
     const startupDetails = isNamespace
       ? JSON.stringify({
@@ -1074,7 +1134,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       status: 'success',
       message,
       details: startupDetails,
-      ...scheduleTeamsAlertFlag(alertSchedule),
+      ...resolveScheduleTeamsAlert(alertSchedule, triggeredBy),
     });
   } catch (err) {
     const alertSchedule =
@@ -1094,7 +1154,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
             count: targets.length,
           })
         : undefined,
-      ...scheduleTeamsAlertFlag(alertSchedule),
+      ...resolveScheduleTeamsAlert(alertSchedule, triggeredBy),
     });
     throw err;
   }

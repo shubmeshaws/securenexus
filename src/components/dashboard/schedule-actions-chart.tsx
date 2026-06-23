@@ -30,22 +30,29 @@ import {
   isDashboardDateRangeReady,
   type DashboardDateRange,
 } from '@/lib/dashboard-date-range';
+import { DashboardChartToolbar } from '@/components/dashboard/dashboard-filters';
+import {
+  DashboardChartComparisonFooter,
+  DashboardComparisonStat,
+} from '@/components/dashboard/dashboard-comparison-stat';
 import { cn } from '@/lib/utils';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip);
 
 const SHUTDOWN_BAR = {
-  fill: 'rgba(30, 58, 138, 0.88)',
-  border: '#1e3a8a',
-  legend: '#1e3a8a',
-  text: 'text-blue-900 dark:text-blue-300',
+  fill: 'rgba(239, 68, 68, 0.88)',
+  border: '#dc2626',
+  legend: '#ef4444',
 } as const;
 
 const STARTUP_BAR = {
-  fill: 'rgba(56, 189, 248, 0.88)',
-  border: '#0284c7',
-  legend: '#38bdf8',
-  text: 'text-sky-600 dark:text-sky-400',
+  fill: 'rgba(234, 179, 8, 0.88)',
+  border: '#ca8a04',
+  legend: '#eab308',
+} as const;
+
+const TOTAL_BAR = {
+  legend: '#888780',
 } as const;
 
 const CHART_HEIGHT_PX = 260;
@@ -55,16 +62,24 @@ function ScheduleActionsChartSkeleton() {
     <GlassPanel className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
         <Skeleton className="h-8 w-40" />
+      </div>
+      <div className="flex h-10 items-center justify-end border-b border-border/60 px-5">
         <Skeleton className="h-6 w-20 rounded-md" />
       </div>
-      <Skeleton className="mx-5 mt-3 h-3 w-52" />
+      <div className="border-b border-border px-5 pb-3 pt-0">
+        <Skeleton className="h-3 w-52" />
+      </div>
       <div className="flex flex-1 flex-col gap-3 px-5 py-4">
         <div className="flex gap-4">
           <Skeleton className="h-3 w-28" />
           <Skeleton className="h-3 w-28" />
         </div>
         <Skeleton className="w-full rounded-xl" style={{ height: CHART_HEIGHT_PX }} />
-        <Skeleton className="h-10 w-full rounded-lg" />
+        <div className="grid grid-cols-3 gap-6 px-8">
+          <Skeleton className="mx-auto h-12 w-24" />
+          <Skeleton className="mx-auto h-12 w-24" />
+          <Skeleton className="mx-auto h-12 w-24" />
+        </div>
       </div>
     </GlassPanel>
   );
@@ -196,34 +211,32 @@ export default function ScheduleActionsChart({
         title="Schedule actions"
         icon={BarChart2}
         accent="amber"
-        action={
-          <div className="flex h-8 items-center">
-            <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
-              {chartData.summary.total} in period
-            </span>
-          </div>
-        }
       />
-      <PanelSubtitle>
+      <DashboardChartToolbar>
+        <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
+          {chartData.summary.total} in period
+        </span>
+      </DashboardChartToolbar>
+      <PanelSubtitle className="min-h-10 shrink-0">
         Shutdowns vs startups · {periodLabel}
         {isFetching ? ' · updating…' : ''}
       </PanelSubtitle>
 
-      <div className="flex flex-1 flex-col px-5 py-3">
+      <div className="flex flex-1 flex-col px-5 pb-5 pt-2">
         <div className="mb-3 flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
           <div className="flex items-center gap-2">
             <span
               className="inline-block h-2.5 w-2.5 rounded-sm"
               style={{ backgroundColor: SHUTDOWN_BAR.legend }}
             />
-            <span>Shutdowns ({chartData.summary.shutdowns})</span>
+            <span>Shutdowns</span>
           </div>
           <div className="flex items-center gap-2">
             <span
               className="inline-block h-2.5 w-2.5 rounded-sm"
               style={{ backgroundColor: STARTUP_BAR.legend }}
             />
-            <span>Startups ({chartData.summary.startups})</span>
+            <span>Startups</span>
           </div>
         </div>
 
@@ -237,20 +250,26 @@ export default function ScheduleActionsChart({
           )}
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg bg-muted/60 px-3 py-2.5">
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">Total actions: </span>
-            <span className="font-medium text-foreground">{chartData.summary.total}</span>
-          </div>
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">Shutdowns: </span>
-            <span className={cn('font-medium', SHUTDOWN_BAR.text)}>{chartData.summary.shutdowns}</span>
-          </div>
-          <div className="text-[11px]">
-            <span className="text-muted-foreground">Startups: </span>
-            <span className={cn('font-medium', STARTUP_BAR.text)}>{chartData.summary.startups}</span>
-          </div>
-        </div>
+        <DashboardChartComparisonFooter columns={3}>
+          <DashboardComparisonStat
+            color={TOTAL_BAR.legend}
+            label="Total actions"
+            value={chartData.summary.total}
+            dotShape="square"
+          />
+          <DashboardComparisonStat
+            color={SHUTDOWN_BAR.legend}
+            label="Shutdowns"
+            value={chartData.summary.shutdowns}
+            dotShape="square"
+          />
+          <DashboardComparisonStat
+            color={STARTUP_BAR.legend}
+            label="Startups"
+            value={chartData.summary.startups}
+            dotShape="square"
+          />
+        </DashboardChartComparisonFooter>
       </div>
     </GlassPanel>
   );

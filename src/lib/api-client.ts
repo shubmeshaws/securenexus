@@ -90,6 +90,7 @@ export interface Schedule {
   targetReplicas: number;
   enabled: boolean;
   teamsAlertEnabled: boolean;
+  teamsManualAlertEnabled: boolean;
   liveActive: boolean;
   liveStopSource: 'manual' | 'scheduled' | null;
   liveStoppedBy: string | null;

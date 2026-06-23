@@ -20,7 +20,7 @@ export const scaleDeploymentSchema = z.object({
 
 const workloadKeySchema = z
   .string()
-  .regex(/^(Deployment|StatefulSet|DaemonSet|CronJob|ScaledJob)::.+$/);
+  .regex(/^(Deployment|StatefulSet|DaemonSet|CronJob|ScaledJob|ScaledObject)::.+$/);
 
 const scheduleIdentitySchema = z.object({
   name: z.string().min(1).max(100),
@@ -30,7 +30,7 @@ const scheduleIdentitySchema = z.object({
   scope: z.enum(['workload', 'namespace']).optional().default('workload'),
   appName: z.string().optional(),
   workloadKind: z
-    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'Namespace', 'EC2'])
+    .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'ScaledObject', 'Namespace', 'EC2'])
     .optional()
     .default('Deployment'),
   excludedWorkloads: z.array(workloadKeySchema).optional().default([]),
@@ -43,6 +43,7 @@ const scheduleIdentitySchema = z.object({
   targetReplicas: z.number().int().min(0).max(100),
   enabled: z.boolean().optional().default(true),
   teamsAlertEnabled: z.boolean().optional().default(true),
+  teamsManualAlertEnabled: z.boolean().optional().default(false),
 });
 
 const timeString = z.string().regex(/^\d{2}:\d{2}$/);
@@ -446,7 +447,7 @@ export const updateScheduleBodySchema = z
     scope: z.enum(['workload', 'namespace']).optional(),
     appName: z.string().optional(),
     workloadKind: z
-      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'Namespace', 'EC2'])
+      .enum(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ScaledJob', 'ScaledObject', 'Namespace', 'EC2'])
       .optional(),
     excludedWorkloads: z.array(workloadKeySchema).optional(),
     awsCredentialId: z.union([z.string().min(1), z.null()]).optional(),
@@ -458,6 +459,7 @@ export const updateScheduleBodySchema = z
     targetReplicas: z.number().int().min(0).max(100).optional(),
     enabled: z.boolean().optional(),
     teamsAlertEnabled: z.boolean().optional(),
+    teamsManualAlertEnabled: z.boolean().optional(),
     recurrence: z.enum(['daily', 'onetime', 'split', 'window', 'combined']).optional(),
     shutdownTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     startupTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
@@ -502,6 +504,8 @@ export function mergeScheduleUpdate(existing: Schedule, patch: z.infer<typeof up
     targetReplicas: patch.targetReplicas ?? existing.targetReplicas,
     enabled: patch.enabled ?? existing.enabled,
     teamsAlertEnabled: patch.teamsAlertEnabled ?? existing.teamsAlertEnabled,
+    teamsManualAlertEnabled:
+      patch.teamsManualAlertEnabled ?? existing.teamsManualAlertEnabled,
   };
 
   if (recurrence === 'onetime') {
@@ -646,7 +650,7 @@ export const instantStartSchema = z.object({
   namespace: z.string().min(1),
   appName: z.string().min(1),
   workloadKind: z
-    .enum(['Deployment', 'StatefulSet', 'CronJob', 'ScaledJob'])
+    .enum(['Deployment', 'StatefulSet', 'CronJob', 'ScaledJob', 'ScaledObject'])
     .default('Deployment'),
   targetReplicas: z.number().int().min(1).max(100).default(1),
 });

@@ -16,6 +16,26 @@ export function DashboardFilterBar({
   );
 }
 
+/** Fixed-height control row below chart panel headers so sibling cards stay aligned. */
+export function DashboardChartToolbar({
+  children,
+  className,
+}: {
+  children?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'flex h-10 shrink-0 items-center justify-end gap-3 overflow-x-auto border-b border-border/60 px-5',
+        className
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function DashboardFilterField({
   label,
   htmlFor,

@@ -10,6 +10,7 @@
     "lint": "next lint",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:sync": "prisma db push && prisma generate",
     "db:migrate": "prisma migrate dev",
     "postinstall": "mkdir -p .home .cache && HOME=\"$(pwd)/.home\" XDG_CACHE_HOME=\"$(pwd)/.cache\" prisma generate"
   },

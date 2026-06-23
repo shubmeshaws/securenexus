@@ -35,6 +35,7 @@ export const SCHEDULE_CSV_HEADERS = [
   'target_replicas',
   'enabled',
   'teams_alert_enabled',
+  'teams_manual_alert_enabled',
 ] as const;
 
 type CsvHeader = (typeof SCHEDULE_CSV_HEADERS)[number];
@@ -98,6 +99,7 @@ export function scheduleToCsvRow(schedule: Schedule): string[] {
     String(schedule.targetReplicas),
     formatBool(schedule.enabled),
     formatBool(schedule.teamsAlertEnabled),
+    formatBool(schedule.teamsManualAlertEnabled),
   ];
 }
 
@@ -250,6 +252,7 @@ export function csvRowToScheduleInput(cells: string[], headerIndex: Map<string, 
     targetReplicas: parseOptionalInt(get('target_replicas')) ?? 1,
     enabled: parseBool(get('enabled')) ?? true,
     teamsAlertEnabled: parseBool(get('teams_alert_enabled')) ?? true,
+    teamsManualAlertEnabled: parseBool(get('teams_manual_alert_enabled')) ?? false,
   };
 
   return input;
