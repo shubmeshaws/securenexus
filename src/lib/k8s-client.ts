@@ -634,6 +634,22 @@ export async function getStatefulSetArgoAppName(
   }
 }
 
+/** Read the Argo CD application managing a Deployment from live tracking metadata. */
+export async function getDeploymentArgoAppName(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<string | null> {
+  try {
+    const kc = await getConfigForCluster(cluster);
+    const api = kc.makeApiClient(k8s.AppsV1Api);
+    const res = await api.readNamespacedDeployment(name, namespace);
+    return argoAppNameFromMeta(res.body.metadata);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Collect the set of ArgoCD application names managing workloads in a namespace,
  * derived from each live resource's tracking metadata. Covers Deployments and

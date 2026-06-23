@@ -47,6 +47,90 @@ export function denyWindowDuration(from: Date, until: Date): string {
   return `${hours}h`;
 }
 
+export function buildNamespaceDenySyncWindow(input: {
+  namespace: string;
+  blockUntil: Date;
+  timeZone: string;
+  windowStart?: Date;
+}): ArgoSyncWindowSpec {
+  const windowStart = floorToScheduleMinute(input.windowStart ?? new Date(), input.timeZone);
+  return {
+    kind: 'deny',
+    schedule: cronScheduleForInstant(windowStart, input.timeZone),
+    duration: denyWindowDuration(windowStart, input.blockUntil),
+    manualSync: false,
+    namespaces: [input.namespace],
+    timeZone: input.timeZone || 'UTC',
+    description: SECURENEXUS_SYNC_WINDOW_DESCRIPTION,
+  };
+}
+
+export function isManagedNamespaceDenyWindow(
+  window: ArgoSyncWindowSpec,
+  namespace: string
+): boolean {
+  if (window.description === SECURENEXUS_SYNC_WINDOW_DESCRIPTION) {
+    return Boolean(window.namespaces?.includes(namespace));
+  }
+  if (window.kind !== 'deny') return false;
+  if (!window.namespaces?.includes(namespace)) return false;
+  if (window.applications?.length || window.clusters?.length) return false;
+  return true;
+}
+
+function isSecureNexusManagedNamespaceDenyRow(window: ArgoSyncWindowSpec): boolean {
+  if (window.kind !== 'deny') return false;
+  if (!window.namespaces?.length || window.applications?.length || window.clusters?.length) {
+    return false;
+  }
+  return window.description === SECURENEXUS_SYNC_WINDOW_DESCRIPTION;
+}
+
+export function mergeNamespaceDenySyncWindow(
+  existing: ArgoSyncWindowSpec[],
+  next: ArgoSyncWindowSpec
+): ArgoSyncWindowSpec[] {
+  const namespace = next.namespaces?.[0];
+  if (!namespace) return [...existing, next];
+
+  const nonManaged = existing.filter((row) => !isSecureNexusManagedNamespaceDenyRow(row));
+  const managedNamespaces = new Set<string>([namespace]);
+  let managedDuration = next.duration;
+
+  for (const row of existing) {
+    if (!isSecureNexusManagedNamespaceDenyRow(row)) continue;
+    for (const ns of row.namespaces ?? []) managedNamespaces.add(ns);
+    managedDuration = longerDuration(managedDuration, row.duration);
+  }
+
+  const merged: ArgoSyncWindowSpec = {
+    kind: 'deny',
+    schedule: next.schedule,
+    duration: managedDuration,
+    manualSync: false,
+    namespaces: Array.from(managedNamespaces),
+    timeZone: next.timeZone || 'UTC',
+    description: SECURENEXUS_SYNC_WINDOW_DESCRIPTION,
+  };
+
+  return [...nonManaged, merged];
+}
+
+export function removeScheduleNamespaceDenyWindow(
+  existing: ArgoSyncWindowSpec[],
+  namespace: string
+): { windows: ArgoSyncWindowSpec[]; removed: number } {
+  let removed = 0;
+  const windows = existing.flatMap((row) => {
+    if (!isManagedNamespaceDenyWindow(row, namespace)) return [row];
+    removed++;
+    const namespaces = (row.namespaces ?? []).filter((ns) => ns !== namespace);
+    if (!namespaces.length) return [];
+    return [{ ...row, namespaces }];
+  });
+  return { windows, removed };
+}
+
 export function buildScheduleDenySyncWindow(input: {
   appNames: string[];
   blockUntil: Date;

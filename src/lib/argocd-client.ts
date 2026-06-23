@@ -6,9 +6,12 @@ import {
   type ArgoCDInstanceConfig,
 } from '@/lib/argocd-instances';
 import {
+  buildNamespaceDenySyncWindow,
   buildScheduleDenySyncWindow,
+  mergeNamespaceDenySyncWindow,
   mergeScheduleDenySyncWindow,
   removeScheduleDenySyncWindows,
+  removeScheduleNamespaceDenyWindow,
   type ArgoSyncWindowSpec,
 } from '@/lib/argocd-sync-windows';
 import { getArgoCDConfig, normalizeArgoCDServer } from '@/lib/settings';
@@ -514,6 +517,62 @@ class InstanceArgoCDClient {
     }
   }
 
+  async addScheduleNamespaceDenyWindow(input: {
+    namespace: string;
+    blockUntil: Date;
+    timeZone: string;
+    sampleAppName: string;
+  }): Promise<void> {
+    const projectName = await this.getApplicationProjectName(input.sampleAppName);
+    const windowStart = new Date();
+    const nextWindow = buildNamespaceDenySyncWindow({
+      namespace: input.namespace,
+      blockUntil: input.blockUntil,
+      timeZone: input.timeZone,
+      windowStart,
+    });
+
+    const applyMerge = (project: Record<string, unknown>) => {
+      const spec = (project.spec as Record<string, unknown>) ?? {};
+      spec.syncWindows = mergeNamespaceDenySyncWindow(
+        this.readProjectSyncWindows(project),
+        nextWindow
+      );
+      project.spec = spec;
+    };
+
+    try {
+      await this.mutateProjectSpec(projectName, applyMerge);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes('already exists')) throw err;
+      await this.mutateProjectSpec(projectName, applyMerge);
+    }
+
+    console.log(
+      `[Argo sync window] namespace deny set in project ${projectName} for ${input.namespace}: ` +
+        `schedule=${nextWindow.schedule} duration=${nextWindow.duration} tz=${nextWindow.timeZone}`
+    );
+  }
+
+  async removeScheduleNamespaceDenyWindow(namespace: string, sampleAppName: string): Promise<number> {
+    const projectName = await this.getApplicationProjectName(sampleAppName);
+    let removed = 0;
+
+    await this.mutateProjectSpec(projectName, (project) => {
+      const result = removeScheduleNamespaceDenyWindow(
+        this.readProjectSyncWindows(project),
+        namespace
+      );
+      removed = result.removed;
+      const spec = (project.spec as Record<string, unknown>) ?? {};
+      spec.syncWindows = result.windows;
+      project.spec = spec;
+    });
+
+    return removed;
+  }
+
   async removeScheduleManualSyncDenyWindows(appName: string): Promise<number> {
     const projectName = await this.getApplicationProjectName(appName);
     let removed = 0;
@@ -794,6 +853,28 @@ class MultiArgoCDClient {
     if (!input.appNames.length) return;
     const { client } = await resolveInstanceForApp(input.appNames[0], instanceId);
     return client.addScheduleManualSyncDenyWindows(input);
+  }
+
+  async addScheduleNamespaceDenyWindow(
+    input: {
+      namespace: string;
+      blockUntil: Date;
+      timeZone: string;
+      sampleAppName: string;
+    },
+    instanceId?: string
+  ): Promise<void> {
+    const { client } = await resolveInstanceForApp(input.sampleAppName, instanceId);
+    return client.addScheduleNamespaceDenyWindow(input);
+  }
+
+  async removeScheduleNamespaceDenyWindow(
+    namespace: string,
+    sampleAppName: string,
+    instanceId?: string
+  ): Promise<number> {
+    const { client } = await resolveInstanceForApp(sampleAppName, instanceId);
+    return client.removeScheduleNamespaceDenyWindow(namespace, sampleAppName);
   }
 
   async removeScheduleManualSyncDenyWindows(
