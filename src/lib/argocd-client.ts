@@ -82,6 +82,17 @@ const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 const APPS_LIST_CACHE_TTL_MS = 90_000;
 let appsListCache: { at: number; apps: ArgoCDAppSummary[] } | null = null;
 
+/**
+ * Per-instance failures from the most recent listApplications() call. A schedule on an
+ * instance that failed to list will resolve zero apps ("no linked Argo CD app found"),
+ * so callers surface these to explain why.
+ */
+let lastListErrors: string[] = [];
+
+export function getArgoListErrors(): string[] {
+  return [...lastListErrors];
+}
+
 export function invalidateArgoAppsCache() {
   appsListCache = null;
 }
@@ -796,11 +807,17 @@ class MultiArgoCDClient {
       if (result.status === 'fulfilled') {
         apps.push(...result.value);
       } else {
-        errors.push(
-          `${instances[i].name}: ${result.reason instanceof Error ? result.reason.message : 'unreachable'}`
-        );
+        const message = `${instances[i].name}: ${
+          result.reason instanceof Error ? result.reason.message : 'unreachable'
+        }`;
+        errors.push(message);
+        // Always log: a partial failure (one instance down) is otherwise invisible
+        // because we still return the other instances' apps.
+        console.warn(`[ArgoCD] listApplications failed for instance ${message}`);
       }
     }
+
+    lastListErrors = errors;
 
     if (!apps.length) {
       throw new Error(errors.join('; ') || 'All ArgoCD instances unreachable');

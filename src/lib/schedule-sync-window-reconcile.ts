@@ -3,7 +3,12 @@ import { addHours } from 'date-fns';
 import type { InstantRun } from '@prisma/client';
 import { applyManualSyncDenyForScheduleRepair } from './scheduler-actions';
 import { isNonEksSchedule } from './workload-utils';
-import argocdClient, { appMatchesK8sCluster, type ArgoCDAppSummary } from './argocd-client';
+import argocdClient, {
+  appMatchesK8sCluster,
+  getArgoListErrors,
+  invalidateArgoAppsCache,
+  type ArgoCDAppSummary,
+} from './argocd-client';
 import { listEnabledArgoCDInstances } from './argocd-instances';
 import { runWithConcurrency } from './concurrency';
 
@@ -69,6 +74,10 @@ export async function reconcileStoppedScheduleSyncWindows(
 
   const report = (progress: SyncWindowReconcileProgress) => onProgress?.(progress);
 
+  // Force a fresh catalog so a transiently-unreachable instance isn't masked by cache,
+  // and so getArgoListErrors() reflects this run.
+  invalidateArgoAppsCache();
+
   const [schedules, instantRuns, allApps, instances] = await Promise.all([
     prisma.schedule.findMany({
       where: {
@@ -84,6 +93,16 @@ export async function reconcileStoppedScheduleSyncWindows(
     argocdClient.listApplications(),
     listEnabledArgoCDInstances(),
   ]);
+
+  // If an Argo CD instance failed to list its apps, every schedule on that instance
+  // will report "no linked Argo CD app found". Surface the real cause up front.
+  const listErrors = getArgoListErrors();
+  if (listErrors.length) {
+    for (const message of listErrors) {
+      result.errors.push(`Argo CD instance unreachable - ${message}`);
+      console.warn(`[Argo reconcile] instance listing failed - ${message}`);
+    }
+  }
 
   const instanceMap = new Map(instances.map((i) => [i.id, i]));
   const candidates = schedules.filter(
