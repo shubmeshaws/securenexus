@@ -235,6 +235,20 @@ function mapSyncStatus(status?: string): ArgoCDAppSummary['syncStatus'] {
   }
 }
 
+/**
+ * Field selectors for the Argo CD list API. Must cover every path mapApp() reads below.
+ * Keeping the list minimal is what keeps `listApplications` fast on large instances.
+ */
+const APP_LIST_FIELDS = [
+  'items.metadata.name',
+  'items.metadata.namespace',
+  'items.spec.destination',
+  'items.spec.syncPolicy',
+  'items.status.sync.status',
+  'items.status.sync.syncedAt',
+  'items.status.health.status',
+];
+
 function mapApp(
   raw: Record<string, unknown>,
   instance: Pick<ArgoCDInstanceConfig, 'id' | 'name'>
@@ -290,6 +304,28 @@ class InstanceArgoCDClient {
   }
 
   async listApplications(): Promise<ArgoCDAppSummary[]> {
+    // Project ONLY the fields mapApp() reads. Without this, Argo CD serializes every
+    // app's full manifest + live resource tree, which on large instances (many apps)
+    // produces a multi-MB response that times out. The Argo CD UI uses the same trick.
+    const fieldsQuery = `fields=${APP_LIST_FIELDS.join(',')}`;
+    const res = await argoFetch(`${this.baseUrl}/applications?${fieldsQuery}`, {
+      headers: this.headers,
+      insecureTls: this.instance.insecureTls,
+      timeoutMs: 120_000,
+    });
+    if (!res.ok) {
+      // Older Argo CD versions may reject the field selector; fall back to a full list.
+      if (res.status === 400 || res.status === 404) {
+        return this.listApplicationsUnprojected();
+      }
+      const text = await res.text();
+      throw new Error(`Failed to list ArgoCD apps (${this.instance.name}): ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as { items?: Record<string, unknown>[] };
+    return (data.items ?? []).map((item) => mapApp(item, this.instance));
+  }
+
+  private async listApplicationsUnprojected(): Promise<ArgoCDAppSummary[]> {
     const res = await argoFetch(`${this.baseUrl}/applications`, {
       headers: this.headers,
       insecureTls: this.instance.insecureTls,
@@ -384,6 +420,9 @@ class InstanceArgoCDClient {
     const res = await argoFetch(`${this.baseUrl}/applications/${encodeURIComponent(appName)}`, {
       headers: this.headers,
       insecureTls: this.instance.insecureTls,
+      // Write-path reads (sync-policy update, deny-window apply) must not fail on the
+      // default 15s under load; allow the same headroom as the project read/write calls.
+      timeoutMs: 30_000,
     });
     if (!res.ok) {
       const text = await res.text();
