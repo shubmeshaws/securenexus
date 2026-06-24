@@ -259,6 +259,45 @@ function shouldRunOvernightStartup(schedule: CombinedSchedule, now: Date): boole
   return zoned.getHours() === h && zoned.getMinutes() === m;
 }
 
+/**
+ * Today's overnight startup instant on the schedule timezone calendar day, if that
+ * weekday is configured and the instant is strictly before `now`.
+ */
+export function todaysOvernightStartupInstant(
+  schedule: CombinedSchedule,
+  now: Date
+): Date | null {
+  const days = schedule.overnightDays ?? [];
+  if (!days.length || !schedule.overnightStartupTime) return null;
+
+  const tz = schedule.timezone || 'UTC';
+  const zoned = toZonedTime(now, tz);
+  const dow = isoDayOfWeek(zoned);
+  if (!days.includes(dow)) return null;
+
+  const startup = overnightStartupOnDay(schedule, zoned);
+  if (!startup || now <= startup) return null;
+  return startup;
+}
+
+/** Retry a missed same-day overnight startup (e.g. nights 13:05→13:07) after the window ends. */
+export function shouldRunMissedCombinedOvernightStartup(
+  schedule: CombinedSchedule,
+  now: Date,
+  lastRun: Date | null,
+  catchupMs = 30 * 60 * 1000
+): boolean {
+  if (shouldRunOvernightStartup(schedule, now)) return false;
+  if (isInOvernightStoppedPeriod(schedule, now)) return false;
+
+  const missedAt = todaysOvernightStartupInstant(schedule, now);
+  if (!missedAt) return false;
+  if (now.getTime() - missedAt.getTime() > catchupMs) return false;
+  if (lastRun && lastRun >= missedAt) return false;
+
+  return true;
+}
+
 export function computeCurrentLiveStartupAtCombined(
   schedule: CombinedSchedule,
   now: Date

@@ -22,6 +22,8 @@ import {
   isInCombinedStoppedPeriod,
   shouldRunCombinedShutdown,
   shouldRunCombinedStartup,
+  shouldRunMissedCombinedOvernightStartup,
+  todaysOvernightStartupInstant,
   combinedActiveDays,
 } from './schedule-combined';
 import prisma from './prisma';
@@ -438,13 +440,44 @@ export function shouldRunStartup(schedule: Schedule, now = new Date()): boolean 
 }
 
 const STARTUP_CATCHUP_WINDOW_MS = 2 * 60 * 60 * 1000;
+/** Short same-day retry after combined overnight micro-windows (e.g. 13:05→13:07). */
+const OVERNIGHT_STARTUP_CATCHUP_MS = 30 * 60 * 1000;
 
 /** Retry startup if the exact minute was missed or failed while still in a stopped window. */
 export function shouldRunStartupCatchup(schedule: Schedule, now = new Date()): boolean {
-  if (!schedule.enabled || !schedule.liveActive) return false;
+  if (!schedule.enabled) return false;
   if (shouldRunStartup(schedule, now)) return false;
 
-  const startupAt = computeCurrentLiveStartupAt(schedule, now);
+  // Combined overnight: once the 2–5 min night window ends, generic catchup looks at the
+  // *next* startup (days away) and never retries today's missed 13:07 startup.
+  if (isCombinedSchedule(schedule)) {
+    if (
+      shouldRunMissedCombinedOvernightStartup(
+        schedule,
+        now,
+        schedule.lastRun,
+        OVERNIGHT_STARTUP_CATCHUP_MS
+      )
+    ) {
+      return true;
+    }
+  }
+
+  if (!schedule.liveActive) return false;
+
+  let startupAt = computeCurrentLiveStartupAt(schedule, now);
+
+  // When already outside the overnight window, use today's missed instant — not the next week.
+  if (
+    isCombinedSchedule(schedule) &&
+    startupAt &&
+    startupAt > now &&
+    !isInCombinedStoppedPeriod(schedule, now)
+  ) {
+    const missedToday = todaysOvernightStartupInstant(schedule, now);
+    if (missedToday) startupAt = missedToday;
+  }
+
   if (!startupAt || now < startupAt) return false;
   if (now.getTime() - startupAt.getTime() > STARTUP_CATCHUP_WINDOW_MS) return false;
   if (schedule.lastRun && schedule.lastRun >= startupAt) return false;
