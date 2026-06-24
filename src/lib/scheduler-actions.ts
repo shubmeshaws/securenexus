@@ -1014,40 +1014,60 @@ export async function executeShutdown(
     let statefulSetDeleted = false;
     let scaledObjectDeleted = false;
     const managedByArgo = pausedArgoApps.length > 0;
+    const shutdownFailures: string[] = [];
 
     if (isNamespace) {
       const replicasMap: Record<string, number> = {};
 
+      // Resilient per-workload shutdown: a single workload op failing (e.g. a K8s
+      // read/scale/ScaledObject-delete timing out under the midnight batch load) must
+      // NOT abort the whole namespace shutdown. Collect failures and only hard-fail
+      // when every workload failed, so the schedule still transitions to stopped and
+      // pausedArgoApps/liveUpdate are persisted (otherwise the schedule is left showing
+      // "Enabled" while Argo is already half-paused, and startup can't resume it).
       await runWithConcurrency(targets, resolveWorkloadOpConcurrency(), async (target) => {
         const key = workloadKey(target.kind, target.name);
-        const current = await getWorkloadDesiredReplicas(
-          schedule.cluster,
-          schedule.namespace,
-          target.kind,
-          target.name
-        );
-        replicasMap[key] = resolveShutdownReplicaSave(
-          current,
-          priorWorkloadSaves[key],
-          schedule.targetReplicas
-        );
-        if (target.kind === 'ScaledObject') {
-          await stopScaledObjectWorkload(
+        try {
+          const current = await getWorkloadDesiredReplicas(
             schedule.cluster,
             schedule.namespace,
-            target.name,
-            managedByArgo
+            target.kind,
+            target.name
           );
-          return;
+          replicasMap[key] = resolveShutdownReplicaSave(
+            current,
+            priorWorkloadSaves[key],
+            schedule.targetReplicas
+          );
+          if (target.kind === 'ScaledObject') {
+            await stopScaledObjectWorkload(
+              schedule.cluster,
+              schedule.namespace,
+              target.name,
+              managedByArgo
+            );
+            return;
+          }
+          await scaleWorkload(
+            schedule.cluster,
+            schedule.namespace,
+            target.kind,
+            target.name,
+            0
+          );
+        } catch (err) {
+          shutdownFailures.push(`${key}: ${err instanceof Error ? err.message : 'stop failed'}`);
         }
-        await scaleWorkload(
-          schedule.cluster,
-          schedule.namespace,
-          target.kind,
-          target.name,
-          0
-        );
       });
+
+      // Only treat as a hard failure when EVERY workload failed; a partial failure still
+      // lets the schedule transition to stopped so the status reflects reality and the
+      // resolved Argo apps stay paused/resumable.
+      if (targets.length > 0 && shutdownFailures.length === targets.length) {
+        throw new Error(
+          `All ${targets.length} workload(s) failed to stop: ${shutdownFailures.join('; ')}`
+        );
+      }
 
       await prisma.schedule.update({
         where: { id: schedule.id },
@@ -1141,8 +1161,12 @@ export async function executeShutdown(
     const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
     const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
     const isScaledObjectSchedule = !isNamespace && schedule.workloadKind === 'ScaledObject';
+    const shutdownFailuresNote = shutdownFailures.length
+      ? ` · ${shutdownFailures.length} workload(s) failed to stop: ${shutdownFailures.join('; ')}`
+      : '';
+    const stoppedCount = targets.length - shutdownFailures.length;
     const message = isNamespace
-      ? `Scaled ${targets.length} workload(s) to 0 in ${schedule.namespace}${argoNote}`
+      ? `Scaled ${stoppedCount}/${targets.length} workload(s) to 0 in ${schedule.namespace}${argoNote}${shutdownFailuresNote}`
       : isCronJobSchedule
         ? `Suspended CronJob ${schedule.appName} and removed active jobs${argoNote}`
         : isScaledJobSchedule
