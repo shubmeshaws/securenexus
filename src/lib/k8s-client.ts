@@ -1066,18 +1066,19 @@ async function patchScaledObjectAnnotations(
 }
 
 async function pauseScaledObject(cluster: string, namespace: string, name: string): Promise<void> {
-  // Match kubectl: annotate scaledobject autoscaling.keda.sh/paused-replicas="0"
-  // KEDA pins the scale target to 0 and pauses autoscaling — no separate Deployment scale.
+  // Use paused-replicas (KEDA 2.0+) AND paused=true (PAUSED column / KEDA 2.8+) so all versions
+  // show consistent stop state in kubectl get scaledobject.
   await patchScaledObjectAnnotations(cluster, namespace, name, {
     [KEDA_PAUSED_REPLICAS_ANNOTATION]: '0',
-    [KEDA_PAUSED_ANNOTATION]: null,
+    [KEDA_PAUSED_ANNOTATION]: 'true',
   });
 
   const verify = await readScaledObjectBody(cluster, namespace, name);
-  const actual = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
-  if (actual !== '0') {
+  const pinned = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
+  const paused = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
+  if (pinned !== '0' && paused !== 'true') {
     throw new Error(
-      `Failed to pause ScaledObject "${name}" (${KEDA_PAUSED_REPLICAS_ANNOTATION} is "${actual ?? 'unset'}")`
+      `Failed to pause ScaledObject "${name}" (paused-replicas="${pinned ?? 'unset'}", paused="${paused ?? 'unset'}")`
     );
   }
 }
@@ -1088,7 +1089,6 @@ async function resumeScaledObject(
   name: string,
   _replicas: number
 ): Promise<void> {
-  // Match kubectl: annotate scaledobject autoscaling.keda.sh/paused-replicas-
   await patchScaledObjectAnnotations(cluster, namespace, name, {
     [KEDA_PAUSED_REPLICAS_ANNOTATION]: null,
     [KEDA_PAUSED_ANNOTATION]: null,
@@ -1096,9 +1096,10 @@ async function resumeScaledObject(
 
   const verify = await readScaledObjectBody(cluster, namespace, name);
   const stillPinned = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
-  if (stillPinned != null) {
+  const stillPaused = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
+  if (stillPinned != null || stillPaused === 'true') {
     throw new Error(
-      `Failed to resume ScaledObject "${name}" (${KEDA_PAUSED_REPLICAS_ANNOTATION} is still "${stillPinned}")`
+      `Failed to resume ScaledObject "${name}" (paused-replicas="${stillPinned ?? 'unset'}", paused="${stillPaused ?? 'unset'}")`
     );
   }
 }

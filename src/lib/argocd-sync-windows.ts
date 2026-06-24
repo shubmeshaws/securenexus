@@ -177,6 +177,26 @@ function isSecureNexusManagedDenyRow(window: ArgoSyncWindowSpec): boolean {
   return Boolean(window.applications?.length);
 }
 
+/** Any deny sync window created or managed by SecureNexus (app or namespace scope). */
+export function isSecureNexusManagedSyncWindowRow(window: ArgoSyncWindowSpec): boolean {
+  if (window.description === SECURENEXUS_SYNC_WINDOW_DESCRIPTION) return true;
+  if (isSecureNexusManagedNamespaceDenyRow(window)) return true;
+  return isSecureNexusManagedDenyRow(window);
+}
+
+/** Strip every SecureNexus-managed deny window from an AppProject spec. */
+export function removeAllSecureNexusManagedSyncWindows(
+  existing: ArgoSyncWindowSpec[]
+): { windows: ArgoSyncWindowSpec[]; removed: number } {
+  let removed = 0;
+  const windows = existing.filter((row) => {
+    if (!isSecureNexusManagedSyncWindowRow(row)) return true;
+    removed++;
+    return false;
+  });
+  return { windows, removed };
+}
+
 function parseDurationHours(duration: string): number {
   const match = /^(\d+)h$/.exec(duration.trim());
   return match ? Number(match[1]) : 0;

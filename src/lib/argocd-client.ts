@@ -10,6 +10,7 @@ import {
   buildScheduleDenySyncWindow,
   mergeNamespaceDenySyncWindow,
   mergeScheduleDenySyncWindow,
+  removeAllSecureNexusManagedSyncWindows,
   removeScheduleDenySyncWindows,
   removeScheduleNamespaceDenyWindow,
   type ArgoSyncWindowSpec,
@@ -438,6 +439,25 @@ class InstanceArgoCDClient {
     return typeof project === 'string' && project.trim() ? project : 'default';
   }
 
+  async listProjectNames(): Promise<string[]> {
+    const res = await argoFetch(`${this.baseUrl}/projects`, {
+      headers: this.headers,
+      insecureTls: this.instance.insecureTls,
+      timeoutMs: 30_000,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to list ArgoCD projects: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as { items?: Record<string, unknown>[] };
+    return (data.items ?? [])
+      .map((item) => {
+        const metadata = item.metadata as { name?: string } | undefined;
+        return metadata?.name?.trim() ?? '';
+      })
+      .filter(Boolean);
+  }
+
   async getProjectRaw(projectName: string): Promise<Record<string, unknown>> {
     const res = await argoFetch(`${this.baseUrl}/projects/${encodeURIComponent(projectName)}`, {
       headers: this.headers,
@@ -642,6 +662,40 @@ class InstanceArgoCDClient {
     });
 
     return removed;
+  }
+
+  /** Remove every SecureNexus-managed deny sync window from all AppProjects on this instance. */
+  async purgeSecureNexusSyncWindows(): Promise<{
+    projectsScanned: number;
+    projectsUpdated: number;
+    windowsRemoved: number;
+  }> {
+    const projectNames = await this.listProjectNames();
+    let projectsUpdated = 0;
+    let windowsRemoved = 0;
+
+    for (const projectName of projectNames) {
+      let projectRemoved = 0;
+      await this.mutateProjectSpec(projectName, (project) => {
+        const result = removeAllSecureNexusManagedSyncWindows(this.readProjectSyncWindows(project));
+        projectRemoved = result.removed;
+        if (result.removed > 0) {
+          const spec = (project.spec as Record<string, unknown>) ?? {};
+          spec.syncWindows = result.windows;
+          project.spec = spec;
+        }
+      });
+      if (projectRemoved > 0) {
+        projectsUpdated++;
+        windowsRemoved += projectRemoved;
+      }
+    }
+
+    return {
+      projectsScanned: projectNames.length,
+      projectsUpdated,
+      windowsRemoved,
+    };
   }
 
   async getManagedResources(appName: string): Promise<ArgoCDManagedResourceItem[]> {

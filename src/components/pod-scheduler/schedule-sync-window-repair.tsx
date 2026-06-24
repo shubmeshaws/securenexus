@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, ShieldCheck } from '@/lib/icons';
+import { Loader2, ShieldCheck, CircleX } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,6 +15,7 @@ import {
 import { apiFetch } from '@/lib/api-client';
 import type { SyncWindowReconcileResult } from '@/lib/schedule-sync-window-reconcile';
 import type { SyncWindowReconcileJobState } from '@/lib/schedule-sync-window-job';
+import type { SyncWindowClearResult } from '@/lib/schedule-sync-window-clear';
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 25 * 60 * 1000;
@@ -49,8 +50,11 @@ function formatProgress(job: SyncWindowReconcileJobState): string | null {
 
 export function ScheduleSyncWindowRepair() {
   const [repairing, setRepairing] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [result, setResult] = useState<SyncWindowReconcileResult | null>(null);
+  const [clearResult, setClearResult] = useState<SyncWindowClearResult | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [clearError, setClearError] = useState<string | null>(null);
   const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [schedulesScanned, setSchedulesScanned] = useState<number | null>(null);
   const pollAbortRef = useRef(false);
@@ -116,15 +120,41 @@ export function ScheduleSyncWindowRepair() {
     }
   }, [pollUntilDone]);
 
+  const runClear = useCallback(async () => {
+    setClearing(true);
+    setClearError(null);
+    setClearResult(null);
+
+    try {
+      const data = await apiFetch<SyncWindowClearResult>('/api/schedules/clear-sync-windows', {
+        ...NO_CACHE_FETCH,
+        method: 'POST',
+      });
+      setClearResult(data);
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : 'Clear failed');
+    } finally {
+      setClearing(false);
+    }
+  }, []);
+
   return (
     <>
-      <Button size="sm" variant="outline" onClick={runRepair} disabled={repairing}>
+      <Button size="sm" variant="outline" onClick={runRepair} disabled={repairing || clearing}>
         {repairing ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
           <AppIcon icon={ShieldCheck} size="sm" />
         )}
         {repairing && progressLabel ? progressLabel : 'Repair sync blocks'}
+      </Button>
+      <Button size="sm" variant="outline" onClick={runClear} disabled={repairing || clearing}>
+        {clearing ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <AppIcon icon={CircleX} size="sm" />
+        )}
+        Clear sync blocks
       </Button>
 
       <Dialog
@@ -176,6 +206,59 @@ export function ScheduleSyncWindowRepair() {
                 setResult(null);
                 setJobError(null);
                 setSchedulesScanned(null);
+              }}
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={clearResult !== null || clearError !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setClearResult(null);
+            setClearError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Sync block cleanup</DialogTitle>
+            <DialogDescription>
+              {clearError
+                ? 'Could not remove SecureNexus sync blocks.'
+                : 'Removed SecureNexus deny sync windows and restored automated sync where applicable.'}
+            </DialogDescription>
+          </DialogHeader>
+          {clearError ? (
+            <p className="text-sm text-red-500">{clearError}</p>
+          ) : (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>Argo instances processed: {clearResult?.instancesProcessed ?? 0}</p>
+              <p>
+                Projects updated: {clearResult?.projectsUpdated ?? 0} (scanned{' '}
+                {clearResult?.projectsScanned ?? 0})
+              </p>
+              <p>Deny windows removed: {clearResult?.windowsRemoved ?? 0}</p>
+              <p>Automated sync restored: {clearResult?.syncPoliciesRestored ?? 0} app(s)</p>
+            </div>
+          )}
+          {(clearResult?.errors.length ?? 0) > 0 && (
+            <ul className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-sm">
+              {clearResult?.errors.map((error) => (
+                <li key={error} className="text-muted-foreground">
+                  {error}
+                </li>
+              ))}
+            </ul>
+          )}
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                setClearResult(null);
+                setClearError(null);
               }}
             >
               Close
