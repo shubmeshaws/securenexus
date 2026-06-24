@@ -476,17 +476,11 @@ export async function applyManualSyncDenyForSchedule(
   return applyManualSyncDenyForApps(schedule, targets, now);
 }
 
-async function resolveScheduleArgoAppsFromCatalog(
-  schedule: Schedule,
+function buildCatalogForApps(
   allApps: ArgoCDAppSummary[],
   instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
-): Promise<ScheduleArgoApp[]> {
-  if (schedule.pausedArgoApps.length > 0) {
-    const fromStored = await resolveArgoAppsForResume(schedule, schedule.pausedArgoApps);
-    if (fromStored.length) return fromStored;
-  }
-
-  const catalog: ArgoCatalog = {
+): ArgoCatalog {
+  return {
     filtered: (s) => filterAppsForSchedule(s, allApps, instanceMap),
     relaxed: (s) => {
       const inNamespace = allApps.filter((app) => app.destinationNamespace === s.namespace);
@@ -504,11 +498,48 @@ async function resolveScheduleArgoAppsFromCatalog(
       return anyMatch ? { name: anyMatch.name, instanceId: anyMatch.instanceId } : null;
     },
   };
-
-  return collectScheduleArgoApps(schedule, catalog);
 }
 
-/** Repair path: catalog + pausedArgoApps first; K8s tracking only when catalog finds nothing. */
+/**
+ * Resolve a schedule's Argo apps for the repair/reconcile path WITHOUT touching the live
+ * cluster. A stopped schedule's workloads are scaled to 0 or deleted, so K8s
+ * tracking-annotation lookups (getDeploymentArgoAppName, getArgoAppNamesForNamespace, …)
+ * return nothing and the deny window silently never gets applied. The Argo CD catalog
+ * (listApplications) always lists every app regardless of workload state, so we resolve
+ * from it by namespace/instance instead. Order:
+ *   1. Stored pausedArgoApps (most precise — captured at shutdown).
+ *   2. Namespace schedules → every catalog app in the schedule's namespace.
+ *   3. Single-workload schedules → catalog app whose name matches schedule.appName,
+ *      else the catalog apps in the namespace as a last resort.
+ */
+async function resolveScheduleArgoAppsFromCatalog(
+  schedule: Schedule,
+  allApps: ArgoCDAppSummary[],
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
+): Promise<ScheduleArgoApp[]> {
+  const catalog = buildCatalogForApps(allApps, instanceMap);
+
+  if (schedule.pausedArgoApps.length > 0) {
+    const fromStored = await resolveArgoAppsForResume(schedule, schedule.pausedArgoApps, catalog);
+    if (fromStored.length) return fromStored;
+  }
+
+  if (isNamespaceSchedule(schedule)) {
+    return resolveCatalogAppsInNamespace(schedule, catalog);
+  }
+
+  const byName = findArgoAppInCatalog(catalog, schedule, schedule.appName);
+  if (byName) return [byName];
+
+  return resolveCatalogAppsInNamespace(schedule, catalog);
+}
+
+/**
+ * Repair/self-heal path: resolve from the Argo CD catalog only (no live K8s lookups), so
+ * the deny window is applied even after the schedule's workloads have been deleted. K8s
+ * tracking resolution is used only as a final fallback when the catalog yields nothing
+ * (e.g. an app whose name and namespace both differ from the schedule).
+ */
 export async function applyManualSyncDenyForScheduleRepair(
   schedule: Schedule,
   allApps: ArgoCDAppSummary[],
