@@ -17,13 +17,8 @@ export type WorkloadKind =
   | 'ScaledJob'
   | 'ScaledObject';
 
-/** KEDA annotation that pauses/resumes ScaledJobs and ScaledObjects (KEDA >= 2.8). */
+/** KEDA annotation that pauses/resumes ScaledJobs (KEDA >= 2.8). */
 const KEDA_PAUSED_ANNOTATION = 'autoscaling.keda.sh/paused';
-/**
- * KEDA annotation that pins a ScaledObject to a fixed replica count and pauses autoscaling
- * (available since KEDA 2.0). Setting it to "0" is the most reliable way to shut a
- * ScaledObject-managed workload down across KEDA versions; removing it resumes autoscaling.
- */
 const KEDA_PAUSED_REPLICAS_ANNOTATION = 'autoscaling.keda.sh/paused-replicas';
 
 export interface WorkloadInfo {
@@ -574,11 +569,17 @@ export async function getWorkloadDesiredReplicas(
   }
 
   if (kind === 'ScaledObject') {
-    const body = await readScaledObjectBody(cluster, namespace, name);
-    if (scaledObjectIsPaused(body)) return 0;
-    const target = getScaledObjectScaleTargetFromBody(body);
-    if (!target) return 0;
-    return getWorkloadDesiredReplicas(cluster, namespace, target.kind, target.name);
+    try {
+      const body = await readScaledObjectBody(cluster, namespace, name);
+      const target = getScaledObjectScaleTargetFromBody(body);
+      if (!target) return 0;
+      return getWorkloadDesiredReplicas(cluster, namespace, target.kind, target.name);
+    } catch (err) {
+      const status = (err as { statusCode?: number; body?: { code?: number } })?.statusCode
+        ?? (err as { body?: { code?: number } })?.body?.code;
+      if (status === 404) return 0;
+      throw err;
+    }
   }
 
   return 0;
@@ -987,22 +988,77 @@ async function pauseScaledJob(
   await deleteActiveScaledJobJobs(cluster, namespace, name);
 }
 
+export async function scaledObjectExists(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<boolean> {
+  try {
+    await readScaledObjectBody(cluster, namespace, name);
+    return true;
+  } catch (err) {
+    const status = (err as { statusCode?: number; body?: { code?: number } })?.statusCode
+      ?? (err as { body?: { code?: number } })?.body?.code;
+    if (status === 404) return false;
+    throw err;
+  }
+}
+
+/** Delete a ScaledObject so KEDA releases the scale target; Argo CD recreates it on startup. */
+export async function deleteScaledObject(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<void> {
+  const kc = await getConfigForCluster(cluster);
+  const api = kc.makeApiClient(k8s.CustomObjectsApi);
+  await api.deleteNamespacedCustomObject(
+    'keda.sh',
+    'v1alpha1',
+    namespace,
+    'scaledobjects',
+    name
+  );
+}
+
+/**
+ * Stop a ScaledObject by deleting it. With Argo CD paused, the object stays deleted until sync
+ * on startup. Without Argo, also scales the underlying Deployment/StatefulSet to 0.
+ */
+export async function shutdownScaledObject(
+  cluster: string,
+  namespace: string,
+  name: string,
+  options: { managedByArgo: boolean; settleBeforeDeleteMs?: number }
+): Promise<void> {
+  if (!options.managedByArgo) {
+    throw new Error(
+      `ScaledObject "${name}" delete requires a linked Argo CD app — use pauseScaledObjectByAnnotation instead`
+    );
+  }
+
+  const scaleTarget = await getScaledObjectScaleTarget(cluster, namespace, name);
+
+  if (options.settleBeforeDeleteMs) {
+    await new Promise((resolve) => setTimeout(resolve, options.settleBeforeDeleteMs));
+  }
+
+  if (await scaledObjectExists(cluster, namespace, name)) {
+    await deleteScaledObject(cluster, namespace, name);
+  }
+
+  // Scale target is left running; KEDA recreates autoscaling when Argo restores the SO.
+  if (!scaleTarget) {
+    console.warn(
+      `[ScaledObject shutdown] ${namespace}/${name} deleted but scale target could not be resolved`
+    );
+  }
+}
+
 type ScaledObjectBody = {
   metadata?: { annotations?: Record<string, string> };
   spec?: { scaleTargetRef?: { name?: string; kind?: string } };
 };
-
-function scaledObjectIsPaused(body: ScaledObjectBody): boolean {
-  const annotations = body.metadata?.annotations ?? {};
-  // KEDA treats the presence of either pause annotation as paused (even paused="false").
-  return (
-    KEDA_PAUSED_ANNOTATION in annotations || KEDA_PAUSED_REPLICAS_ANNOTATION in annotations
-  );
-}
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function readScaledObjectBody(
   cluster: string,
@@ -1043,10 +1099,11 @@ export async function getScaledObjectScaleTarget(
   }
 }
 
-/**
- * Replace ScaledObject annotations via JSON Patch (reliable key removal on CRDs).
- * Merge-patch `null` values often fail to delete annotation keys on custom resources.
- */
+/** Guess scale target when the ScaledObject was already deleted (name suffix convention). */
+export function guessScaledObjectScaleTargetName(scaledObjectName: string): string {
+  return scaledObjectName.replace(/-scaledobject$/i, '');
+}
+
 async function replaceScaledObjectAnnotations(
   cluster: string,
   namespace: string,
@@ -1075,56 +1132,30 @@ async function replaceScaledObjectAnnotations(
   );
 }
 
-async function pauseScaledObject(cluster: string, namespace: string, name: string): Promise<void> {
+/** Fallback stop when no Argo CD app is linked — pause via KEDA annotations. */
+export async function pauseScaledObjectByAnnotation(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<void> {
   const body = await readScaledObjectBody(cluster, namespace, name);
   const next = { ...(body.metadata?.annotations ?? {}) };
   next[KEDA_PAUSED_REPLICAS_ANNOTATION] = '0';
   next[KEDA_PAUSED_ANNOTATION] = 'true';
   await replaceScaledObjectAnnotations(cluster, namespace, name, next);
-
-  const verify = await readScaledObjectBody(cluster, namespace, name);
-  if (!scaledObjectIsPaused(verify)) {
-    throw new Error(`Failed to pause ScaledObject "${name}"`);
-  }
 }
 
-async function resumeScaledObject(
+/** Fallback start when no Argo CD app is linked. */
+export async function resumeScaledObjectByAnnotation(
   cluster: string,
   namespace: string,
-  name: string,
-  _replicas: number
+  name: string
 ): Promise<void> {
-  // Retry: Argo CD sync after startup can briefly re-apply pause annotations from git drift.
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const body = await readScaledObjectBody(cluster, namespace, name);
-    if (!scaledObjectIsPaused(body)) return;
-
-    const next = { ...(body.metadata?.annotations ?? {}) };
-    delete next[KEDA_PAUSED_REPLICAS_ANNOTATION];
-    delete next[KEDA_PAUSED_ANNOTATION];
-    await replaceScaledObjectAnnotations(cluster, namespace, name, next);
-
-    await sleepMs(attempt === 0 ? 750 : 2_000);
-    const verify = await readScaledObjectBody(cluster, namespace, name);
-    if (!scaledObjectIsPaused(verify)) return;
-  }
-
-  const final = await readScaledObjectBody(cluster, namespace, name);
-  const annotations = final.metadata?.annotations ?? {};
-  throw new Error(
-    `Failed to resume ScaledObject "${name}" (paused-replicas="${annotations[KEDA_PAUSED_REPLICAS_ANNOTATION] ?? 'unset'}", paused="${annotations[KEDA_PAUSED_ANNOTATION] ?? 'unset'}")`
-  );
-}
-
-/** Re-apply ScaledObject resume after Argo sync (call from startup once Argo has run). */
-export async function reconcileScaledObjectsAfterArgoSync(
-  cluster: string,
-  namespace: string,
-  names: string[]
-): Promise<void> {
-  for (const name of names) {
-    await resumeScaledObject(cluster, namespace, name, 1);
-  }
+  const body = await readScaledObjectBody(cluster, namespace, name);
+  const next = { ...(body.metadata?.annotations ?? {}) };
+  delete next[KEDA_PAUSED_REPLICAS_ANNOTATION];
+  delete next[KEDA_PAUSED_ANNOTATION];
+  await replaceScaledObjectAnnotations(cluster, namespace, name, next);
 }
 
 export async function scaleWorkload(
@@ -1136,6 +1167,11 @@ export async function scaleWorkload(
 ): Promise<void> {
   if (kind === 'DaemonSet') {
     throw new Error(`DaemonSet "${name}" cannot be scaled — exclude it from namespace schedules`);
+  }
+  if (kind === 'ScaledObject') {
+    throw new Error(
+      `ScaledObject "${name}" is stopped via delete and started via Argo CD sync — use shutdownScaledObject instead`
+    );
   }
   if (kind === 'CronJob') {
     if (replicas === 0) {
@@ -1150,14 +1186,6 @@ export async function scaleWorkload(
       await pauseScaledJob(cluster, namespace, name);
     } else {
       await setScaledJobPaused(cluster, namespace, name, false);
-    }
-    return;
-  }
-  if (kind === 'ScaledObject') {
-    if (replicas === 0) {
-      await pauseScaledObject(cluster, namespace, name);
-    } else {
-      await resumeScaledObject(cluster, namespace, name, replicas);
     }
     return;
   }
