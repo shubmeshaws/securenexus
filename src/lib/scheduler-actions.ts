@@ -1,4 +1,4 @@
-import argocdClient, { appMatchesK8sCluster, invalidateArgoAppsCache } from './argocd-client';
+import argocdClient, { appMatchesK8sCluster } from './argocd-client';
 import { instanceMatchesCluster, listEnabledArgoCDInstances } from './argocd-instances';
 import type { ArgoCDAppSummary } from './argocd-client';
 import { AUTOMATIC_CRON_TRIGGER } from './alert-display';
@@ -29,7 +29,13 @@ import {
 import { Prisma, type Schedule } from '@prisma/client';
 import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
 import { runWithConcurrency } from './concurrency';
-import { resolveWorkloadOpConcurrency } from './schedule-execution-pool';
+import { resolveArgoOpConcurrency, resolveWorkloadOpConcurrency } from './schedule-execution-pool';
+
+/** Delay after pausing Argo before deleting a StatefulSet (ms). Override: STS_SHUTDOWN_SETTLE_MS */
+const STS_SHUTDOWN_SETTLE_MS = (() => {
+  const fromEnv = Number(process.env.STS_SHUTDOWN_SETTLE_MS);
+  return Number.isFinite(fromEnv) && fromEnv >= 0 ? fromEnv : 1000;
+})();
 
 function isAutomaticScheduleTrigger(triggeredBy: string): boolean {
   return (
@@ -70,6 +76,70 @@ function resolveArgoAppFromPool(
   return byTarget ? { name: byTarget.name, instanceId: byTarget.instanceId } : null;
 }
 
+interface ScheduleArgoApp {
+  name: string;
+  instanceId: string;
+}
+
+/**
+ * In-memory Argo CD catalog for one schedule run. Loads all apps once so resolution,
+ * pause, and resume avoid repeated listApplications() calls within the same execution.
+ */
+interface ArgoCatalog {
+  filtered(schedule: Schedule): ArgoCDAppSummary[];
+  relaxed(schedule: Schedule): ArgoCDAppSummary[];
+  find(schedule: Schedule, appName: string): ScheduleArgoApp | null;
+}
+
+async function loadArgoCatalog(): Promise<ArgoCatalog> {
+  const [allApps, instances] = await Promise.all([
+    argocdClient.listApplications(),
+    listEnabledArgoCDInstances(),
+  ]);
+  const instanceMap = new Map(instances.map((i) => [i.id, i]));
+
+  return {
+    filtered: (schedule) => filterAppsForSchedule(schedule, allApps, instanceMap),
+    relaxed: (schedule) => {
+      const inNamespace = allApps.filter((app) => app.destinationNamespace === schedule.namespace);
+      if (schedule.argocdInstanceId) {
+        const pinned = inNamespace.filter((app) => app.instanceId === schedule.argocdInstanceId);
+        if (pinned.length) return pinned;
+      }
+      return inNamespace;
+    },
+    find: (schedule, appName) => {
+      const scoped = filterAppsForSchedule(schedule, allApps, instanceMap);
+      const scopedMatch = scoped.find((a) => a.name === appName);
+      if (scopedMatch) return { name: scopedMatch.name, instanceId: scopedMatch.instanceId };
+      const anyMatch = allApps.find((a) => a.name === appName);
+      return anyMatch ? { name: anyMatch.name, instanceId: anyMatch.instanceId } : null;
+    },
+  };
+}
+
+function relaxedAppsFromCatalog(catalog: ArgoCatalog, schedule: Schedule): ArgoCDAppSummary[] {
+  return catalog.relaxed(schedule);
+}
+
+async function resolveCatalogAppsInNamespace(
+  schedule: Schedule,
+  catalog: ArgoCatalog
+): Promise<ScheduleArgoApp[]> {
+  const relaxed = relaxedAppsFromCatalog(catalog, schedule);
+  const strict = catalog.filtered(schedule);
+  const pool = strict.length ? strict : relaxed;
+  return pool.map((app) => ({ name: app.name, instanceId: app.instanceId }));
+}
+
+function findArgoAppInCatalog(
+  catalog: ArgoCatalog,
+  schedule: Schedule,
+  appName: string
+): ScheduleArgoApp | null {
+  return catalog.find(schedule, appName);
+}
+
 /**
  * Catalog lookup without strict cluster-name filtering (EC2 cluster labels often differ).
  *
@@ -80,52 +150,28 @@ function resolveArgoAppFromPool(
  * still written to the correct Argo CD.
  */
 async function appsForScheduleRelaxed(schedule: Schedule): Promise<ArgoCDAppSummary[]> {
-  const apps = await argocdClient.listApplications();
-  const inNamespace = apps.filter((app) => app.destinationNamespace === schedule.namespace);
-
-  if (schedule.argocdInstanceId) {
-    const pinned = inNamespace.filter((app) => app.instanceId === schedule.argocdInstanceId);
-    if (pinned.length) return pinned;
-  }
-
-  return inNamespace;
-}
-
-async function resolveCatalogAppsInNamespace(
-  schedule: Schedule
-): Promise<{ name: string; instanceId: string }[]> {
-  const relaxed = await appsForScheduleRelaxed(schedule);
-  const strict = await appsForSchedule(schedule);
-  const pool = strict.length ? strict : relaxed;
-  return pool.map((app) => ({ name: app.name, instanceId: app.instanceId }));
+  const catalog = await loadArgoCatalog();
+  return relaxedAppsFromCatalog(catalog, schedule);
 }
 
 /** Find an Argo app by exact name, preferring the cluster/instance-scoped list. */
 async function findArgoAppByName(
   schedule: Schedule,
-  appName: string
-): Promise<{ name: string; instanceId: string } | null> {
+  appName: string,
+  catalog?: ArgoCatalog
+): Promise<ScheduleArgoApp | null> {
   try {
-    const scoped = await appsForSchedule(schedule);
-    const scopedMatch = scoped.find((a) => a.name === appName);
-    if (scopedMatch) return { name: scopedMatch.name, instanceId: scopedMatch.instanceId };
-
-    // Fallback: search every app (cluster filtering may be too strict).
-    const all = await argocdClient.listApplications();
-    const anyMatch = all.find((a) => a.name === appName);
-    return anyMatch ? { name: anyMatch.name, instanceId: anyMatch.instanceId } : null;
+    const ctx = catalog ?? (await loadArgoCatalog());
+    return findArgoAppInCatalog(ctx, schedule, appName);
   } catch {
     return null;
   }
 }
 
-/**
- * Resolve the Argo app managing a StatefulSet: first from the live resource's
- * tracking metadata, then falling back to a namespace match.
- */
 async function resolveArgoAppForStatefulSet(
-  schedule: Schedule
-): Promise<{ name: string; instanceId: string } | null> {
+  schedule: Schedule,
+  catalog: ArgoCatalog
+): Promise<ScheduleArgoApp | null> {
   const trackingApp = await getStatefulSetArgoAppName(
     schedule.cluster,
     schedule.namespace,
@@ -135,42 +181,31 @@ async function resolveArgoAppForStatefulSet(
     `[STS shutdown] ${schedule.namespace}/${schedule.appName} trackingApp=${trackingApp ?? '(none)'}`
   );
   if (trackingApp) {
-    const byTracking = await findArgoAppByName(schedule, trackingApp);
+    const byTracking = findArgoAppInCatalog(catalog, schedule, trackingApp);
     if (byTracking) return byTracking;
   }
 
-  try {
-    const nsApps = (await appsForSchedule(schedule)).filter(
-      (app) => app.destinationNamespace === schedule.namespace
-    );
-    if (nsApps.length) return { name: nsApps[0].name, instanceId: nsApps[0].instanceId };
-  } catch {
-    // ignore
-  }
+  const nsApps = catalog.filtered(schedule).filter(
+    (app) => app.destinationNamespace === schedule.namespace
+  );
+  if (nsApps.length) return { name: nsApps[0].name, instanceId: nsApps[0].instanceId };
   return null;
 }
 
-/**
- * Resolve every Argo app that needs pausing for a schedule. Uses the live
- * resources' Argo tracking metadata (reliable across namespaces/app names) with a
- * destination-namespace match as a fallback.
- */
 async function collectScheduleArgoApps(
-  schedule: Schedule
-): Promise<{ name: string; instanceId: string }[]> {
-  const byName = new Map<string, { name: string; instanceId: string }>();
-  const add = (app: { name: string; instanceId: string } | null) => {
+  schedule: Schedule,
+  catalog?: ArgoCatalog
+): Promise<ScheduleArgoApp[]> {
+  const ctx = catalog ?? (await loadArgoCatalog());
+  const byName = new Map<string, ScheduleArgoApp>();
+  const add = (app: ScheduleArgoApp | null) => {
     if (app) byName.set(app.name, app);
   };
-  const addNamespaceMatches = async () => {
-    try {
-      const nsApps = (await appsForSchedule(schedule)).filter(
-        (app) => app.destinationNamespace === schedule.namespace
-      );
-      nsApps.forEach((a) => add({ name: a.name, instanceId: a.instanceId }));
-    } catch {
-      // best-effort
-    }
+  const addNamespaceMatches = () => {
+    ctx
+      .filtered(schedule)
+      .filter((app) => app.destinationNamespace === schedule.namespace)
+      .forEach((a) => add({ name: a.name, instanceId: a.instanceId }));
   };
 
   if (isNamespaceSchedule(schedule)) {
@@ -180,35 +215,34 @@ async function collectScheduleArgoApps(
         trackingNames.join(', ') || '(none)'
       }`
     );
-    for (const name of trackingNames) add(await findArgoAppByName(schedule, name));
-    await addNamespaceMatches();
+    await runWithConcurrency(trackingNames, resolveArgoOpConcurrency(), async (name) => {
+      add(findArgoAppInCatalog(ctx, schedule, name));
+    });
+    addNamespaceMatches();
     if (!byName.size) {
-      (await resolveCatalogAppsInNamespace(schedule)).forEach((app) => add(app));
+      (await resolveCatalogAppsInNamespace(schedule, ctx)).forEach((app) => add(app));
     }
   } else if (schedule.workloadKind === 'StatefulSet') {
-    add(await resolveArgoAppForStatefulSet(schedule));
-  } else if (schedule.workloadKind === 'CronJob' || schedule.workloadKind === 'ScaledJob' || schedule.workloadKind === 'ScaledObject') {
-    await addNamespaceMatches();
+    add(await resolveArgoAppForStatefulSet(schedule, ctx));
   } else {
-    add(await resolveArgoApp(schedule));
+    // Workload-scoped schedules (Deployment, ScaledObject, CronJob, ScaledJob, …) must
+    // resolve only the Argo app for THIS workload — never every app in the namespace.
+    add(await resolveArgoApp(schedule, ctx));
   }
 
-  if (!byName.size) {
-    const catalogApps = await resolveCatalogAppsInNamespace(schedule);
-    catalogApps.forEach((app) => add(app));
+  // Namespace-wide catalog fallback only for namespace schedules. Workload schedules with
+  // no linked Argo app should not block sync for unrelated apps in the same namespace.
+  if (!byName.size && isNamespaceSchedule(schedule)) {
+    (await resolveCatalogAppsInNamespace(schedule, ctx)).forEach((app) => add(app));
   }
 
   return Array.from(byName.values());
 }
 
-interface ScheduleArgoApp {
-  name: string;
-  instanceId: string;
-}
-
 async function blockNamespaceManualSync(
   schedule: Schedule,
-  input: { blockUntil: Date; timeZone: string; targets: ScheduleArgoApp[] }
+  input: { blockUntil: Date; timeZone: string; targets: ScheduleArgoApp[] },
+  catalog: ArgoCatalog
 ): Promise<string[]> {
   const blocked: string[] = [];
   const sampleByInstance = new Map<string, string>();
@@ -219,32 +253,35 @@ async function blockNamespaceManualSync(
     }
   }
 
-  const catalogApps = await appsForScheduleRelaxed(schedule);
-  for (const app of catalogApps) {
+  for (const app of relaxedAppsFromCatalog(catalog, schedule)) {
     if (!sampleByInstance.has(app.instanceId)) {
       sampleByInstance.set(app.instanceId, app.name);
     }
   }
 
-  for (const [instanceId, sampleAppName] of Array.from(sampleByInstance.entries())) {
-    try {
-      await argocdClient.addScheduleNamespaceDenyWindow(
-        {
-          namespace: schedule.namespace,
-          blockUntil: input.blockUntil,
-          timeZone: input.timeZone,
-          sampleAppName,
-        },
-        instanceId
-      );
-      blocked.push(`${schedule.namespace}@${sampleAppName}`);
-    } catch (err) {
-      console.error(
-        `[Argo pause] failed namespace deny for ${schedule.namespace} via ${sampleAppName}:`,
-        err instanceof Error ? err.message : err
-      );
+  await runWithConcurrency(
+    Array.from(sampleByInstance.entries()),
+    resolveArgoOpConcurrency(),
+    async ([instanceId, sampleAppName]) => {
+      try {
+        await argocdClient.addScheduleNamespaceDenyWindow(
+          {
+            namespace: schedule.namespace,
+            blockUntil: input.blockUntil,
+            timeZone: input.timeZone,
+            sampleAppName,
+          },
+          instanceId
+        );
+        blocked.push(`${schedule.namespace}@${sampleAppName}`);
+      } catch (err) {
+        console.error(
+          `[Argo pause] failed namespace deny for ${schedule.namespace} via ${sampleAppName}:`,
+          err instanceof Error ? err.message : err
+        );
+      }
     }
-  }
+  );
 
   return blocked;
 }
@@ -268,37 +305,43 @@ async function blockManualSyncForApps(
     byInstance.set(app.instanceId, group);
   }
 
-  for (const [instanceId, group] of Array.from(byInstance.entries())) {
-    try {
-      await argocdClient.addScheduleManualSyncDenyWindows(
-        {
-          appNames: group.map((app) => app.name),
-          blockUntil: input.blockUntil,
-          timeZone: input.timeZone,
-        },
-        instanceId
-      );
-      for (const app of group) {
-        blocked.push(app.name);
-        console.log(
-          `[${input.logPrefix}] manual sync deny window set for ${app.name} until ${input.blockUntil.toISOString()}`
+  await runWithConcurrency(
+    Array.from(byInstance.entries()),
+    resolveArgoOpConcurrency(),
+    async ([instanceId, group]) => {
+      try {
+        await argocdClient.addScheduleManualSyncDenyWindows(
+          {
+            appNames: group.map((app) => app.name),
+            blockUntil: input.blockUntil,
+            timeZone: input.timeZone,
+          },
+          instanceId
         );
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      for (const app of group) {
-        if (message.includes('already exists')) {
+        for (const app of group) {
           blocked.push(app.name);
-          console.log(`[${input.logPrefix}] manual sync deny window already active for ${app.name}`);
-        } else {
-          errors.push(`${app.name}: ${message}`);
-          console.error(
-            `[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`
+          console.log(
+            `[${input.logPrefix}] manual sync deny window set for ${app.name} until ${input.blockUntil.toISOString()}`
           );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        for (const app of group) {
+          if (message.includes('already exists')) {
+            blocked.push(app.name);
+            console.log(
+              `[${input.logPrefix}] manual sync deny window already active for ${app.name}`
+            );
+          } else {
+            errors.push(`${app.name}: ${message}`);
+            console.error(
+              `[${input.logPrefix}] failed to block manual sync for ${app.name}: ${message}`
+            );
+          }
         }
       }
     }
-  }
+  );
 
   return { blocked, errors };
 }
@@ -403,8 +446,8 @@ async function pauseArgoForSchedule(
   schedule: Schedule,
   now = new Date()
 ): Promise<{ note: string; apps: string[] }> {
-  invalidateArgoAppsCache();
-  let targets = await collectScheduleArgoApps(schedule);
+  const catalog = await loadArgoCatalog();
+  const targets = await collectScheduleArgoApps(schedule, catalog);
   console.log(
     `[Argo pause] ${schedule.namespace} resolved apps: ${
       targets.map((t) => t.name).join(', ') || '(none)'
@@ -423,7 +466,7 @@ async function pauseArgoForSchedule(
   const blockUntil = resolveManualSyncBlockUntilForShutdown(schedule, now);
   const timeZone = schedule.timezone || 'UTC';
 
-  for (const app of targets) {
+  await runWithConcurrency(targets, resolveArgoOpConcurrency(), async (app) => {
     try {
       await argocdClient.updateSyncPolicy(app.name, 'none', app.instanceId);
       paused.push(app.name);
@@ -432,7 +475,7 @@ async function pauseArgoForSchedule(
       pauseErrors.push(`${app.name}: ${message}`);
       console.error(`[Argo pause] failed to pause ${app.name}:`, message);
     }
-  }
+  });
 
   const { blocked: manualBlocked, errors: manualErrors } = await blockManualSyncForApps(targets, {
     blockUntil,
@@ -441,11 +484,18 @@ async function pauseArgoForSchedule(
     logPrefix: 'Argo pause',
   });
 
-  const namespaceBlocked = await blockNamespaceManualSync(schedule, {
-    blockUntil,
-    timeZone,
-    targets,
-  });
+  // Namespace-wide deny windows affect every app in the namespace — only for namespace schedules.
+  const namespaceBlocked = isNamespaceSchedule(schedule)
+    ? await blockNamespaceManualSync(
+        schedule,
+        {
+          blockUntil,
+          timeZone,
+          targets,
+        },
+        catalog
+      )
+    : [];
 
   const notes: string[] = [];
   if (paused.length) notes.push(`ArgoCD sync paused (${paused.join(', ')})`);
@@ -494,9 +544,12 @@ async function appsForSchedule(schedule: Schedule): Promise<ArgoCDAppSummary[]> 
 }
 
 async function resolveArgoApp(
-  schedule: Schedule
-): Promise<{ name: string; instanceId: string } | null> {
+  schedule: Schedule,
+  catalog?: ArgoCatalog
+): Promise<ScheduleArgoApp | null> {
   if (isNamespaceSchedule(schedule)) return null;
+
+  const ctx = catalog ?? (await loadArgoCatalog());
 
   if (schedule.workloadKind === 'ScaledObject') {
     const target = await getScaledObjectScaleTarget(
@@ -516,7 +569,7 @@ async function resolveArgoApp(
         target.name
       );
       if (trackingApp) {
-        const byTracking = await findArgoAppByName(schedule, trackingApp);
+        const byTracking = findArgoAppInCatalog(ctx, schedule, trackingApp);
         if (byTracking) return byTracking;
       }
     } else if (target?.kind === 'StatefulSet') {
@@ -526,7 +579,7 @@ async function resolveArgoApp(
         target.name
       );
       if (trackingApp) {
-        const byTracking = await findArgoAppByName(schedule, trackingApp);
+        const byTracking = findArgoAppInCatalog(ctx, schedule, trackingApp);
         if (byTracking) return byTracking;
       }
     }
@@ -544,21 +597,20 @@ async function resolveArgoApp(
       }`
     );
     if (trackingApp) {
-      const byTracking = await findArgoAppByName(schedule, trackingApp);
+      const byTracking = findArgoAppInCatalog(ctx, schedule, trackingApp);
       if (byTracking) return byTracking;
     }
   }
 
   try {
-    const scoped = await appsForSchedule(schedule);
+    const scoped = ctx.filtered(schedule);
     const match = resolveArgoAppFromPool(schedule, scoped);
     if (match) return match;
 
-    const relaxed = await appsForScheduleRelaxed(schedule);
-    const relaxedMatch = resolveArgoAppFromPool(schedule, relaxed);
+    const relaxedMatch = resolveArgoAppFromPool(schedule, ctx.relaxed(schedule));
     if (relaxedMatch) return relaxedMatch;
 
-    return findArgoAppByName(schedule, schedule.appName);
+    return findArgoAppInCatalog(ctx, schedule, schedule.appName);
   } catch {
     return null;
   }
@@ -566,19 +618,23 @@ async function resolveArgoApp(
 
 async function resolveArgoAppsForResume(
   schedule: Schedule,
-  appNames: string[]
+  appNames: string[],
+  catalog?: ArgoCatalog
 ): Promise<ScheduleArgoApp[]> {
+  const ctx = catalog ?? (await loadArgoCatalog());
   const resolved: ScheduleArgoApp[] = [];
-  for (const name of appNames) {
-    const match = await findArgoAppByName(schedule, name);
+
+  await runWithConcurrency(appNames, resolveArgoOpConcurrency(), async (name) => {
+    const match = findArgoAppInCatalog(ctx, schedule, name);
     if (match) {
       resolved.push(match);
-      continue;
+      return;
     }
     if (schedule.argocdInstanceId) {
       resolved.push({ name, instanceId: schedule.argocdInstanceId });
     }
-  }
+  });
+
   return resolved;
 }
 
@@ -588,7 +644,8 @@ async function resumeStoredArgoApps(
   apps: ScheduleArgoApp[]
 ): Promise<string> {
   const unblocked: string[] = [];
-  for (const app of apps) {
+
+  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
     try {
       const removed = await argocdClient.removeScheduleManualSyncDenyWindows(
         app.name,
@@ -606,26 +663,36 @@ async function resumeStoredArgoApps(
         err instanceof Error ? err.message : err
       );
     }
-  }
+  });
 
-  for (const app of apps) {
-    try {
-      const removed = await argocdClient.removeScheduleNamespaceDenyWindow(
-        schedule.namespace,
-        app.name,
-        app.instanceId
-      );
-      if (removed > 0) {
-        console.log(
-          `[Argo resume] removed namespace deny window for ${schedule.namespace} in project via ${app.name}`
-        );
-      }
-    } catch (err) {
-      console.error(
-        `[Argo resume] failed to remove namespace deny for ${schedule.namespace}:`,
-        err instanceof Error ? err.message : err
-      );
+  const sampleByInstance = new Map<string, ScheduleArgoApp>();
+  if (isNamespaceSchedule(schedule)) {
+    for (const app of apps) {
+      if (!sampleByInstance.has(app.instanceId)) sampleByInstance.set(app.instanceId, app);
     }
+    await runWithConcurrency(
+      Array.from(sampleByInstance.values()),
+      resolveArgoOpConcurrency(),
+      async (app) => {
+        try {
+          const removed = await argocdClient.removeScheduleNamespaceDenyWindow(
+            schedule.namespace,
+            app.name,
+            app.instanceId
+          );
+          if (removed > 0) {
+            console.log(
+              `[Argo resume] removed namespace deny window for ${schedule.namespace} in project via ${app.name}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[Argo resume] failed to remove namespace deny for ${schedule.namespace}:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+    );
   }
 
   const notes: string[] = [];
@@ -638,7 +705,7 @@ async function resumeStoredArgoApps(
   }
 
   const resumed: string[] = [];
-  for (const app of apps) {
+  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
     try {
       await argocdClient.updateSyncPolicy(app.name, 'automated', app.instanceId);
       resumed.push(app.name);
@@ -653,7 +720,7 @@ async function resumeStoredArgoApps(
         err instanceof Error ? err.message : err
       );
     }
-  }
+  });
   if (resumed.length) notes.push(`ArgoCD sync restored (${resumed.join(', ')})`);
   return notes.length ? ` · ${notes.join(' · ')}` : '';
 }
@@ -843,13 +910,20 @@ export async function executeShutdown(
     return executeEc2Shutdown(schedule, triggeredBy, options);
   }
 
-  const targets = await getScheduleTargets(schedule);
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
+  let targets: WorkloadTarget[] = [];
 
   try {
-    const nodeCount = await getClusterReadyNodeCount(schedule.cluster);
-    const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
+    const [resolvedTargets, nodeCount, fresh, pauseOutcome] = await Promise.all([
+      getScheduleTargets(schedule),
+      getClusterReadyNodeCount(schedule.cluster),
+      prisma.schedule.findUnique({ where: { id: schedule.id } }),
+      pauseArgoForSchedule(schedule)
+        .then((result) => ({ ok: true as const, result }))
+        .catch((err: unknown) => ({ ok: false as const, err })),
+    ]);
+    targets = resolvedTargets;
     const priorWorkloadSaves = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
     const alertSchedule = fresh ?? schedule;
 
@@ -857,12 +931,13 @@ export async function executeShutdown(
 
     let argoNote = '';
     let pausedArgoApps: string[] = [];
-    try {
-      const pauseResult = await pauseArgoForSchedule(schedule);
-      argoNote = pauseResult.note;
-      pausedArgoApps = pauseResult.apps;
-    } catch (err) {
-      argoNote = ` · ArgoCD sync pause failed: ${err instanceof Error ? err.message : 'unknown'}`;
+    if (pauseOutcome.ok) {
+      argoNote = pauseOutcome.result.note;
+      pausedArgoApps = pauseOutcome.result.apps;
+    } else {
+      argoNote = ` · ArgoCD sync pause failed: ${
+        pauseOutcome.err instanceof Error ? pauseOutcome.err.message : 'unknown'
+      }`;
     }
 
     let statefulSetDeleted = false;
@@ -923,12 +998,12 @@ export async function executeShutdown(
         if (pausedArgoApps.length) {
           // Let Argo register the paused policy before deleting so an in-flight
           // self-heal doesn't immediately recreate the StatefulSet.
-          await new Promise((r) => setTimeout(r, 2000));
+          await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
           await deleteStatefulSet(schedule.cluster, schedule.namespace, schedule.appName);
           statefulSetDeleted = true;
 
           // Verify the delete stuck (Argo did not immediately recreate it).
-          await new Promise((r) => setTimeout(r, 2000));
+          await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
           const reappeared = await statefulSetExists(
             schedule.cluster,
             schedule.namespace,
@@ -972,7 +1047,7 @@ export async function executeShutdown(
         : isScaledJobSchedule
           ? `Paused ScaledJob ${schedule.appName} and removed active jobs${argoNote}`
           : isScaledObjectSchedule
-            ? `Paused ScaledObject ${schedule.appName} and scaled target to 0${argoNote}`
+            ? `Paused ScaledObject ${schedule.appName}${argoNote}`
             : statefulSetDeleted
               ? `Deleted StatefulSet ${schedule.appName} (PVCs preserved)${argoNote}`
               : `Scaled to 0 (saved ${savedForMessage ?? schedule.targetReplicas} replicas)${argoNote}`;
@@ -1032,16 +1107,21 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     return executeEc2Startup(schedule, triggeredBy);
   }
 
-  const targets = await getScheduleTargets(schedule);
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
+  let targets: WorkloadTarget[] = [];
 
   try {
-    const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
+    const [resolvedTargets, fresh] = await Promise.all([
+      getScheduleTargets(schedule),
+      prisma.schedule.findUnique({ where: { id: schedule.id } }),
+    ]);
+    targets = resolvedTargets;
     const alertSchedule = fresh ?? schedule;
 
     let statefulSetRecreatedViaArgo = false;
     const startupFailures: string[] = [];
+    const catalogPromise = loadArgoCatalog();
 
     if (isNamespace) {
       const savedMap = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
@@ -1092,10 +1172,11 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
     let argoNote = '';
     try {
+      const catalog = await catalogPromise;
       const storedNames = storedPausedApps.length
         ? storedPausedApps
-        : (await collectScheduleArgoApps(schedule)).map((a) => a.name);
-      const toResume = await resolveArgoAppsForResume(schedule, storedNames);
+        : (await collectScheduleArgoApps(schedule, catalog)).map((a) => a.name);
+      const toResume = await resolveArgoAppsForResume(schedule, storedNames, catalog);
       if (toResume.length) {
         argoNote = await resumeStoredArgoApps(schedule, toResume);
       } else if (storedNames.length) {

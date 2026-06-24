@@ -24,6 +24,7 @@ import {
   SCHEDULE_EXECUTION_CONCURRENCY,
 } from './schedule-execution-pool';
 import { reconcileStoppedScheduleSyncWindows } from './schedule-sync-window-reconcile';
+import argocdClient from './argocd-client';
 
 const SCHEDULER_GLOBAL_KEY = '__secureNexusSchedulerStarted__';
 const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -163,6 +164,10 @@ async function tickSchedules(): Promise<SchedulerTickResult[]> {
   if (pending.length === 0) {
     return results;
   }
+
+  // Warm the Argo CD app catalog once so parallel schedule runs share the 90s cache
+  // instead of each schedule triggering its own list call.
+  await argocdClient.listApplications().catch(() => undefined);
 
   // Ticks may overlap (e.g. 9:00 batch still running when 9:02 tick fires).
   // Global pool caps total concurrent schedule executions across all ticks.

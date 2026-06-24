@@ -9,6 +9,7 @@ import {
 import { isWindowOnce, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { formatWindowScheduleSummary } from '@/lib/schedule-window';
 import { formatCombinedScheduleSummary } from '@/lib/schedule-combined';
+import { isScheduleActivelyStopped } from '@/lib/schedule-display-status';
 import { formatWorkloadKeyLabel, isNamespaceSchedule } from '@/lib/workload-utils';
 
 function scheduleTargetLabel(schedule: Schedule): string {
@@ -24,7 +25,7 @@ function scheduleTargetLabel(schedule: Schedule): string {
 
 function scheduleStatusLabel(schedule: Schedule): string {
   if (schedule.liveStopSource === 'manual') return 'Manual stopped';
-  if (schedule.liveActive) return 'Scheduled stop';
+  if (isScheduleActivelyStopped(schedule)) return 'Scheduled stop';
   if (schedule.oneTimeCompleted) return 'Completed one-time';
   return schedule.enabled ? 'Enabled' : 'Disabled';
 }

@@ -16,6 +16,7 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
 import { scheduleLiveQueryOptions } from '@/components/providers/query-provider';
+import { isScheduleActivelyStopped } from '@/lib/schedule-display-status';
 import { filterSchedulesByQuery } from '@/lib/schedule-search';
 import { cn, parseClusterDisplay } from '@/lib/utils';
 import {
@@ -56,7 +57,7 @@ const STATUS_FILTER_OPTIONS: { value: ScheduleStatusKey; label: string }[] = [
 ];
 
 function scheduleStatusKey(s: Schedule): ScheduleStatusKey {
-  if (s.liveActive || s.liveStopSource === 'manual') return 'stopped';
+  if (s.liveStopSource === 'manual' || isScheduleActivelyStopped(s)) return 'stopped';
   if (s.oneTimeCompleted) return 'completed';
   return s.enabled ? 'enabled' : 'disabled';
 }
@@ -160,18 +161,19 @@ export default function SchedulesPage() {
   function scheduleRowClass(schedule: Schedule) {
     const isManual = schedule.platformType === 'non_eks';
     const isManuallyStopped = schedule.liveStopSource === 'manual';
+    const isActivelyStopped = isScheduleActivelyStopped(schedule);
     return cn(
       'cursor-pointer border-b border-border transition-colors hover:bg-muted/30',
-      schedule.liveActive &&
+      isActivelyStopped &&
         'bg-red-500/[0.04] hover:bg-red-500/[0.07] [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(239,68,68)]',
       isManuallyStopped &&
-        !schedule.liveActive &&
+        !isActivelyStopped &&
         'bg-amber-500/[0.07] hover:bg-amber-500/[0.1] dark:bg-amber-500/10 dark:hover:bg-amber-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(245,158,11)]',
-      !schedule.liveActive &&
+      !isActivelyStopped &&
         !isManuallyStopped &&
         isManual &&
         'bg-sky-500/[0.07] hover:bg-sky-500/[0.1] dark:bg-sky-500/10 dark:hover:bg-sky-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(14,165,233)]',
-      !schedule.liveActive &&
+      !isActivelyStopped &&
         !isManuallyStopped &&
         !isManual &&
         'bg-amber-500/[0.07] hover:bg-amber-500/[0.1] dark:bg-amber-500/10 dark:hover:bg-amber-500/15 [&>td:first-child]:shadow-[inset_3px_0_0_0_rgb(245,158,11)]'

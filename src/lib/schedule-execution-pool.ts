@@ -9,8 +9,8 @@ function resolveScheduleConcurrency(): number {
   if (Number.isFinite(fromEnv) && fromEnv >= 4) {
     return Math.min(Math.floor(fromEnv), 32);
   }
-  // Default: 2 vCPU × 4 parallel I/O ops
-  return 8;
+  // Default: 3 vCPU × 4 parallel I/O ops (tuned for batch midnight runs)
+  return 12;
 }
 
 export const SCHEDULE_EXECUTION_CONCURRENCY = resolveScheduleConcurrency();
@@ -61,5 +61,14 @@ export function resolveWorkloadOpConcurrency(): number {
   if (Number.isFinite(fromEnv) && fromEnv >= 2) {
     return Math.min(Math.floor(fromEnv), 24);
   }
-  return Math.max(4, SCHEDULE_EXECUTION_CONCURRENCY);
+  return Math.max(8, SCHEDULE_EXECUTION_CONCURRENCY + 4);
+}
+
+/** Parallel Argo CD API calls (sync policy / deny windows) inside one schedule. */
+export function resolveArgoOpConcurrency(): number {
+  const fromEnv = Number(process.env.ARGO_OP_CONCURRENCY);
+  if (Number.isFinite(fromEnv) && fromEnv >= 2) {
+    return Math.min(Math.floor(fromEnv), 16);
+  }
+  return 6;
 }

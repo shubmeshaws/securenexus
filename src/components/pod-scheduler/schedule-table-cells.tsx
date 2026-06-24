@@ -1,6 +1,8 @@
 'use client';
 
 import { Badge } from '@/components/ui/badge';
+import type { Schedule } from '@/lib/api-client';
+import { isScheduleActivelyStopped } from '@/lib/schedule-display-status';
 import {
   Tooltip,
   TooltipContent,
@@ -22,7 +24,6 @@ import {
   formatWorkloadKeyLabel,
   isNamespaceSchedule,
 } from '@/lib/workload-utils';
-import type { Schedule } from '@/lib/api-client';
 
 export function ScheduleClusterCell({ cluster }: { cluster: string }) {
   const { clusterName } = parseClusterDisplay(cluster);
@@ -391,15 +392,12 @@ function ScheduleStatusBadge({
 export function ScheduleStatusCell({
   schedule,
 }: {
-  schedule: Pick<
-    Schedule,
-    'enabled' | 'liveActive' | 'oneTimeCompleted' | 'liveStopSource'
-  >;
+  schedule: Schedule;
 }) {
   if (schedule.liveStopSource === 'manual') {
     return <ScheduleStatusBadge variant="manualStopSolid" label="Manual stop" />;
   }
-  if (schedule.liveActive) {
+  if (isScheduleActivelyStopped(schedule)) {
     return <ScheduleStatusBadge variant="failedSolid" label="Scheduled stop" />;
   }
   if (schedule.oneTimeCompleted) {

@@ -527,8 +527,13 @@ class InstanceArgoCDClient {
     if (!appNames.length) return;
 
     const byProject = new Map<string, string[]>();
-    for (const appName of appNames) {
-      const projectName = await this.getApplicationProjectName(appName);
+    const projectLookups = await Promise.all(
+      appNames.map(async (appName) => ({
+        appName,
+        projectName: await this.getApplicationProjectName(appName),
+      }))
+    );
+    for (const { appName, projectName } of projectLookups) {
       const bucket = byProject.get(projectName) ?? [];
       bucket.push(appName);
       byProject.set(projectName, bucket);
