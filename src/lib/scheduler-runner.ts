@@ -8,6 +8,7 @@ import {
   shouldRunShutdown,
   shouldRunStartup,
   shouldRunStartupCatchup,
+  isScheduleInStoppedWindow,
   reloadAllSchedules,
 } from './scheduler-utils';
 import { isOnetimeSchedule, completesAfterStartup } from './schedule-recurrence';
@@ -45,6 +46,20 @@ function startOfScheduleMinute(now: Date, tz: string): Date {
     0
   );
   return fromZonedTime(floored, tz);
+}
+
+/**
+ * Self-heal: a schedule still flagged stopped (liveActive) by the SCHEDULER, but currently
+ * outside its stopped window, should be running. shouldRunStartupCatchup only retries within
+ * a 2h window after the startup time, so a startup that failed/was missed beyond that window
+ * leaves the schedule stranded as "Scheduled stop" until the next day. This has no time cap
+ * and respects manual stops (which must persist until a manual start).
+ */
+function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean {
+  if (!schedule.enabled || !schedule.liveActive) return false;
+  if (schedule.liveStopSource === 'manual') return false;
+  if (shouldRunShutdown(schedule, now)) return false;
+  return !isScheduleInStoppedWindow(schedule, now);
 }
 
 /** Atomically claim this schedule minute so parallel ticks cannot both execute. */
@@ -121,7 +136,10 @@ async function tickSchedules(): Promise<SchedulerTickResult[]> {
   for (const schedule of schedules) {
     const runShutdown = shouldRunShutdown(schedule, now);
     const runStartup =
-      !runShutdown && (shouldRunStartup(schedule, now) || shouldRunStartupCatchup(schedule, now));
+      !runShutdown &&
+      (shouldRunStartup(schedule, now) ||
+        shouldRunStartupCatchup(schedule, now) ||
+        shouldReconcileToStarted(schedule, now));
     if (!runShutdown && !runStartup) continue;
 
     const mode = runShutdown ? 'shutdown' : 'startup';
