@@ -1041,6 +1041,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     const alertSchedule = fresh ?? schedule;
 
     let statefulSetRecreatedViaArgo = false;
+    const startupFailures: string[] = [];
 
     if (isNamespace) {
       const savedMap = parseSavedWorkloadReplicas(fresh?.savedWorkloadReplicas);
@@ -1048,14 +1049,28 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       await runWithConcurrency(targets, resolveWorkloadOpConcurrency(), async (target) => {
         const key = workloadKey(target.kind, target.name);
         const replicas = resolveStartupReplicas(schedule, savedMap[key]);
-        await scaleWorkload(
-          schedule.cluster,
-          schedule.namespace,
-          target.kind,
-          target.name,
-          replicas
-        );
+        try {
+          await scaleWorkload(
+            schedule.cluster,
+            schedule.namespace,
+            target.kind,
+            target.name,
+            replicas
+          );
+        } catch (err) {
+          // Don't let one bad workload abort the whole startup — the schedule would stay
+          // marked "Scheduled stop" even though the rest are running. Collect and report.
+          startupFailures.push(`${key}: ${err instanceof Error ? err.message : 'scale failed'}`);
+        }
       });
+
+      // Only treat startup as a hard failure when EVERY workload failed; a partial failure
+      // still lets the schedule transition to started so the status reflects reality.
+      if (targets.length > 0 && startupFailures.length === targets.length) {
+        throw new Error(
+          `All ${targets.length} workload(s) failed to start: ${startupFailures.join('; ')}`
+        );
+      }
     } else {
       const kind = schedule.workloadKind as WorkloadKind;
       const replicas = resolveStartupReplicas(schedule, fresh?.savedReplicas);
@@ -1105,8 +1120,12 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     const isCronJobSchedule = !isNamespace && schedule.workloadKind === 'CronJob';
     const isScaledJobSchedule = !isNamespace && schedule.workloadKind === 'ScaledJob';
     const isScaledObjectSchedule = !isNamespace && schedule.workloadKind === 'ScaledObject';
+    const failuresNote = startupFailures.length
+      ? ` · ${startupFailures.length} workload(s) failed to start: ${startupFailures.join('; ')}`
+      : '';
+    const restoredCount = targets.length - startupFailures.length;
     const message = isNamespace
-      ? `Restored ${targets.length} workload(s) in ${schedule.namespace}${argoNote}`
+      ? `Restored ${restoredCount}/${targets.length} workload(s) in ${schedule.namespace}${argoNote}${failuresNote}`
       : isCronJobSchedule
         ? `Resumed CronJob ${schedule.appName}${argoNote}`
         : isScaledJobSchedule

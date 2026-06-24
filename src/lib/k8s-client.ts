@@ -17,8 +17,14 @@ export type WorkloadKind =
   | 'ScaledJob'
   | 'ScaledObject';
 
-/** KEDA annotation that pauses/resumes ScaledJobs and ScaledObjects. */
+/** KEDA annotation that pauses/resumes ScaledJobs and ScaledObjects (KEDA >= 2.8). */
 const KEDA_PAUSED_ANNOTATION = 'autoscaling.keda.sh/paused';
+/**
+ * KEDA annotation that pins a ScaledObject to a fixed replica count and pauses autoscaling
+ * (available since KEDA 2.0). Setting it to "0" is the most reliable way to shut a
+ * ScaledObject-managed workload down across KEDA versions; removing it resumes autoscaling.
+ */
+const KEDA_PAUSED_REPLICAS_ANNOTATION = 'autoscaling.keda.sh/paused-replicas';
 
 export interface WorkloadInfo {
   name: string;
@@ -569,7 +575,15 @@ export async function getWorkloadDesiredReplicas(
 
   if (kind === 'ScaledObject') {
     const body = await readScaledObjectBody(cluster, namespace, name);
-    if (body.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION] === 'true') return 0;
+    const annotations = body.metadata?.annotations ?? {};
+    // Legacy stop marker (old SecureNexus builds) — still treated as 0.
+    if (annotations[KEDA_PAUSED_ANNOTATION] === 'true') return 0;
+    // paused-replicas pins the workload to a fixed count and pauses autoscaling.
+    const pinned = annotations[KEDA_PAUSED_REPLICAS_ANNOTATION];
+    if (pinned != null) {
+      const n = Number.parseInt(pinned, 10);
+      if (Number.isFinite(n)) return n;
+    }
     const target = getScaledObjectScaleTargetFromBody(body);
     if (!target) return 0;
     return getWorkloadDesiredReplicas(cluster, namespace, target.kind, target.name);
@@ -1025,48 +1039,52 @@ export async function getScaledObjectScaleTarget(
   }
 }
 
-/** Pause/resume a KEDA ScaledObject via the official annotation. */
-async function setScaledObjectPaused(
+/**
+ * Patch a ScaledObject's annotations via a JSON merge-patch. A string value sets the
+ * annotation; `null` removes it (merge-patch semantics).
+ */
+async function patchScaledObjectAnnotations(
   cluster: string,
   namespace: string,
   name: string,
-  paused: boolean
+  annotations: Record<string, string | null>
 ): Promise<void> {
   const kc = await getConfigForCluster(cluster);
   const api = kc.makeApiClient(k8s.CustomObjectsApi);
-
-  const body = {
-    metadata: {
-      annotations: { [KEDA_PAUSED_ANNOTATION]: paused ? 'true' : 'false' },
-    },
-  };
-
   await api.patchNamespacedCustomObject(
     'keda.sh',
     'v1alpha1',
     namespace,
     'scaledobjects',
     name,
-    body,
+    { metadata: { annotations } },
     undefined,
     undefined,
     undefined,
     { headers: { 'Content-Type': 'application/merge-patch+json' } }
   );
-
-  const verify = await readScaledObjectBody(cluster, namespace, name);
-  const actual = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
-  const expected = paused ? 'true' : 'false';
-  if (actual !== expected) {
-    throw new Error(
-      `Failed to ${paused ? 'pause' : 'resume'} ScaledObject "${name}" (${KEDA_PAUSED_ANNOTATION} is "${actual ?? 'unset'}")`
-    );
-  }
 }
 
 async function pauseScaledObject(cluster: string, namespace: string, name: string): Promise<void> {
-  await setScaledObjectPaused(cluster, namespace, name, true);
-  const target = await getScaledObjectScaleTarget(cluster, namespace, name);
+  // Pin paused-replicas to 0: KEDA itself scales the target to 0 and stops autoscaling.
+  // This works on KEDA >= 2.0, unlike the `paused` annotation (KEDA >= 2.8) which only
+  // freezes the current count. Clear the legacy `paused` annotation to avoid conflicts.
+  await patchScaledObjectAnnotations(cluster, namespace, name, {
+    [KEDA_PAUSED_REPLICAS_ANNOTATION]: '0',
+    [KEDA_PAUSED_ANNOTATION]: null,
+  });
+
+  const verify = await readScaledObjectBody(cluster, namespace, name);
+  const actual = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
+  if (actual !== '0') {
+    throw new Error(
+      `Failed to pause ScaledObject "${name}" (${KEDA_PAUSED_REPLICAS_ANNOTATION} is "${actual ?? 'unset'}")`
+    );
+  }
+
+  // Scale the target down immediately so the shutdown takes effect without waiting for
+  // KEDA's next poll; paused-replicas=0 keeps it pinned at 0 afterward.
+  const target = getScaledObjectScaleTargetFromBody(verify);
   if (!target) return;
   if (target.kind === 'StatefulSet') {
     await scaleStatefulSet(cluster, namespace, target.name, 0);
@@ -1081,15 +1099,32 @@ async function resumeScaledObject(
   name: string,
   replicas: number
 ): Promise<void> {
-  const target = await getScaledObjectScaleTarget(cluster, namespace, name);
-  if (target) {
+  const body = await readScaledObjectBody(cluster, namespace, name);
+  const target = getScaledObjectScaleTargetFromBody(body);
+
+  // Warm-start the workload at the saved replica count, then hand control back to KEDA.
+  if (target && replicas > 0) {
     if (target.kind === 'StatefulSet') {
       await scaleStatefulSet(cluster, namespace, target.name, replicas);
     } else {
       await scaleDeployment(cluster, namespace, target.name, replicas);
     }
   }
-  await setScaledObjectPaused(cluster, namespace, name, false);
+
+  // Remove BOTH pause annotations so KEDA resumes autoscaling. Clearing the legacy
+  // `paused` annotation also recovers workloads stopped by older SecureNexus builds.
+  await patchScaledObjectAnnotations(cluster, namespace, name, {
+    [KEDA_PAUSED_REPLICAS_ANNOTATION]: null,
+    [KEDA_PAUSED_ANNOTATION]: null,
+  });
+
+  const verify = await readScaledObjectBody(cluster, namespace, name);
+  const stillPinned = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
+  if (stillPinned != null) {
+    throw new Error(
+      `Failed to resume ScaledObject "${name}" (${KEDA_PAUSED_REPLICAS_ANNOTATION} is still "${stillPinned}")`
+    );
+  }
 }
 
 export async function scaleWorkload(
