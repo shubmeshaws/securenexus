@@ -575,15 +575,7 @@ export async function getWorkloadDesiredReplicas(
 
   if (kind === 'ScaledObject') {
     const body = await readScaledObjectBody(cluster, namespace, name);
-    const annotations = body.metadata?.annotations ?? {};
-    // Legacy stop marker (old SecureNexus builds) — still treated as 0.
-    if (annotations[KEDA_PAUSED_ANNOTATION] === 'true') return 0;
-    // paused-replicas pins the workload to a fixed count and pauses autoscaling.
-    const pinned = annotations[KEDA_PAUSED_REPLICAS_ANNOTATION];
-    if (pinned != null) {
-      const n = Number.parseInt(pinned, 10);
-      if (Number.isFinite(n)) return n;
-    }
+    if (scaledObjectIsPaused(body)) return 0;
     const target = getScaledObjectScaleTargetFromBody(body);
     if (!target) return 0;
     return getWorkloadDesiredReplicas(cluster, namespace, target.kind, target.name);
@@ -1000,6 +992,18 @@ type ScaledObjectBody = {
   spec?: { scaleTargetRef?: { name?: string; kind?: string } };
 };
 
+function scaledObjectIsPaused(body: ScaledObjectBody): boolean {
+  const annotations = body.metadata?.annotations ?? {};
+  // KEDA treats the presence of either pause annotation as paused (even paused="false").
+  return (
+    KEDA_PAUSED_ANNOTATION in annotations || KEDA_PAUSED_REPLICAS_ANNOTATION in annotations
+  );
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function readScaledObjectBody(
   cluster: string,
   namespace: string,
@@ -1040,46 +1044,47 @@ export async function getScaledObjectScaleTarget(
 }
 
 /**
- * Patch a ScaledObject's annotations via a JSON merge-patch. A string value sets the
- * annotation; `null` removes it (merge-patch semantics).
+ * Replace ScaledObject annotations via JSON Patch (reliable key removal on CRDs).
+ * Merge-patch `null` values often fail to delete annotation keys on custom resources.
  */
-async function patchScaledObjectAnnotations(
+async function replaceScaledObjectAnnotations(
   cluster: string,
   namespace: string,
   name: string,
-  annotations: Record<string, string | null>
+  annotations: Record<string, string>
 ): Promise<void> {
   const kc = await getConfigForCluster(cluster);
   const api = kc.makeApiClient(k8s.CustomObjectsApi);
+  const body = await readScaledObjectBody(cluster, namespace, name);
+  const hasAnnotations = body.metadata?.annotations != null;
+  const patch = hasAnnotations
+    ? [{ op: 'replace', path: '/metadata/annotations', value: annotations }]
+    : [{ op: 'add', path: '/metadata/annotations', value: annotations }];
+
   await api.patchNamespacedCustomObject(
     'keda.sh',
     'v1alpha1',
     namespace,
     'scaledobjects',
     name,
-    { metadata: { annotations } },
+    patch,
     undefined,
     undefined,
     undefined,
-    { headers: { 'Content-Type': 'application/merge-patch+json' } }
+    { headers: { 'Content-Type': 'application/json-patch+json' } }
   );
 }
 
 async function pauseScaledObject(cluster: string, namespace: string, name: string): Promise<void> {
-  // Use paused-replicas (KEDA 2.0+) AND paused=true (PAUSED column / KEDA 2.8+) so all versions
-  // show consistent stop state in kubectl get scaledobject.
-  await patchScaledObjectAnnotations(cluster, namespace, name, {
-    [KEDA_PAUSED_REPLICAS_ANNOTATION]: '0',
-    [KEDA_PAUSED_ANNOTATION]: 'true',
-  });
+  const body = await readScaledObjectBody(cluster, namespace, name);
+  const next = { ...(body.metadata?.annotations ?? {}) };
+  next[KEDA_PAUSED_REPLICAS_ANNOTATION] = '0';
+  next[KEDA_PAUSED_ANNOTATION] = 'true';
+  await replaceScaledObjectAnnotations(cluster, namespace, name, next);
 
   const verify = await readScaledObjectBody(cluster, namespace, name);
-  const pinned = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
-  const paused = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
-  if (pinned !== '0' && paused !== 'true') {
-    throw new Error(
-      `Failed to pause ScaledObject "${name}" (paused-replicas="${pinned ?? 'unset'}", paused="${paused ?? 'unset'}")`
-    );
+  if (!scaledObjectIsPaused(verify)) {
+    throw new Error(`Failed to pause ScaledObject "${name}"`);
   }
 }
 
@@ -1089,18 +1094,36 @@ async function resumeScaledObject(
   name: string,
   _replicas: number
 ): Promise<void> {
-  await patchScaledObjectAnnotations(cluster, namespace, name, {
-    [KEDA_PAUSED_REPLICAS_ANNOTATION]: null,
-    [KEDA_PAUSED_ANNOTATION]: null,
-  });
+  // Retry: Argo CD sync after startup can briefly re-apply pause annotations from git drift.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const body = await readScaledObjectBody(cluster, namespace, name);
+    if (!scaledObjectIsPaused(body)) return;
 
-  const verify = await readScaledObjectBody(cluster, namespace, name);
-  const stillPinned = verify.metadata?.annotations?.[KEDA_PAUSED_REPLICAS_ANNOTATION];
-  const stillPaused = verify.metadata?.annotations?.[KEDA_PAUSED_ANNOTATION];
-  if (stillPinned != null || stillPaused === 'true') {
-    throw new Error(
-      `Failed to resume ScaledObject "${name}" (paused-replicas="${stillPinned ?? 'unset'}", paused="${stillPaused ?? 'unset'}")`
-    );
+    const next = { ...(body.metadata?.annotations ?? {}) };
+    delete next[KEDA_PAUSED_REPLICAS_ANNOTATION];
+    delete next[KEDA_PAUSED_ANNOTATION];
+    await replaceScaledObjectAnnotations(cluster, namespace, name, next);
+
+    await sleepMs(attempt === 0 ? 750 : 2_000);
+    const verify = await readScaledObjectBody(cluster, namespace, name);
+    if (!scaledObjectIsPaused(verify)) return;
+  }
+
+  const final = await readScaledObjectBody(cluster, namespace, name);
+  const annotations = final.metadata?.annotations ?? {};
+  throw new Error(
+    `Failed to resume ScaledObject "${name}" (paused-replicas="${annotations[KEDA_PAUSED_REPLICAS_ANNOTATION] ?? 'unset'}", paused="${annotations[KEDA_PAUSED_ANNOTATION] ?? 'unset'}")`
+  );
+}
+
+/** Re-apply ScaledObject resume after Argo sync (call from startup once Argo has run). */
+export async function reconcileScaledObjectsAfterArgoSync(
+  cluster: string,
+  namespace: string,
+  names: string[]
+): Promise<void> {
+  for (const name of names) {
+    await resumeScaledObject(cluster, namespace, name, 1);
   }
 }
 

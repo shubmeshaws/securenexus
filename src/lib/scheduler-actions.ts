@@ -11,6 +11,7 @@ import {
   getStatefulSetArgoAppName,
   getWorkloadDesiredReplicas,
   listWorkloads,
+  reconcileScaledObjectsAfterArgoSync,
   scaleWorkload,
   statefulSetExists,
   type WorkloadKind,
@@ -1186,6 +1187,30 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       }
     } catch (err) {
       argoNote = ` · ArgoCD sync restore failed: ${err instanceof Error ? err.message : 'unknown'}`;
+    }
+
+    const scaledObjectNames = isNamespace
+      ? targets.filter((target) => target.kind === 'ScaledObject').map((target) => target.name)
+      : schedule.workloadKind === 'ScaledObject'
+        ? [schedule.appName]
+        : [];
+    if (scaledObjectNames.length) {
+      try {
+        await reconcileScaledObjectsAfterArgoSync(
+          schedule.cluster,
+          schedule.namespace,
+          scaledObjectNames
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'ScaledObject resume failed';
+        if (isNamespace) {
+          for (const name of scaledObjectNames) {
+            startupFailures.push(`ScaledObject::${name}: ${message}`);
+          }
+        } else {
+          throw new Error(message);
+        }
+      }
     }
 
     if (storedPausedApps.length) {
