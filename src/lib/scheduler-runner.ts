@@ -29,8 +29,22 @@ import argocdClient from './argocd-client';
 const SCHEDULER_GLOBAL_KEY = '__secureNexusSchedulerStarted__';
 const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How often to backfill missing Argo CD manual-sync deny windows for schedules
+ * already in a stopped state. Runs on top of the per-shutdown attempt so a window
+ * that failed to apply (transient Argo/K8s error, app resolved late) is reconciled
+ * automatically within a few minutes instead of staying open until a restart.
+ * Override: SYNC_WINDOW_RECONCILE_INTERVAL_MS
+ */
+const SYNC_WINDOW_RECONCILE_INTERVAL_MS = (() => {
+  const fromEnv = Number(process.env.SYNC_WINDOW_RECONCILE_INTERVAL_MS);
+  return Number.isFinite(fromEnv) && fromEnv >= 60_000 ? fromEnv : 5 * 60_000;
+})();
+
 let tickJob: ReturnType<typeof cron.schedule> | null = null;
 let lastRetentionPruneAt = 0;
+let lastSyncWindowReconcileAt = 0;
+let syncWindowReconcileInFlight = false;
 
 export interface SchedulerTickResult {
   scheduleId: string;
@@ -61,6 +75,27 @@ function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean {
   if (schedule.liveStopSource === 'manual') return false;
   if (shouldRunShutdown(schedule, now)) return false;
   return !isScheduleInStoppedWindow(schedule, now);
+}
+
+/**
+ * Self-heal the inverse drift: a schedule that should be stopped RIGHT NOW (inside its
+ * stopped window) but is not flagged stopped (`liveActive` false). This happens when a
+ * shutdown failed to persist its live-state, or the flag was cleared erroneously — the
+ * symptom is "workloads stopped but status still shows Enabled". Re-asserting the
+ * shutdown is idempotent (already-stopped workloads stay at 0) and sets `liveActive`.
+ *
+ * Manual overrides are respected: a manual stop already reads as stopped, and a manual
+ * start during a stopped window ('manual-start') means the user deliberately wants it up.
+ */
+function shouldReconcileToStopped(schedule: Schedule, now: Date): boolean {
+  if (!schedule.enabled || schedule.liveActive) return false;
+  if (schedule.oneTimeCompleted) return false;
+  if (schedule.liveStopSource === 'manual' || schedule.liveStopSource === 'manual-start') {
+    return false;
+  }
+  if (shouldRunShutdown(schedule, now)) return false;
+  if (shouldRunStartup(schedule, now) || shouldRunStartupCatchup(schedule, now)) return false;
+  return isScheduleInStoppedWindow(schedule, now);
 }
 
 /** Atomically claim this schedule minute so parallel ticks cannot both execute. */
@@ -135,7 +170,8 @@ async function tickSchedules(): Promise<SchedulerTickResult[]> {
   const pending: PendingRun[] = [];
 
   for (const schedule of schedules) {
-    const runShutdown = shouldRunShutdown(schedule, now);
+    const runShutdown =
+      shouldRunShutdown(schedule, now) || shouldReconcileToStopped(schedule, now);
     const runStartup =
       !runShutdown &&
       (shouldRunStartup(schedule, now) ||
@@ -193,6 +229,34 @@ export async function runSchedulerTick(): Promise<SchedulerTickResult[]> {
   return tickSchedules();
 }
 
+/**
+ * Fire-and-forget periodic backfill of Argo CD manual-sync deny windows for
+ * stopped schedules. Interval-gated and guarded against overlap so it never
+ * piles up behind a slow Argo CD instance or blocks the per-minute tick.
+ */
+function maybeReconcileSyncWindows(): void {
+  if (syncWindowReconcileInFlight) return;
+  if (Date.now() - lastSyncWindowReconcileAt < SYNC_WINDOW_RECONCILE_INTERVAL_MS) return;
+
+  lastSyncWindowReconcileAt = Date.now();
+  syncWindowReconcileInFlight = true;
+  reconcileStoppedScheduleSyncWindows()
+    .then((result) => {
+      if (result.scheduleAppsUpdated > 0 || result.errors.length > 0) {
+        console.log(
+          `[PodScheduler] Sync-window reconcile: ${result.schedulesProcessed} schedule(s) / ` +
+            `${result.scheduleAppsUpdated} app(s) updated, ${result.errors.length} error(s)`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[PodScheduler] Sync-window reconcile failed:', err);
+    })
+    .finally(() => {
+      syncWindowReconcileInFlight = false;
+    });
+}
+
 export function initScheduler() {
   const g = globalThis as typeof globalThis & { [SCHEDULER_GLOBAL_KEY]?: boolean };
   if (g[SCHEDULER_GLOBAL_KEY]) return;
@@ -205,6 +269,7 @@ export function initScheduler() {
   tickJob = cron.schedule('* * * * *', async () => {
     try {
       await tickSchedules();
+      maybeReconcileSyncWindows();
       if (Date.now() - lastRetentionPruneAt >= RETENTION_PRUNE_INTERVAL_MS) {
         lastRetentionPruneAt = Date.now();
         await pruneActivityLogsByRetention();

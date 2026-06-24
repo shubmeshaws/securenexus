@@ -2,6 +2,41 @@ import * as k8s from '@kubernetes/client-node';
 import prisma from '@/lib/prisma';
 import { readKubeconfigFromPath } from '@/lib/kubeconfig-file';
 import { buildEksKubeConfigForRegisteredCluster } from '@/lib/eks-kubeconfig';
+import { withRetry } from '@/lib/concurrency';
+
+/** Extract the HTTP status code from a Kubernetes client error, if present. */
+function k8sStatusCode(err: unknown): number | undefined {
+  return (
+    (err as { statusCode?: number })?.statusCode ??
+    (err as { body?: { code?: number } })?.body?.code
+  );
+}
+
+/**
+ * Retry a Kubernetes read that is used to resolve Argo CD tracking metadata.
+ * Transient failures (timeouts, 5xx, throttling) spike when many schedules run
+ * at once; silently returning null then drops the Argo deny window. Retry those,
+ * but never retry a genuine 404 (resource really doesn't exist).
+ */
+const K8S_ARGO_LOOKUP_ATTEMPTS = (() => {
+  const v = Number(process.env.K8S_ARGO_LOOKUP_ATTEMPTS);
+  return Number.isFinite(v) && v >= 1 ? Math.min(Math.floor(v), 8) : 4;
+})();
+
+function retryK8sArgoLookup<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  return withRetry(fn, {
+    attempts: K8S_ARGO_LOOKUP_ATTEMPTS,
+    baseDelayMs: 1500,
+    maxDelayMs: 12000,
+    shouldRetry: (err) => k8sStatusCode(err) !== 404,
+    onRetry: (err, attempt, delayMs) =>
+      console.warn(
+        `[k8s retry] ${label} attempt ${attempt} failed (${
+          err instanceof Error ? err.message : err
+        }); retrying in ${delayMs}ms`
+      ),
+  });
+}
 export interface ClusterInfo {
   name: string;
   context: string;
@@ -657,10 +692,12 @@ export async function getStatefulSetArgoAppName(
   name: string
 ): Promise<string | null> {
   try {
-    const kc = await getConfigForCluster(cluster);
-    const api = kc.makeApiClient(k8s.AppsV1Api);
-    const res = await api.readNamespacedStatefulSet(name, namespace);
-    return argoAppNameFromMeta(res.body.metadata);
+    return await retryK8sArgoLookup(`statefulset ${namespace}/${name}`, async () => {
+      const kc = await getConfigForCluster(cluster);
+      const api = kc.makeApiClient(k8s.AppsV1Api);
+      const res = await api.readNamespacedStatefulSet(name, namespace);
+      return argoAppNameFromMeta(res.body.metadata);
+    });
   } catch {
     return null;
   }
@@ -673,10 +710,12 @@ export async function getDeploymentArgoAppName(
   name: string
 ): Promise<string | null> {
   try {
-    const kc = await getConfigForCluster(cluster);
-    const api = kc.makeApiClient(k8s.AppsV1Api);
-    const res = await api.readNamespacedDeployment(name, namespace);
-    return argoAppNameFromMeta(res.body.metadata);
+    return await retryK8sArgoLookup(`deployment ${namespace}/${name}`, async () => {
+      const kc = await getConfigForCluster(cluster);
+      const api = kc.makeApiClient(k8s.AppsV1Api);
+      const res = await api.readNamespacedDeployment(name, namespace);
+      return argoAppNameFromMeta(res.body.metadata);
+    });
   } catch {
     return null;
   }
@@ -698,8 +737,12 @@ export async function getArgoAppNamesForNamespace(
     const api = kc.makeApiClient(k8s.AppsV1Api);
 
     const [deployments, statefulSets] = await Promise.all([
-      api.listNamespacedDeployment(namespace).catch(() => null),
-      api.listNamespacedStatefulSet(namespace).catch(() => null),
+      retryK8sArgoLookup(`list deployments ${namespace}`, () =>
+        api.listNamespacedDeployment(namespace)
+      ).catch(() => null),
+      retryK8sArgoLookup(`list statefulsets ${namespace}`, () =>
+        api.listNamespacedStatefulSet(namespace)
+      ).catch(() => null),
     ]);
 
     for (const item of deployments?.body.items ?? []) {
@@ -1092,8 +1135,10 @@ export async function getScaledObjectScaleTarget(
   name: string
 ): Promise<{ kind: 'Deployment' | 'StatefulSet'; name: string } | null> {
   try {
-    const body = await readScaledObjectBody(cluster, namespace, name);
-    return getScaledObjectScaleTargetFromBody(body);
+    return await retryK8sArgoLookup(`scaledobject ${namespace}/${name}`, async () => {
+      const body = await readScaledObjectBody(cluster, namespace, name);
+      return getScaledObjectScaleTargetFromBody(body);
+    });
   } catch {
     return null;
   }

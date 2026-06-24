@@ -23,7 +23,13 @@ import {
 import { logActivity } from './activity';
 import { buildShutdownActivityDetails } from './shutdown-node-count';
 import prisma from './prisma';
-import { computeCurrentLiveStartupAt, computeNextRun, computeNextStartupAt, formatScheduleStartupLabel } from './scheduler-utils';
+import {
+  computeCurrentLiveStartupAt,
+  computeNextRun,
+  computeNextStartupAt,
+  formatScheduleStartupLabel,
+  isScheduleInStoppedWindow,
+} from './scheduler-utils';
 import { defaultBlockUntil } from './argocd-sync-windows';
 import {
   isNamespaceSchedule,
@@ -33,7 +39,7 @@ import {
 } from './workload-utils';
 import { Prisma, type Schedule } from '@prisma/client';
 import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
-import { runWithConcurrency } from './concurrency';
+import { runWithConcurrency, withRetry } from './concurrency';
 import { resolveArgoOpConcurrency, resolveWorkloadOpConcurrency } from './schedule-execution-pool';
 
 /** Delay after pausing Argo before deleting a StatefulSet (ms). Override: STS_SHUTDOWN_SETTLE_MS */
@@ -41,6 +47,32 @@ const STS_SHUTDOWN_SETTLE_MS = (() => {
   const fromEnv = Number(process.env.STS_SHUTDOWN_SETTLE_MS);
   return Number.isFinite(fromEnv) && fromEnv >= 0 ? fromEnv : 1000;
 })();
+
+/**
+ * Attempts for a single workload stop/start op. With the default backoff
+ * (5s · 2^n, capped 60s) 6 attempts keeps retrying for ~2.5 min so a transient
+ * K8s/Argo failure during the midnight batch doesn't strand a workload.
+ * Override: WORKLOAD_RETRY_ATTEMPTS
+ */
+const WORKLOAD_RETRY_ATTEMPTS = (() => {
+  const fromEnv = Number(process.env.WORKLOAD_RETRY_ATTEMPTS);
+  return Number.isFinite(fromEnv) && fromEnv >= 1 ? Math.min(Math.floor(fromEnv), 12) : 6;
+})();
+
+/** Retry a workload stop/start op across transient K8s/Argo failures for a few minutes. */
+function retryWorkloadOp<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  return withRetry(fn, {
+    attempts: WORKLOAD_RETRY_ATTEMPTS,
+    baseDelayMs: 5000,
+    maxDelayMs: 60000,
+    onRetry: (err, attempt, delayMs) =>
+      console.warn(
+        `[Scheduler retry] ${label} attempt ${attempt} failed (${
+          err instanceof Error ? err.message : err
+        }); retrying in ${delayMs}ms`
+      ),
+  });
+}
 
 function isAutomaticScheduleTrigger(triggeredBy: string): boolean {
   return (
@@ -1000,6 +1032,23 @@ export async function executeShutdown(
 
     const liveUpdate = buildLiveScheduleUpdate(schedule, triggeredBy, options);
 
+    // Commit the live-state (liveActive / liveStopSource) BEFORE touching workloads.
+    // Once targets are resolved and Argo is paused we are committed to stopping, so the
+    // schedule must read as "stopped" even if a workload op later throws or partially
+    // fails. Persisting after the scale loop (the old behavior) left schedules showing
+    // "Enabled" whenever the loop threw — the exact "workloads stopped but status
+    // Enabled" bug. The final update below still records savedReplicas/pausedArgoApps.
+    if (Object.keys(liveUpdate).length > 0) {
+      await prisma.schedule
+        .update({ where: { id: schedule.id }, data: liveUpdate })
+        .catch((err) =>
+          console.error(
+            `[Scheduler] failed to persist live-state early for "${schedule.name}":`,
+            err instanceof Error ? err.message : err
+          )
+        );
+    }
+
     let argoNote = '';
     let pausedArgoApps: string[] = [];
     if (pauseOutcome.ok) {
@@ -1040,20 +1089,18 @@ export async function executeShutdown(
             schedule.targetReplicas
           );
           if (target.kind === 'ScaledObject') {
-            await stopScaledObjectWorkload(
-              schedule.cluster,
-              schedule.namespace,
-              target.name,
-              managedByArgo
+            await retryWorkloadOp(`stop ${key}`, () =>
+              stopScaledObjectWorkload(
+                schedule.cluster,
+                schedule.namespace,
+                target.name,
+                managedByArgo
+              )
             );
             return;
           }
-          await scaleWorkload(
-            schedule.cluster,
-            schedule.namespace,
-            target.kind,
-            target.name,
-            0
+          await retryWorkloadOp(`stop ${key}`, () =>
+            scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, 0)
           );
         } catch (err) {
           shutdownFailures.push(`${key}: ${err instanceof Error ? err.message : 'stop failed'}`);
@@ -1101,7 +1148,9 @@ export async function executeShutdown(
           // Let Argo register the paused policy before deleting so an in-flight
           // self-heal doesn't immediately recreate the StatefulSet.
           await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
-          await deleteStatefulSet(schedule.cluster, schedule.namespace, schedule.appName);
+          await retryWorkloadOp(`stop StatefulSet/${schedule.appName}`, () =>
+            deleteStatefulSet(schedule.cluster, schedule.namespace, schedule.appName)
+          );
           statefulSetDeleted = true;
 
           // Verify the delete stuck (Argo did not immediately recreate it).
@@ -1118,14 +1167,18 @@ export async function executeShutdown(
           console.log(
             `[STS shutdown] ${schedule.namespace}/${schedule.appName} no Argo app found; scaling to 0`
           );
-          await scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0);
+          await retryWorkloadOp(`stop StatefulSet/${schedule.appName}`, () =>
+            scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0)
+          );
         }
       } else if (kind === 'ScaledObject') {
-        const mode = await stopScaledObjectWorkload(
-          schedule.cluster,
-          schedule.namespace,
-          schedule.appName,
-          pausedArgoApps.length > 0
+        const mode = await retryWorkloadOp(`stop ScaledObject/${schedule.appName}`, () =>
+          stopScaledObjectWorkload(
+            schedule.cluster,
+            schedule.namespace,
+            schedule.appName,
+            pausedArgoApps.length > 0
+          )
         );
         scaledObjectDeleted = mode === 'deleted';
         if (mode === 'deleted') {
@@ -1140,7 +1193,9 @@ export async function executeShutdown(
           );
         }
       } else {
-        await scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0);
+        await retryWorkloadOp(`stop ${kind}/${schedule.appName}`, () =>
+          scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0)
+        );
       }
 
       await prisma.schedule.update({
@@ -1260,11 +1315,13 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         const key = workloadKey(target.kind, target.name);
         if (target.kind === 'ScaledObject') {
           try {
-            const mode = await startScaledObjectWorkload(
-              schedule.cluster,
-              schedule.namespace,
-              target.name,
-              hadArgoPause
+            const mode = await retryWorkloadOp(`start ${key}`, () =>
+              startScaledObjectWorkload(
+                schedule.cluster,
+                schedule.namespace,
+                target.name,
+                hadArgoPause
+              )
             );
             if (mode === 'argocd') return;
           } catch (err) {
@@ -1274,12 +1331,8 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         }
         const replicas = resolveStartupReplicas(schedule, savedMap[key]);
         try {
-          await scaleWorkload(
-            schedule.cluster,
-            schedule.namespace,
-            target.kind,
-            target.name,
-            replicas
+          await retryWorkloadOp(`start ${key}`, () =>
+            scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, replicas)
           );
         } catch (err) {
           startupFailures.push(`${key}: ${err instanceof Error ? err.message : 'scale failed'}`);
@@ -1301,20 +1354,26 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       // when the STS is still present (the scale-to-0 fallback path).
       if (kind === 'StatefulSet') {
         if (await statefulSetExists(schedule.cluster, schedule.namespace, schedule.appName)) {
-          await scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas);
+          await retryWorkloadOp(`start StatefulSet/${schedule.appName}`, () =>
+            scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas)
+          );
         } else {
           statefulSetRecreatedViaArgo = true;
         }
       } else if (kind === 'ScaledObject') {
-        const mode = await startScaledObjectWorkload(
-          schedule.cluster,
-          schedule.namespace,
-          schedule.appName,
-          hadArgoPause
+        const mode = await retryWorkloadOp(`start ScaledObject/${schedule.appName}`, () =>
+          startScaledObjectWorkload(
+            schedule.cluster,
+            schedule.namespace,
+            schedule.appName,
+            hadArgoPause
+          )
         );
         scaledObjectRecreatedViaArgo = mode === 'argocd';
       } else {
-        await scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas);
+        await retryWorkloadOp(`start ${kind}/${schedule.appName}`, () =>
+          scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas)
+        );
       }
     }
 
@@ -1439,6 +1498,11 @@ export async function runScheduleNow(
 
   const now = new Date();
   const nextRun = computeNextRun(schedule, now);
+  // A manual start during the schedule's stopped window is a deliberate "run it now"
+  // override — tag it 'manual-start' so the stopped-state self-heal leaves it running
+  // (instead of immediately re-stopping it). It clears at the next scheduled event.
+  const manualStartInStoppedWindow =
+    mode === 'startup' && isScheduleInStoppedWindow(schedule, now);
   await prisma.schedule.update({
     where: { id: scheduleId },
     data: {
@@ -1449,7 +1513,7 @@ export async function runScheduleNow(
         : {
             liveActive: false,
             liveStartupAt: null,
-            liveStopSource: null,
+            liveStopSource: manualStartInStoppedWindow ? 'manual-start' : null,
             liveStoppedBy: null,
           }),
     },
