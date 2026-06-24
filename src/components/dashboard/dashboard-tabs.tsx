@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 
-export type DashboardTab = 'overview' | 'node-changes' | 'pod-changes';
+export type DashboardTab = 'overview' | 'node-changes' | 'pod-changes' | 'activity-tracker';
 
 export function DashboardTabs({
   active,
@@ -15,6 +15,7 @@ export function DashboardTabs({
     { id: 'overview', label: 'Overview' },
     { id: 'node-changes', label: 'Node changes' },
     { id: 'pod-changes', label: 'Pod changes' },
+    { id: 'activity-tracker', label: 'Activity tracker' },
   ];
 
   return (

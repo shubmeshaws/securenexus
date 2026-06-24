@@ -8,6 +8,8 @@ import {
 import {
   buildNamespaceDenySyncWindow,
   buildScheduleDenySyncWindow,
+  isManagedNamespaceDenyWindow,
+  isManagedScheduleDenyWindow,
   mergeNamespaceDenySyncWindow,
   mergeScheduleDenySyncWindow,
   removeAllSecureNexusManagedSyncWindows,
@@ -664,6 +666,51 @@ class InstanceArgoCDClient {
     return removed;
   }
 
+  /**
+   * Of the given apps, which currently have a SecureNexus-managed deny window applied
+   * (app-scoped, or namespace-scoped covering the app's namespace). Reads each owning
+   * AppProject once. Used by the dashboard activity tracker to show sync-off progress.
+   */
+  async getScheduleDeniedAppNames(
+    apps: { name: string; namespace?: string }[]
+  ): Promise<Set<string>> {
+    const denied = new Set<string>();
+    const uniqueApps = Array.from(new Map(apps.map((a) => [a.name, a])).values());
+    if (!uniqueApps.length) return denied;
+
+    const appProjects = await Promise.all(
+      uniqueApps.map(async (app) => ({
+        app,
+        projectName: await this.getApplicationProjectName(app.name).catch(() => 'default'),
+      }))
+    );
+
+    const projectCache = new Map<string, ArgoSyncWindowSpec[]>();
+    const loadProject = async (projectName: string): Promise<ArgoSyncWindowSpec[]> => {
+      const cached = projectCache.get(projectName);
+      if (cached) return cached;
+      const windows = await this.getProjectRaw(projectName)
+        .then((project) => this.readProjectSyncWindows(project))
+        .catch(() => [] as ArgoSyncWindowSpec[]);
+      projectCache.set(projectName, windows);
+      return windows;
+    };
+
+    await Promise.all(
+      appProjects.map(async ({ app, projectName }) => {
+        const windows = await loadProject(projectName);
+        const isDenied = windows.some(
+          (w) =>
+            isManagedScheduleDenyWindow(w, app.name) ||
+            (app.namespace ? isManagedNamespaceDenyWindow(w, app.namespace) : false)
+        );
+        if (isDenied) denied.add(app.name);
+      })
+    );
+
+    return denied;
+  }
+
   /** Remove every SecureNexus-managed deny sync window from all AppProjects on this instance. */
   async purgeSecureNexusSyncWindows(): Promise<{
     projectsScanned: number;
@@ -998,6 +1045,16 @@ class MultiArgoCDClient {
   ): Promise<number> {
     const { client } = await resolveInstanceForApp(appName, instanceId);
     return client.removeScheduleManualSyncDenyWindows(appName);
+  }
+
+  /** Apps (all on one instance) that currently have a SecureNexus deny window applied. */
+  async getScheduleDeniedAppNames(
+    apps: { name: string; namespace?: string }[],
+    instanceId?: string
+  ): Promise<Set<string>> {
+    if (!apps.length) return new Set<string>();
+    const { client } = await resolveInstanceForApp(apps[0].name, instanceId);
+    return client.getScheduleDeniedAppNames(apps);
   }
 
   async getManagedResources(

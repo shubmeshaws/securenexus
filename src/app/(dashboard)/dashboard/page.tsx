@@ -28,6 +28,7 @@ import DashboardDateFilter from '@/components/dashboard/dashboard-date-filter';
 import { DashboardTabs, type DashboardTab } from '@/components/dashboard/dashboard-tabs';
 import { DashboardNodeChanges } from '@/components/dashboard/dashboard-node-changes';
 import { DashboardPodChanges } from '@/components/dashboard/dashboard-pod-changes';
+import { DashboardActivityTracker } from '@/components/dashboard/dashboard-activity-tracker';
 import {
   DashboardFilterBar,
   DashboardFilterSelect,
@@ -453,6 +454,8 @@ export default function PodSchedulerOverviewPage() {
       {tab === 'pod-changes' ? (
         <DashboardPodChanges dateRange={dateRange} onDateRangeChange={setDateRange} />
       ) : null}
+
+      {tab === 'activity-tracker' ? <DashboardActivityTracker /> : null}
     </div>
   );
 }

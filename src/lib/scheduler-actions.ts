@@ -118,10 +118,12 @@ interface ScheduleArgoApp {
   instanceId: string;
 }
 
-interface WorkloadTarget {
+export interface WorkloadTarget {
   name: string;
   kind: WorkloadKind;
 }
+
+export type { ScheduleArgoApp };
 
 function scheduleAsWorkload(schedule: Schedule, target: WorkloadTarget): Schedule {
   return { ...schedule, appName: target.name, workloadKind: target.kind };
@@ -292,7 +294,7 @@ async function resolveArgoAppForScaledObject(
   return null;
 }
 
-async function collectScheduleArgoApps(
+export async function collectScheduleArgoApps(
   schedule: Schedule,
   catalog?: ArgoCatalog,
   workloadTargets?: WorkloadTarget[]
@@ -828,7 +830,7 @@ async function resumeStoredArgoApps(
   return notes.length ? ` · ${notes.join(' · ')}` : '';
 }
 
-async function getScheduleTargets(schedule: Schedule): Promise<WorkloadTarget[]> {
+export async function getScheduleTargets(schedule: Schedule): Promise<WorkloadTarget[]> {
   if (!isNamespaceSchedule(schedule)) {
     return [
       {

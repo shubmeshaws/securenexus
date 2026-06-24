@@ -224,6 +224,36 @@ export interface DashboardInsights {
   };
 }
 
+export interface ScheduleActivityRow {
+  id: string;
+  name: string;
+  cluster: string;
+  namespace: string;
+  scope: 'namespace' | 'workload';
+  stoppedSince: string | null;
+  ageMs: number;
+  status: 'completed' | 'in-progress';
+  stop: { done: number; total: number; pending: string[] };
+  syncOff: { done: number; total: number; pending: string[]; resolved: boolean };
+  error?: string;
+}
+
+export interface ScheduleActivityTracker {
+  generatedAt: string;
+  activeWindowMinutes: number;
+  rows: ScheduleActivityRow[];
+  totals: {
+    schedules: number;
+    completed: number;
+    inProgress: number;
+    stopDone: number;
+    stopTotal: number;
+    syncDone: number;
+    syncTotal: number;
+    percent: number;
+  };
+}
+
 export interface OverviewData {
   summary: {
     totalApps: number;
