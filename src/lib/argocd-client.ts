@@ -14,6 +14,7 @@ import {
   mergeScheduleDenySyncWindow,
   removeAllSecureNexusManagedSyncWindows,
   removeScheduleDenySyncWindows,
+  removeScheduleDenySyncWindowsForApps,
   removeScheduleNamespaceDenyWindow,
   type ArgoSyncWindowSpec,
 } from '@/lib/argocd-sync-windows';
@@ -519,7 +520,8 @@ class InstanceArgoCDClient {
   ): Promise<void> {
     return this.runProjectLocked(projectName, async () => {
       let lastError: Error | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      const maxAttempts = 5;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const project = await this.getProjectRaw(projectName);
         mutate(project);
         try {
@@ -527,7 +529,18 @@ class InstanceArgoCDClient {
           return;
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
-          if (attempt < 2) {
+          const message = lastError.message;
+          const retryable =
+            message.includes('409') ||
+            message.includes('modified') ||
+            message.includes('already exists');
+          if (attempt < maxAttempts - 1 && retryable) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, 300 * (attempt + 1) * (attempt + 1))
+            );
+            continue;
+          }
+          if (attempt < maxAttempts - 1) {
             await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           }
         }
@@ -667,19 +680,49 @@ class InstanceArgoCDClient {
   }
 
   async removeScheduleManualSyncDenyWindows(appName: string): Promise<number> {
-    const projectName = await this.getApplicationProjectName(appName);
-    let removed = 0;
+    return this.removeScheduleManualSyncDenyWindowsForApps([appName]);
+  }
 
-    await this.mutateProjectSpec(projectName, (project) => {
-      const existing = this.readProjectSyncWindows(project);
-      const result = removeScheduleDenySyncWindows(existing, appName);
-      removed = result.removed;
-      const spec = (project.spec as Record<string, unknown>) ?? {};
-      spec.syncWindows = result.windows;
-      project.spec = spec;
-    });
+  /** One project PUT per project — avoids 409 conflicts when unblocking many apps at once. */
+  async removeScheduleManualSyncDenyWindowsForApps(appNames: string[]): Promise<number> {
+    const names = Array.from(new Set(appNames.filter(Boolean)));
+    if (!names.length) return 0;
 
-    return removed;
+    const byProject = new Map<string, string[]>();
+    const projectLookups = await Promise.all(
+      names.map(async (appName) => ({
+        appName,
+        projectName: await this.getApplicationProjectName(appName),
+      }))
+    );
+    for (const { appName, projectName } of projectLookups) {
+      const bucket = byProject.get(projectName) ?? [];
+      bucket.push(appName);
+      byProject.set(projectName, bucket);
+    }
+
+    let totalRemoved = 0;
+    for (const [projectName, projectApps] of Array.from(byProject.entries())) {
+      let removed = 0;
+      await this.mutateProjectSpec(projectName, (project) => {
+        const result = removeScheduleDenySyncWindowsForApps(
+          this.readProjectSyncWindows(project),
+          projectApps
+        );
+        removed = result.removed;
+        const spec = (project.spec as Record<string, unknown>) ?? {};
+        spec.syncWindows = result.windows;
+        project.spec = spec;
+      });
+      totalRemoved += removed;
+      if (removed > 0) {
+        console.log(
+          `[Argo sync window] removed deny window(s) in project ${projectName} for ${projectApps.length} app(s)`
+        );
+      }
+    }
+
+    return totalRemoved;
   }
 
   /**
@@ -1069,6 +1112,16 @@ class MultiArgoCDClient {
   ): Promise<number> {
     const { client } = await resolveInstanceForApp(appName, instanceId);
     return client.removeScheduleManualSyncDenyWindows(appName);
+  }
+
+  async removeScheduleManualSyncDenyWindowsForApps(
+    appNames: string[],
+    instanceId?: string
+  ): Promise<number> {
+    const names = Array.from(new Set(appNames.filter(Boolean)));
+    if (!names.length) return 0;
+    const { client } = await resolveInstanceForApp(names[0], instanceId);
+    return client.removeScheduleManualSyncDenyWindowsForApps(names);
   }
 
   /** Apps (all on one instance) that currently have a SecureNexus deny window applied. */

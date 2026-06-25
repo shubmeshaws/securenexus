@@ -288,6 +288,21 @@ export function removeScheduleDenySyncWindows(
   return { windows, removed };
 }
 
+/** Remove many apps from SecureNexus deny windows in one pass (one project PUT). */
+export function removeScheduleDenySyncWindowsForApps(
+  existing: ArgoSyncWindowSpec[],
+  appNames: string[]
+): { windows: ArgoSyncWindowSpec[]; removed: number } {
+  let windows = existing;
+  let removed = 0;
+  for (const appName of appNames) {
+    const result = removeScheduleDenySyncWindows(windows, appName);
+    windows = result.windows;
+    removed += result.removed;
+  }
+  return { windows, removed };
+}
+
 /** Fallback when startup time cannot be resolved — keep deny window until next day. */
 export function defaultBlockUntil(from: Date): Date {
   return addMinutes(from, 24 * 60);

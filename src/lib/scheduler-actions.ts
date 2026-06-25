@@ -750,17 +750,25 @@ export async function clearManualSyncDenyForScheduleRepair(
   const cleared: string[] = [];
   const errors: string[] = [];
 
-  // Remove per-app deny windows. removeScheduleManualSyncDenyWindows reads the project and
-  // only writes when something matches, so this is a cheap no-op for already-clean apps.
-  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
+  const byInstance = new Map<string, ScheduleArgoApp[]>();
+  for (const app of apps) {
+    const group = byInstance.get(app.instanceId) ?? [];
+    group.push(app);
+    byInstance.set(app.instanceId, group);
+  }
+
+  await runWithConcurrency(Array.from(byInstance.entries()), 2, async ([instanceId, group]) => {
+    const appNames = group.map((app) => app.name);
     try {
-      const removed = await argocdClient.removeScheduleManualSyncDenyWindows(
-        app.name,
-        app.instanceId
+      const removed = await argocdClient.removeScheduleManualSyncDenyWindowsForApps(
+        appNames,
+        instanceId
       );
-      if (removed > 0) cleared.push(app.name);
+      if (removed > 0) cleared.push(...appNames);
     } catch (err) {
-      errors.push(`${app.name}: ${err instanceof Error ? err.message : String(err)}`);
+      for (const app of group) {
+        errors.push(`${app.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   });
 
@@ -1060,21 +1068,27 @@ async function resumeStoredArgoApps(
   const unblocked: string[] = [];
   const forceSync = options?.forceSync ?? schedule.workloadKind === 'ScaledObject';
 
-  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
+  const byInstance = new Map<string, ScheduleArgoApp[]>();
+  for (const app of apps) {
+    const group = byInstance.get(app.instanceId) ?? [];
+    group.push(app);
+    byInstance.set(app.instanceId, group);
+  }
+
+  await runWithConcurrency(Array.from(byInstance.entries()), 2, async ([instanceId, group]) => {
+    const appNames = group.map((app) => app.name);
     try {
-      const removed = await argocdClient.removeScheduleManualSyncDenyWindows(
-        app.name,
-        app.instanceId
+      const removed = await argocdClient.removeScheduleManualSyncDenyWindowsForApps(
+        appNames,
+        instanceId
       );
-      if (removed > 0) {
-        unblocked.push(app.name);
-        console.log(
-          `[Argo resume] removed ${removed} manual-sync deny window(s) for ${app.name}`
-        );
-      }
+      unblocked.push(...appNames);
+      console.log(
+        `[Argo resume] unblocked ${appNames.length} app(s) on instance ${instanceId} (${removed} deny row(s) removed)`
+      );
     } catch (err) {
       console.error(
-        `[Argo resume] failed to remove manual-sync deny window for ${app.name}:`,
+        `[Argo resume] failed to remove manual-sync deny windows for ${appNames.join(', ')}:`,
         err instanceof Error ? err.message : err
       );
     }
@@ -1120,7 +1134,9 @@ async function resumeStoredArgoApps(
   }
 
   const resumed: string[] = [];
-  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
+  const unblockedSet = new Set(unblocked);
+  const appsToSync = apps.filter((app) => unblockedSet.has(app.name));
+  await runWithConcurrency(appsToSync, 2, async (app) => {
     try {
       if (schedule.syncPolicy === 'automated') {
         await argocdClient.updateSyncPolicy(app.name, 'automated', app.instanceId);
