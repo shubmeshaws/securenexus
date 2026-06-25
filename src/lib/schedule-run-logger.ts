@@ -49,7 +49,7 @@ function scheduleRunFilePath(): string | null {
   return null;
 }
 
-function useJsonLines(): boolean {
+function jsonLogFormatEnabled(): boolean {
   return process.env.SCHEDULE_RUN_LOG_JSON === '1';
 }
 
@@ -82,7 +82,7 @@ function formatLine(
   extra?: Record<string, unknown>
 ): string {
   const ts = new Date().toISOString();
-  if (useJsonLines()) {
+  if (jsonLogFormatEnabled()) {
     return JSON.stringify({
       ts,
       level,
