@@ -37,6 +37,7 @@ import {
   isNonEksSchedule,
   namespaceScheduleUsesFullNamespaceSyncBlock,
   NAMESPACE_SCOPE_MARKER,
+  parseWorkloadKey,
   workloadKey,
 } from './workload-utils';
 import { Prisma, type Schedule } from '@prisma/client';
@@ -166,8 +167,24 @@ async function resolveNamespaceScheduleArgoApps(
     if (app) merged.set(app.name, app);
   };
 
-  for (const app of await collectScheduleArgoApps(schedule, catalog, targets)) add(app);
-  for (const app of resolveArgoAppsFromCatalogForTargets(schedule, catalog, targets)) add(app);
+  let effectiveTargets = targets;
+  if (!effectiveTargets.length) {
+    const relaxed = relaxedCatalogAppsForSchedule(catalog, schedule);
+    if (relaxed.length) {
+      effectiveTargets = relaxed.map((app) => ({
+        name: app.name,
+        kind: 'Deployment' as WorkloadKind,
+      }));
+      console.log(
+        `[Argo resolve] namespace=${schedule.namespace} using ${effectiveTargets.length} catalog app(s) as targets (no K8s workloads)`
+      );
+    }
+  }
+
+  for (const app of await collectScheduleArgoApps(schedule, catalog, effectiveTargets)) add(app);
+  for (const app of resolveArgoAppsFromCatalogForTargets(schedule, catalog, effectiveTargets)) {
+    add(app);
+  }
 
   if (!merged.size) {
     const trackingNames = await getArgoAppNamesForNamespace(schedule.cluster, schedule.namespace);
@@ -181,9 +198,9 @@ async function resolveNamespaceScheduleArgoApps(
     }
   }
 
-  if (!merged.size) {
+  if (!merged.size && effectiveTargets.length) {
     const relaxed = relaxedAppsFromCatalog(catalog, schedule);
-    for (const target of targets) {
+    for (const target of effectiveTargets) {
       for (const app of relaxed) {
         if (argoAppMatchesWorkloadName(app.name, target.name)) {
           add({ name: app.name, instanceId: app.instanceId });
@@ -194,11 +211,18 @@ async function resolveNamespaceScheduleArgoApps(
 
   // Dedicated data/shared namespaces often have one Argo app (e.g. pftech-data) for all workloads.
   if (!merged.size) {
-    const relaxed = relaxedAppsFromCatalog(catalog, schedule);
+    const relaxed = relaxedCatalogAppsForSchedule(catalog, schedule);
     if (relaxed.length === 1) {
       add({ name: relaxed[0].name, instanceId: relaxed[0].instanceId });
       console.log(
         `[Argo resolve] namespace=${schedule.namespace} using sole catalog app: ${relaxed[0].name}`
+      );
+    } else if (relaxed.length > 1) {
+      for (const app of relaxed) {
+        add({ name: app.name, instanceId: app.instanceId });
+      }
+      console.log(
+        `[Argo resolve] namespace=${schedule.namespace} using all ${relaxed.length} catalog apps`
       );
     }
   }
@@ -218,14 +242,13 @@ async function resolveScheduleArgoAppsForOperations(
   workloadTargets?: WorkloadTarget[]
 ): Promise<ScheduleArgoApp[]> {
   if (isNamespaceSchedule(schedule)) {
-    const targets = workloadTargets?.length
+    let targets = workloadTargets?.length
       ? workloadTargets
       : await getScheduleTargets(schedule);
     if (!targets.length) {
       console.warn(
-        `[Argo resolve] namespace=${schedule.namespace} no K8s workload targets for schedule "${schedule.name}"`
+        `[Argo resolve] namespace=${schedule.namespace} no live K8s workloads for schedule "${schedule.name}" — trying saved/catalog fallbacks`
       );
-      return [];
     }
     return resolveNamespaceScheduleArgoApps(schedule, catalog, targets);
   }
@@ -307,6 +330,29 @@ async function loadArgoCatalog(): Promise<ArgoCatalog> {
 
 function relaxedAppsFromCatalog(catalog: ArgoCatalog, schedule: Schedule): ArgoCDAppSummary[] {
   return catalog.relaxed(schedule);
+}
+
+/** Namespace catalog apps minus excluded workloads — keeps large namespaces scannable. */
+function relaxedCatalogAppsForSchedule(
+  catalog: ArgoCatalog,
+  schedule: Schedule,
+  maxApps = 15
+): ArgoCDAppSummary[] {
+  let apps = relaxedAppsFromCatalog(catalog, schedule);
+  const excluded = schedule.excludedWorkloads ?? [];
+  if (excluded.length > 0) {
+    const excludedNames = new Set<string>();
+    for (const key of excluded) {
+      const parsed = parseWorkloadKey(key);
+      if (parsed) excludedNames.add(parsed.name);
+      else excludedNames.add(key);
+    }
+    const narrowed = apps.filter(
+      (app) => !Array.from(excludedNames).some((name) => argoAppMatchesWorkloadName(app.name, name))
+    );
+    if (narrowed.length) apps = narrowed;
+  }
+  return apps.length > 0 && apps.length <= maxApps ? apps : [];
 }
 
 async function resolveCatalogAppsInNamespace(
@@ -1139,15 +1185,41 @@ async function resumeStoredArgoApps(
 
   await runWithConcurrency(Array.from(byInstance.entries()), 2, async ([instanceId, group]) => {
     const appNames = group.map((app) => app.name);
+    const deniedCheckApps = group.map((app) => ({
+      name: app.name,
+      namespace: schedule.namespace,
+    }));
     try {
-      const removed = await argocdClient.removeScheduleManualSyncDenyWindowsForApps(
+      let removed = await argocdClient.removeScheduleManualSyncDenyWindowsForApps(
         appNames,
         instanceId
       );
-      unblocked.push(...appNames);
-      console.log(
-        `[Argo resume] unblocked ${appNames.length} app(s) on instance ${instanceId} (${removed} deny row(s) removed)`
-      );
+      let stillDenied = await argocdClient.getScheduleDeniedAppNames(deniedCheckApps, instanceId);
+      if (stillDenied.size) {
+        const retryNames = appNames.filter((name) => stillDenied.has(name));
+        console.warn(
+          `[Argo resume] ${retryNames.length} app(s) still deny-blocked after remove — retrying: ${retryNames.join(', ')}`
+        );
+        removed += await argocdClient.removeScheduleManualSyncDenyWindowsForApps(
+          retryNames,
+          instanceId
+        );
+        stillDenied = await argocdClient.getScheduleDeniedAppNames(deniedCheckApps, instanceId);
+      }
+      for (const name of appNames) {
+        if (!stillDenied.has(name)) unblocked.push(name);
+        else {
+          console.warn(
+            `[Argo resume] ${name} still has deny window after remove (${removed} row(s) cleared)`
+          );
+        }
+      }
+      const clearedInGroup = appNames.filter((name) => !stillDenied.has(name)).length;
+      if (clearedInGroup) {
+        console.log(
+          `[Argo resume] unblocked ${clearedInGroup}/${appNames.length} app(s) on instance ${instanceId} (${removed} deny row(s) removed)`
+        );
+      }
     } catch (err) {
       console.error(
         `[Argo resume] failed to remove manual-sync deny windows for ${appNames.join(', ')}:`,
@@ -1242,10 +1314,25 @@ export async function getScheduleTargets(schedule: Schedule): Promise<WorkloadTa
   const excluded = new Set(schedule.excludedWorkloads ?? []);
   const workloads = await listWorkloads(schedule.cluster, schedule.namespace);
 
-  return workloads.filter((w) => {
+  const fromK8s = workloads.filter((w) => {
     if (w.kind === 'DaemonSet') return false;
     return !excluded.has(workloadKey(w.kind, w.name));
   });
+  if (fromK8s.length) return fromK8s;
+
+  const saved = parseSavedWorkloadReplicas(schedule.savedWorkloadReplicas);
+  const fromSaved = Object.keys(saved)
+    .map((key) => parseWorkloadKey(key))
+    .filter((p): p is WorkloadTarget => p !== null)
+    .filter((w) => !excluded.has(workloadKey(w.kind, w.name)));
+  if (fromSaved.length) {
+    console.log(
+      `[Schedule targets] namespace=${schedule.namespace} using ${fromSaved.length} saved workload(s) (live K8s list empty)`
+    );
+    return fromSaved;
+  }
+
+  return [];
 }
 
 function parseSavedWorkloadReplicas(value: unknown): Record<string, number> {
@@ -1444,7 +1531,8 @@ export async function executeShutdown(
   let targets: WorkloadTarget[] = [];
 
   try {
-    targets = await getScheduleTargets(schedule);
+    const freshForTargets = await prisma.schedule.findUnique({ where: { id: schedule.id } });
+    targets = await getScheduleTargets(freshForTargets ?? schedule);
     runLog.phase('targets', 'Resolved workload targets', {
       count: targets.length,
       workloads: targets.map((t) => workloadKey(t.kind, t.name)),
@@ -1809,11 +1897,9 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
   let targets: WorkloadTarget[] = [];
 
   try {
-    const [resolvedTargets, fresh] = await Promise.all([
-      getScheduleTargets(schedule),
-      prisma.schedule.findUnique({ where: { id: schedule.id } }),
-    ]);
-    targets = resolvedTargets;
+    const fresh = await prisma.schedule.findUnique({ where: { id: schedule.id } });
+    const scheduleForTargets = fresh ?? schedule;
+    targets = await getScheduleTargets(scheduleForTargets);
     runLog.phase('targets', 'Resolved workload targets', {
       count: targets.length,
       workloads: targets.map((t) => workloadKey(t.kind, t.name)),
@@ -1936,6 +2022,16 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
 
       if (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)) {
         storedNames = scopedNames;
+      }
+
+      if (!storedNames.length && isNamespace) {
+        const fallbackApps = relaxedCatalogAppsForSchedule(catalog, schedule);
+        if (fallbackApps.length) {
+          storedNames = fallbackApps.map((a) => a.name);
+          console.log(
+            `[Argo resume] namespace=${schedule.namespace} using ${storedNames.length} catalog app(s) for unblock (no stored/scoped apps)`
+          );
+        }
       }
 
       runLog.phase('argo-resume', 'Apps to resume (scoped)', {

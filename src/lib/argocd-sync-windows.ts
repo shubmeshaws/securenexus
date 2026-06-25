@@ -296,9 +296,12 @@ export function removeScheduleDenySyncWindowsForApps(
   let windows = existing;
   let removed = 0;
   for (const appName of appNames) {
-    const result = removeScheduleDenySyncWindows(windows, appName);
-    windows = result.windows;
-    removed += result.removed;
+    for (;;) {
+      const result = removeScheduleDenySyncWindows(windows, appName);
+      windows = result.windows;
+      if (result.removed === 0) break;
+      removed += result.removed;
+    }
   }
   return { windows, removed };
 }
