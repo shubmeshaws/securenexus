@@ -34,6 +34,7 @@ import { defaultBlockUntil } from './argocd-sync-windows';
 import {
   isNamespaceSchedule,
   isNonEksSchedule,
+  namespaceScheduleUsesFullNamespaceSyncBlock,
   NAMESPACE_SCOPE_MARKER,
   workloadKey,
 } from './workload-utils';
@@ -131,6 +132,51 @@ function resolveWorkloadArgoAppFromCatalogOnly(
   if (scopedMatch) return scopedMatch;
 
   return resolveArgoAppFromPool(schedule, relaxedAppsFromCatalog(catalog, schedule));
+}
+
+/** Catalog-only Argo app resolution for explicit workload targets (no live K8s). */
+function resolveArgoAppsFromCatalogForTargets(
+  schedule: Schedule,
+  catalog: ArgoCatalog,
+  workloadTargets: WorkloadTarget[]
+): ScheduleArgoApp[] {
+  const byName = new Map<string, ScheduleArgoApp>();
+  for (const target of workloadTargets) {
+    const match = resolveWorkloadArgoAppFromCatalogOnly(scheduleAsWorkload(schedule, target), catalog);
+    if (match) byName.set(match.name, match);
+  }
+  return Array.from(byName.values());
+}
+
+/**
+ * Resolve Argo apps to pause/unpause for a schedule. Namespace schedules with exclusions
+ * only touch apps for included workloads — never the whole namespace catalog.
+ */
+async function resolveScheduleArgoAppsForOperations(
+  schedule: Schedule,
+  catalog: ArgoCatalog,
+  workloadTargets?: WorkloadTarget[]
+): Promise<ScheduleArgoApp[]> {
+  if (isNamespaceSchedule(schedule)) {
+    if (namespaceScheduleUsesFullNamespaceSyncBlock(schedule)) {
+      const all = await resolveCatalogAppsInNamespace(schedule, catalog);
+      if (all.length) return all;
+      return collectScheduleArgoApps(schedule, catalog, workloadTargets);
+    }
+    const scoped = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+    if (scoped.length) return scoped;
+    if (workloadTargets?.length) {
+      return resolveArgoAppsFromCatalogForTargets(schedule, catalog, workloadTargets);
+    }
+    return [];
+  }
+
+  let targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+  if (!targets.length) {
+    const fallback = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
+    if (fallback) targets = [fallback];
+  }
+  return targets;
 }
 
 interface ScheduleArgoApp {
@@ -550,14 +596,15 @@ function buildCatalogForApps(
  * (listApplications) always lists every app regardless of workload state, so we resolve
  * from it by namespace/instance instead. Order:
  *   1. Stored pausedArgoApps (most precise — captured at shutdown).
- *   2. Namespace schedules → every catalog app in the schedule's namespace.
- *   3. Single-workload schedules → exact/fuzzy catalog match for that workload only
- *      (never the whole namespace — siblings must not inherit sync-off).
+ *   2. Full namespace schedules (no exclusions) → every catalog app in the namespace.
+ *   3. Namespace schedules with exclusions → apps for included workloads only.
+ *   4. Single-workload schedules → exact/fuzzy catalog match for that workload only.
  */
 async function resolveScheduleArgoAppsFromCatalog(
   schedule: Schedule,
   allApps: ArgoCDAppSummary[],
-  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>,
+  workloadTargets?: WorkloadTarget[]
 ): Promise<ScheduleArgoApp[]> {
   const catalog = buildCatalogForApps(allApps, instanceMap);
 
@@ -567,7 +614,14 @@ async function resolveScheduleArgoAppsFromCatalog(
   }
 
   if (isNamespaceSchedule(schedule)) {
-    return resolveCatalogAppsInNamespace(schedule, catalog);
+    if (namespaceScheduleUsesFullNamespaceSyncBlock(schedule)) {
+      return resolveCatalogAppsInNamespace(schedule, catalog);
+    }
+    if (workloadTargets?.length) {
+      const scoped = resolveArgoAppsFromCatalogForTargets(schedule, catalog, workloadTargets);
+      if (scoped.length) return scoped;
+    }
+    return [];
   }
 
   const match = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
@@ -588,9 +642,22 @@ export async function applyManualSyncDenyForScheduleRepair(
 ): Promise<{ apps: string[]; errors: string[] }> {
   if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
 
-  let targets = await resolveScheduleArgoAppsFromCatalog(schedule, allApps, instanceMap);
+  let workloadTargets: WorkloadTarget[] | undefined;
+  if (
+    isNamespaceSchedule(schedule) &&
+    !namespaceScheduleUsesFullNamespaceSyncBlock(schedule)
+  ) {
+    workloadTargets = await getScheduleTargets(schedule);
+  }
+
+  let targets = await resolveScheduleArgoAppsFromCatalog(
+    schedule,
+    allApps,
+    instanceMap,
+    workloadTargets
+  );
   if (!targets.length) {
-    targets = await collectScheduleArgoApps(schedule);
+    targets = await collectScheduleArgoApps(schedule, undefined, workloadTargets);
   }
   return applyManualSyncDenyForApps(schedule, targets, now);
 }
@@ -609,7 +676,14 @@ export async function clearManualSyncDenyForScheduleRepair(
 ): Promise<{ apps: string[]; errors: string[] }> {
   if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
 
-  const apps = await resolveScheduleArgoAppsFromCatalog(schedule, allApps, instanceMap);
+  const apps = await resolveScheduleArgoAppsFromCatalog(
+    schedule,
+    allApps,
+    instanceMap,
+    isNamespaceSchedule(schedule) && !namespaceScheduleUsesFullNamespaceSyncBlock(schedule)
+      ? await getScheduleTargets(schedule).catch(() => [])
+      : undefined
+  );
   if (!apps.length) return { apps: [], errors: [] };
 
   const cleared: string[] = [];
@@ -630,7 +704,7 @@ export async function clearManualSyncDenyForScheduleRepair(
   });
 
   // Remove any legacy namespace-scoped deny window (one sample app per instance/project).
-  if (isNamespaceSchedule(schedule)) {
+  if (isNamespaceSchedule(schedule) && namespaceScheduleUsesFullNamespaceSyncBlock(schedule)) {
     const sampleByInstance = new Map<string, ScheduleArgoApp>();
     for (const app of apps) {
       if (!sampleByInstance.has(app.instanceId)) sampleByInstance.set(app.instanceId, app);
@@ -720,24 +794,16 @@ async function pauseArgoForSchedule(
   // the sync-off never lands — the root cause of "worked for some, not all". Argo CD
   // Application objects persist regardless of workload state, so the catalog is reliable.
   //
-  // Namespace schedules block EVERY app in the namespace (true namespace-wide sync-off).
-  // Workload schedules keep single-app resolution (K8s tracking + catalog) so siblings in
-  // a shared namespace are not over-blocked.
-  let targets: ScheduleArgoApp[];
-  if (isNamespaceSchedule(schedule)) {
-    targets = await resolveCatalogAppsInNamespace(schedule, catalog);
-    if (!targets.length) {
-      targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
-    }
-  } else {
-    targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
-    if (!targets.length) {
-      const fallback = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
-      if (fallback) targets = [fallback];
-    }
-  }
+  // Namespace schedules with exclusions only block apps for included workloads.
+  // Full namespace sync-off applies only when excludedWorkloads is empty.
+  const targets = await resolveScheduleArgoAppsForOperations(schedule, catalog, workloadTargets);
+  const syncScope = isNamespaceSchedule(schedule)
+    ? namespaceScheduleUsesFullNamespaceSyncBlock(schedule)
+      ? 'namespace-wide'
+      : `workload-scoped (${workloadTargets?.length ?? 0} workload(s), ${schedule.excludedWorkloads?.length ?? 0} excluded)`
+    : 'workload';
   console.log(
-    `[Argo pause] ${schedule.namespace} resolved apps: ${
+    `[Argo pause] ${schedule.namespace} syncScope=${syncScope} resolved apps: ${
       targets.map((t) => t.name).join(', ') || '(none)'
     }`
   );
@@ -1236,7 +1302,21 @@ export async function executeShutdown(
     runLog.phase('targets', 'Resolved workload targets', {
       count: targets.length,
       workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+      scope: isNamespace ? 'namespace' : 'workload',
+      fullNamespaceSync: isNamespace && namespaceScheduleUsesFullNamespaceSyncBlock(schedule),
+      excludedWorkloads: schedule.excludedWorkloads?.length ?? 0,
     });
+
+    const shutdownCatalog = await loadArgoCatalog();
+    const argoAppsByTargetKey = new Map<string, ScheduleArgoApp[]>();
+    for (const target of targets) {
+      const key = workloadKey(target.kind, target.name);
+      const apps = await collectScheduleArgoApps(schedule, shutdownCatalog, [target]);
+      argoAppsByTargetKey.set(
+        key,
+        apps.length ? apps : resolveArgoAppsFromCatalogForTargets(schedule, shutdownCatalog, [target])
+      );
+    }
 
     const [nodeCount, fresh, pauseOutcome] = await Promise.all([
       getClusterReadyNodeCount(schedule.cluster),
@@ -1321,11 +1401,35 @@ export async function executeShutdown(
                 schedule.cluster,
                 schedule.namespace,
                 target.name,
-                managedByArgo
+                (argoAppsByTargetKey.get(key) ?? []).some((a) => pausedArgoApps.includes(a.name))
               )
             );
             runLog.phase('workload-stop', `Stopped ${key}`, { method: 'scaledobject' });
             return;
+          }
+          if (target.kind === 'StatefulSet') {
+            const targetManaged = (argoAppsByTargetKey.get(key) ?? []).some((a) =>
+              pausedArgoApps.includes(a.name)
+            );
+            if (targetManaged) {
+              runLog.phase('workload-stop', `Deleting Argo-managed StatefulSet ${key}`, {
+                argoApps: (argoAppsByTargetKey.get(key) ?? []).map((a) => a.name),
+              });
+              await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
+              await retryWorkloadOp(`stop ${key}`, () =>
+                deleteStatefulSet(schedule.cluster, schedule.namespace, target.name)
+              );
+              await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
+              const reappeared = await statefulSetExists(
+                schedule.cluster,
+                schedule.namespace,
+                target.name
+              ).catch(() => false);
+              runLog.phase('workload-stop', `StatefulSet delete completed for ${key}`, {
+                reappeared,
+              });
+              return;
+            }
           }
           await retryWorkloadOp(`stop ${key}`, () =>
             scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, 0)
@@ -1676,9 +1780,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       // window + re-enables sync for every app — otherwise the namespace would stay
       // sync-blocked after start.
       const resolveFromCatalog = async (): Promise<string[]> => {
-        const apps = isNamespaceSchedule(schedule)
-          ? await resolveCatalogAppsInNamespace(schedule, catalog)
-          : await collectScheduleArgoApps(schedule, catalog);
+        const apps = await resolveScheduleArgoAppsForOperations(schedule, catalog, targets);
         return apps.map((a) => a.name);
       };
 

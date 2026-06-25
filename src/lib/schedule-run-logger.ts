@@ -1,5 +1,3 @@
-import { appendFile, mkdir } from 'fs/promises';
-import { dirname, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import type { Schedule } from '@prisma/client';
 import { isNamespaceSchedule } from './workload-utils';
@@ -36,17 +34,6 @@ const LOG_PREFIX = '[ScheduleRun]';
 
 function scheduleRunLoggingEnabled(): boolean {
   return process.env.SCHEDULE_RUN_LOG !== '0';
-}
-
-function scheduleRunFilePath(): string | null {
-  if (!scheduleRunLoggingEnabled()) return null;
-  const fromEnv = process.env.SCHEDULE_RUN_LOG_FILE?.trim();
-  if (fromEnv) return resolve(fromEnv);
-  // Default: file in dev/local; opt-in on production via SCHEDULE_RUN_LOG=1 or SCHEDULE_RUN_LOG_FILE.
-  if (process.env.SCHEDULE_RUN_LOG === '1' || process.env.NODE_ENV !== 'production') {
-    return resolve(process.cwd(), 'logs', 'schedule-runs.log');
-  }
-  return null;
 }
 
 function jsonLogFormatEnabled(): boolean {
@@ -106,29 +93,6 @@ function formatLine(
   return `${base} — ${message}${payload}${tail}`;
 }
 
-let fileReady: Promise<void> | null = null;
-
-async function ensureLogFile(filePath: string): Promise<void> {
-  if (!fileReady) {
-    fileReady = mkdir(dirname(filePath), { recursive: true }).then(() => undefined);
-  }
-  await fileReady;
-}
-
-function writeToFile(line: string): void {
-  const filePath = scheduleRunFilePath();
-  if (!filePath) return;
-
-  void ensureLogFile(filePath)
-    .then(() => appendFile(filePath, `${line}\n`, 'utf8'))
-    .catch((err) => {
-      console.error(
-        `${LOG_PREFIX} failed to write schedule run log file:`,
-        err instanceof Error ? err.message : err
-      );
-    });
-}
-
 function emit(
   level: 'info' | 'warn' | 'error',
   ctx: ScheduleRunLogContext,
@@ -143,10 +107,9 @@ function emit(
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
-  writeToFile(line);
 }
 
-/** Structured logger for schedule stop/start — visible in PM2 stdout and optional log file. */
+/** Structured stop/start logs — written to stdout/stderr (visible via `pm2 logs securenexus`). */
 export function createScheduleRunLogger(
   mode: ScheduleRunMode,
   schedule: Schedule,
@@ -173,9 +136,4 @@ export function createScheduleRunLogger(
       });
     },
   };
-}
-
-/** Where schedule run logs are written, if file logging is active. */
-export function getScheduleRunLogFilePath(): string | null {
-  return scheduleRunFilePath();
 }

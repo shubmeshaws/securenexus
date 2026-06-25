@@ -39,6 +39,20 @@ export function isNamespaceSchedule(schedule: {
   return schedule.scope === 'namespace' || schedule.appName === NAMESPACE_SCOPE_MARKER;
 }
 
+/**
+ * Namespace schedules with excluded workloads only stop/sync-block the included workloads
+ * (e.g. "all except 50 apps" → only the one remaining app). Full namespace sync-off applies
+ * only when nothing is excluded.
+ */
+export function namespaceScheduleUsesFullNamespaceSyncBlock(schedule: {
+  scope?: string | null;
+  appName?: string | null;
+  excludedWorkloads?: string[] | null;
+}): boolean {
+  if (!isNamespaceSchedule(schedule)) return false;
+  return (schedule.excludedWorkloads?.length ?? 0) === 0;
+}
+
 export function formatWorkloadKeyLabel(key: string): string {
   const parsed = parseWorkloadKey(key);
   return parsed ? `${parsed.name} (${parsed.kind})` : key;
