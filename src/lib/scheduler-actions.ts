@@ -41,6 +41,7 @@ import { Prisma, type Schedule } from '@prisma/client';
 import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
 import { runWithConcurrency, withRetry } from './concurrency';
 import { resolveArgoOpConcurrency, resolveWorkloadOpConcurrency } from './schedule-execution-pool';
+import { createScheduleRunLogger } from './schedule-run-logger';
 
 /** Delay after pausing Argo before deleting a StatefulSet (ms). Override: STS_SHUTDOWN_SETTLE_MS */
 const STS_SHUTDOWN_SETTLE_MS = (() => {
@@ -111,6 +112,25 @@ function resolveArgoAppFromPool(
         schedule.appName.includes(app.name))
   );
   return byTarget ? { name: byTarget.name, instanceId: byTarget.instanceId } : null;
+}
+
+/**
+ * Resolve a single workload-scoped Argo app from the catalog only (no live K8s).
+ * Never expands to the whole namespace — used by pause/reconcile for workload schedules.
+ */
+function resolveWorkloadArgoAppFromCatalogOnly(
+  schedule: Schedule,
+  catalog: ArgoCatalog
+): ScheduleArgoApp | null {
+  if (isNamespaceSchedule(schedule)) return null;
+
+  const byName = findArgoAppInCatalog(catalog, schedule, schedule.appName);
+  if (byName) return byName;
+
+  const scopedMatch = resolveArgoAppFromPool(schedule, catalog.filtered(schedule));
+  if (scopedMatch) return scopedMatch;
+
+  return resolveArgoAppFromPool(schedule, relaxedAppsFromCatalog(catalog, schedule));
 }
 
 interface ScheduleArgoApp {
@@ -342,10 +362,19 @@ export async function collectScheduleArgoApps(
     });
   } else if (schedule.workloadKind === 'StatefulSet') {
     add(await resolveArgoAppForStatefulSet(schedule, ctx));
+    if (!byName.size) {
+      add(resolveWorkloadArgoAppFromCatalogOnly(schedule, ctx));
+    }
   } else if (schedule.workloadKind === 'ScaledObject') {
     add(await resolveArgoAppForScaledObject(schedule, ctx));
+    if (!byName.size) {
+      add(resolveWorkloadArgoAppFromCatalogOnly(schedule, ctx));
+    }
   } else {
     add(await resolveArgoApp(schedule, ctx));
+    if (!byName.size) {
+      add(resolveWorkloadArgoAppFromCatalogOnly(schedule, ctx));
+    }
   }
 
   return Array.from(byName.values());
@@ -522,8 +551,8 @@ function buildCatalogForApps(
  * from it by namespace/instance instead. Order:
  *   1. Stored pausedArgoApps (most precise — captured at shutdown).
  *   2. Namespace schedules → every catalog app in the schedule's namespace.
- *   3. Single-workload schedules → catalog app whose name matches schedule.appName,
- *      else the catalog apps in the namespace as a last resort.
+ *   3. Single-workload schedules → exact/fuzzy catalog match for that workload only
+ *      (never the whole namespace — siblings must not inherit sync-off).
  */
 async function resolveScheduleArgoAppsFromCatalog(
   schedule: Schedule,
@@ -541,10 +570,8 @@ async function resolveScheduleArgoAppsFromCatalog(
     return resolveCatalogAppsInNamespace(schedule, catalog);
   }
 
-  const byName = findArgoAppInCatalog(catalog, schedule, schedule.appName);
-  if (byName) return [byName];
-
-  return resolveCatalogAppsInNamespace(schedule, catalog);
+  const match = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
+  return match ? [match] : [];
 }
 
 /**
@@ -704,6 +731,10 @@ async function pauseArgoForSchedule(
     }
   } else {
     targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+    if (!targets.length) {
+      const fallback = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
+      if (fallback) targets = [fallback];
+    }
   }
   console.log(
     `[Argo pause] ${schedule.namespace} resolved apps: ${
@@ -1035,16 +1066,22 @@ async function executeEc2Shutdown(
   triggeredBy: string,
   options?: ShutdownOptions
 ): Promise<void> {
+  const runLog = createScheduleRunLogger('shutdown', schedule, triggeredBy);
+  runLog.phase('begin', 'EC2 shutdown started', { options: options ?? null });
+
   const credentialId = schedule.awsCredentialId;
   const instanceId = schedule.ec2InstanceId;
   const region = schedule.ec2Region;
   if (!credentialId || !instanceId || !region) {
-    throw new Error('EC2 schedule is missing AWS account or instance');
+    const message = 'EC2 schedule is missing AWS account or instance';
+    runLog.finish('failed', message);
+    throw new Error(message);
   }
 
   const liveUpdate = buildLiveScheduleUpdate(schedule, triggeredBy, options);
 
   try {
+    runLog.phase('ec2-stop', 'Stopping EC2 instance', { instanceId, region });
     await stopEc2Instance(credentialId, instanceId, region);
 
     if (Object.keys(liveUpdate).length > 0) {
@@ -1053,6 +1090,9 @@ async function executeEc2Shutdown(
         data: liveUpdate,
       });
     }
+
+    const message = `EC2 instance ${schedule.appName} (${instanceId}) stop requested in ${region}`;
+    runLog.finish('success', message, { instanceId, region });
 
     await logActivity({
       action: 'schedule-shutdown',
@@ -1067,6 +1107,8 @@ async function executeEc2Shutdown(
       ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : 'EC2 shutdown failed';
+    runLog.finish('failed', message, { instanceId, region });
     await logActivity({
       action: 'schedule-shutdown',
       cluster: schedule.cluster,
@@ -1074,7 +1116,7 @@ async function executeEc2Shutdown(
       appName: schedule.appName,
       triggeredBy,
       status: 'failed',
-      message: err instanceof Error ? err.message : 'EC2 shutdown failed',
+      message,
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
       ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
@@ -1083,14 +1125,20 @@ async function executeEc2Shutdown(
 }
 
 async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promise<void> {
+  const runLog = createScheduleRunLogger('startup', schedule, triggeredBy);
+  runLog.phase('begin', 'EC2 startup started');
+
   const credentialId = schedule.awsCredentialId;
   const instanceId = schedule.ec2InstanceId;
   const region = schedule.ec2Region;
   if (!credentialId || !instanceId || !region) {
-    throw new Error('EC2 schedule is missing AWS account or instance');
+    const message = 'EC2 schedule is missing AWS account or instance';
+    runLog.finish('failed', message);
+    throw new Error(message);
   }
 
   try {
+    runLog.phase('ec2-start', 'Starting EC2 instance', { instanceId, region });
     await startEc2Instance(credentialId, instanceId, region);
 
     await prisma.schedule.update({
@@ -1103,6 +1151,9 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
       },
     });
 
+    const message = `EC2 instance ${schedule.appName} (${instanceId}) start requested in ${region}`;
+    runLog.finish('success', message, { instanceId, region });
+
     await logActivity({
       action: 'schedule-startup',
       cluster: schedule.cluster,
@@ -1110,11 +1161,13 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
       appName: schedule.appName,
       triggeredBy,
       status: 'success',
-      message: `EC2 instance ${schedule.appName} (${instanceId}) start requested in ${region}`,
+      message,
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
       ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : 'EC2 startup failed';
+    runLog.finish('failed', message, { instanceId, region });
     await logActivity({
       action: 'schedule-startup',
       cluster: schedule.cluster,
@@ -1122,7 +1175,7 @@ async function executeEc2Startup(schedule: Schedule, triggeredBy: string): Promi
       appName: schedule.appName,
       triggeredBy,
       status: 'failed',
-      message: err instanceof Error ? err.message : 'EC2 startup failed',
+      message,
       details: JSON.stringify({ platformType: 'non_eks', instanceId, region }),
       ...resolveScheduleTeamsAlert(schedule, triggeredBy),
     });
@@ -1171,12 +1224,19 @@ export async function executeShutdown(
     return executeEc2Shutdown(schedule, triggeredBy, options);
   }
 
+  const runLog = createScheduleRunLogger('shutdown', schedule, triggeredBy);
+  runLog.phase('begin', 'Shutdown started', { options: options ?? null });
+
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
   let targets: WorkloadTarget[] = [];
 
   try {
     targets = await getScheduleTargets(schedule);
+    runLog.phase('targets', 'Resolved workload targets', {
+      count: targets.length,
+      workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+    });
 
     const [nodeCount, fresh, pauseOutcome] = await Promise.all([
       getClusterReadyNodeCount(schedule.cluster),
@@ -1212,10 +1272,15 @@ export async function executeShutdown(
     if (pauseOutcome.ok) {
       argoNote = pauseOutcome.result.note;
       pausedArgoApps = pauseOutcome.result.apps;
+      runLog.phase('argo-pause', 'Argo sync paused', {
+        apps: pausedArgoApps,
+        note: argoNote || null,
+      });
     } else {
-      argoNote = ` · ArgoCD sync pause failed: ${
-        pauseOutcome.err instanceof Error ? pauseOutcome.err.message : 'unknown'
-      }`;
+      const argoErr =
+        pauseOutcome.err instanceof Error ? pauseOutcome.err.message : 'unknown';
+      argoNote = ` · ArgoCD sync pause failed: ${argoErr}`;
+      runLog.warn('argo-pause', 'Argo sync pause failed', { error: argoErr });
     }
 
     let statefulSetDeleted = false;
@@ -1246,6 +1311,10 @@ export async function executeShutdown(
             priorWorkloadSaves[key],
             schedule.targetReplicas
           );
+          runLog.phase('workload-stop', `Stopping ${key}`, {
+            currentReplicas: current,
+            savedReplicas: replicasMap[key],
+          });
           if (target.kind === 'ScaledObject') {
             await retryWorkloadOp(`stop ${key}`, () =>
               stopScaledObjectWorkload(
@@ -1255,13 +1324,17 @@ export async function executeShutdown(
                 managedByArgo
               )
             );
+            runLog.phase('workload-stop', `Stopped ${key}`, { method: 'scaledobject' });
             return;
           }
           await retryWorkloadOp(`stop ${key}`, () =>
             scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, 0)
           );
+          runLog.phase('workload-stop', `Stopped ${key}`, { method: 'scale-to-0' });
         } catch (err) {
-          shutdownFailures.push(`${key}: ${err instanceof Error ? err.message : 'stop failed'}`);
+          const errMsg = err instanceof Error ? err.message : 'stop failed';
+          shutdownFailures.push(`${key}: ${errMsg}`);
+          runLog.warn('workload-stop', `Failed to stop ${key}`, { error: errMsg });
         }
       });
 
@@ -1303,6 +1376,10 @@ export async function executeShutdown(
       // startup can resume it. If no Argo app manages it, fall back to scale-to-0.
       if (kind === 'StatefulSet') {
         if (pausedArgoApps.length) {
+          runLog.phase('workload-stop', 'Deleting Argo-managed StatefulSet', {
+            managedByArgo: true,
+            settleMs: STS_SHUTDOWN_SETTLE_MS,
+          });
           // Let Argo register the paused policy before deleting so an in-flight
           // self-heal doesn't immediately recreate the StatefulSet.
           await new Promise((r) => setTimeout(r, STS_SHUTDOWN_SETTLE_MS));
@@ -1318,10 +1395,16 @@ export async function executeShutdown(
             schedule.namespace,
             schedule.appName
           ).catch(() => false);
+          runLog.phase('workload-stop', 'StatefulSet delete completed', {
+            reappeared,
+          });
           console.log(
             `[STS shutdown] ${schedule.namespace}/${schedule.appName} deleted; reappeared=${reappeared}`
           );
         } else {
+          runLog.warn('workload-stop', 'No Argo app — scaling StatefulSet to 0', {
+            appName: schedule.appName,
+          });
           console.log(
             `[STS shutdown] ${schedule.namespace}/${schedule.appName} no Argo app found; scaling to 0`
           );
@@ -1330,6 +1413,9 @@ export async function executeShutdown(
           );
         }
       } else if (kind === 'ScaledObject') {
+        runLog.phase('workload-stop', 'Stopping ScaledObject', {
+          managedByArgo: pausedArgoApps.length > 0,
+        });
         const mode = await retryWorkloadOp(`stop ScaledObject/${schedule.appName}`, () =>
           stopScaledObjectWorkload(
             schedule.cluster,
@@ -1346,14 +1432,19 @@ export async function executeShutdown(
             schedule.namespace,
             schedule.appName
           ).catch(() => false);
+          runLog.phase('workload-stop', 'ScaledObject deleted', { reappeared, mode });
           console.log(
             `[ScaledObject shutdown] ${schedule.namespace}/${schedule.appName} deleted; reappeared=${reappeared}`
           );
+        } else {
+          runLog.phase('workload-stop', 'ScaledObject paused', { mode });
         }
       } else {
+        runLog.phase('workload-stop', `Scaling ${kind}/${schedule.appName} to 0`);
         await retryWorkloadOp(`stop ${kind}/${schedule.appName}`, () =>
           scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, 0)
         );
+        runLog.phase('workload-stop', `Scaled ${kind}/${schedule.appName} to 0`);
       }
 
       await prisma.schedule.update({
@@ -1403,6 +1494,15 @@ export async function executeShutdown(
       nodeCount
     );
 
+    runLog.finish('success', message, {
+      pausedArgoApps,
+      shutdownFailures,
+      statefulSetDeleted,
+      scaledObjectDeleted,
+      stoppedCount,
+      targetCount: targets.length,
+    });
+
     await logActivity({
       action: 'schedule-shutdown',
       cluster: schedule.cluster,
@@ -1418,6 +1518,11 @@ export async function executeShutdown(
   } catch (err) {
     const alertSchedule =
       (await prisma.schedule.findUnique({ where: { id: schedule.id } })) ?? schedule;
+    const message = err instanceof Error ? err.message : 'Shutdown failed';
+    runLog.finish('failed', message, {
+      targetCount: targets.length,
+      workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+    });
     await logActivity({
       action: 'schedule-shutdown',
       cluster: schedule.cluster,
@@ -1425,7 +1530,7 @@ export async function executeShutdown(
       appName: activityAppName,
       triggeredBy,
       status: 'failed',
-      message: err instanceof Error ? err.message : 'Shutdown failed',
+      message,
       details: buildShutdownActivityDetails(
         isNamespace
           ? {
@@ -1447,6 +1552,9 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     return executeEc2Startup(schedule, triggeredBy);
   }
 
+  const runLog = createScheduleRunLogger('startup', schedule, triggeredBy);
+  runLog.phase('begin', 'Startup started');
+
   const isNamespace = isNamespaceSchedule(schedule);
   const activityAppName = isNamespace ? NAMESPACE_SCOPE_MARKER : schedule.appName;
   let targets: WorkloadTarget[] = [];
@@ -1457,6 +1565,11 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       prisma.schedule.findUnique({ where: { id: schedule.id } }),
     ]);
     targets = resolvedTargets;
+    runLog.phase('targets', 'Resolved workload targets', {
+      count: targets.length,
+      workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+      pausedArgoApps: fresh?.pausedArgoApps ?? [],
+    });
     const alertSchedule = fresh ?? schedule;
 
     let statefulSetRecreatedViaArgo = false;
@@ -1473,6 +1586,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         const key = workloadKey(target.kind, target.name);
         if (target.kind === 'ScaledObject') {
           try {
+            runLog.phase('workload-start', `Starting ${key}`, { method: 'scaledobject' });
             const mode = await retryWorkloadOp(`start ${key}`, () =>
               startScaledObjectWorkload(
                 schedule.cluster,
@@ -1481,19 +1595,26 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
                 hadArgoPause
               )
             );
+            runLog.phase('workload-start', `Started ${key}`, { mode });
             if (mode === 'argocd') return;
           } catch (err) {
-            startupFailures.push(`${key}: ${err instanceof Error ? err.message : 'start failed'}`);
+            const errMsg = err instanceof Error ? err.message : 'start failed';
+            startupFailures.push(`${key}: ${errMsg}`);
+            runLog.warn('workload-start', `Failed to start ${key}`, { error: errMsg });
           }
           return;
         }
         const replicas = resolveStartupReplicas(schedule, savedMap[key]);
         try {
+          runLog.phase('workload-start', `Scaling ${key} to ${replicas}`, { replicas });
           await retryWorkloadOp(`start ${key}`, () =>
             scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, replicas)
           );
+          runLog.phase('workload-start', `Started ${key}`, { replicas });
         } catch (err) {
-          startupFailures.push(`${key}: ${err instanceof Error ? err.message : 'scale failed'}`);
+          const errMsg = err instanceof Error ? err.message : 'scale failed';
+          startupFailures.push(`${key}: ${errMsg}`);
+          runLog.warn('workload-start', `Failed to start ${key}`, { error: errMsg });
         }
       });
 
@@ -1512,13 +1633,19 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       // when the STS is still present (the scale-to-0 fallback path).
       if (kind === 'StatefulSet') {
         if (await statefulSetExists(schedule.cluster, schedule.namespace, schedule.appName)) {
+          runLog.phase('workload-start', `Scaling StatefulSet/${schedule.appName}`, { replicas });
           await retryWorkloadOp(`start StatefulSet/${schedule.appName}`, () =>
             scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas)
           );
+          runLog.phase('workload-start', `Scaled StatefulSet/${schedule.appName}`, { replicas });
         } else {
           statefulSetRecreatedViaArgo = true;
+          runLog.phase('workload-start', 'StatefulSet missing — will recreate via Argo', {
+            replicas,
+          });
         }
       } else if (kind === 'ScaledObject') {
+        runLog.phase('workload-start', `Starting ScaledObject/${schedule.appName}`);
         const mode = await retryWorkloadOp(`start ScaledObject/${schedule.appName}`, () =>
           startScaledObjectWorkload(
             schedule.cluster,
@@ -1528,10 +1655,13 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
           )
         );
         scaledObjectRecreatedViaArgo = mode === 'argocd';
+        runLog.phase('workload-start', `Started ScaledObject/${schedule.appName}`, { mode });
       } else {
+        runLog.phase('workload-start', `Scaling ${kind}/${schedule.appName}`, { replicas });
         await retryWorkloadOp(`start ${kind}/${schedule.appName}`, () =>
           scaleWorkload(schedule.cluster, schedule.namespace, kind, schedule.appName, replicas)
         );
+        runLog.phase('workload-start', `Started ${kind}/${schedule.appName}`, { replicas });
       }
     }
 
@@ -1561,21 +1691,34 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       }
 
       const toResume = await resolveArgoAppsForResume(schedule, storedNames, catalog);
+      runLog.phase('argo-resume', 'Resolving Argo apps to resume', {
+        storedNames,
+        resolved: toResume.map((a) => a.name),
+      });
       if (toResume.length) {
         argoNote = await resumeStoredArgoApps(schedule, toResume, {
           forceSync: includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause),
         });
+        runLog.phase('argo-resume', 'Argo sync restored', { note: argoNote || null });
       } else if (storedNames.length) {
+        runLog.warn('argo-resume', 'Could not resolve Argo instance for stored apps', {
+          storedNames,
+        });
         console.warn(
           `[Argo resume] could not resolve Argo instance for apps: ${storedNames.join(', ')}`
         );
       } else if (includesScaledObject && scaledObjectRecreatedViaArgo) {
+        runLog.warn('argo-resume', 'ScaledObject needs Argo sync but no linked app resolved', {
+          appName: schedule.appName,
+        });
         console.warn(
           `[Argo resume] ScaledObject ${schedule.appName} needs Argo CD sync but no linked app was resolved`
         );
       }
     } catch (err) {
-      argoNote = ` · ArgoCD sync restore failed: ${err instanceof Error ? err.message : 'unknown'}`;
+      const argoErr = err instanceof Error ? err.message : 'unknown';
+      argoNote = ` · ArgoCD sync restore failed: ${argoErr}`;
+      runLog.warn('argo-resume', 'Argo sync restore failed', { error: argoErr });
     }
 
     if (storedPausedApps.length) {
@@ -1617,6 +1760,14 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         })
       : undefined;
 
+    runLog.finish('success', message, {
+      restoredCount,
+      targetCount: targets.length,
+      startupFailures,
+      statefulSetRecreatedViaArgo,
+      scaledObjectRecreatedViaArgo,
+    });
+
     await logActivity({
       action: 'schedule-startup',
       cluster: schedule.cluster,
@@ -1631,6 +1782,11 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
   } catch (err) {
     const alertSchedule =
       (await prisma.schedule.findUnique({ where: { id: schedule.id } })) ?? schedule;
+    const message = err instanceof Error ? err.message : 'Startup failed';
+    runLog.finish('failed', message, {
+      targetCount: targets.length,
+      workloads: targets.map((t) => workloadKey(t.kind, t.name)),
+    });
     await logActivity({
       action: 'schedule-startup',
       cluster: schedule.cluster,
@@ -1638,7 +1794,7 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       appName: activityAppName,
       triggeredBy,
       status: 'failed',
-      message: err instanceof Error ? err.message : 'Startup failed',
+      message,
       details: isNamespace
         ? JSON.stringify({
             scope: 'namespace',

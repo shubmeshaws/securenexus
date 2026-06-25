@@ -128,6 +128,14 @@ function shouldIncludeSchedule(
   return false;
 }
 
+/** Cheap pre-filter before live K8s/Argo calls — skip schedules with nothing to track. */
+function isTrackerCandidate(schedule: Schedule, now: Date): boolean {
+  if (isInStopContext(schedule, now)) return true;
+  if (schedule.pausedArgoApps.length > 0) return true;
+  if (schedule.liveActive && schedule.liveStopSource !== 'manual-start') return true;
+  return false;
+}
+
 type ScheduleArgoCatalog = Awaited<ReturnType<typeof loadScheduleArgoCatalog>>;
 
 async function resolveAppsForTracker(
@@ -261,8 +269,9 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
 
   const rows: ScheduleActivityRow[] = [];
   const eksSchedules = schedules.filter((s) => !isNonEksSchedule(s));
+  const candidates = eksSchedules.filter((s) => isTrackerCandidate(s, now));
 
-  await runWithConcurrency(eksSchedules, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
+  await runWithConcurrency(candidates, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
     const row = await computeScheduleRow(schedule, catalog, now);
     if (shouldIncludeSchedule(row, schedule, now)) {
       rows.push(row);

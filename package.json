@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:sync": "prisma db push && prisma generate",
     "db:migrate": "prisma migrate dev",
+    "logs:schedule-runs": "mkdir -p logs && tail -f logs/schedule-runs.log",
     "postinstall": "mkdir -p .home .cache && HOME=\"$(pwd)/.home\" XDG_CACHE_HOME=\"$(pwd)/.cache\" prisma generate"
   },
   "dependencies": {
