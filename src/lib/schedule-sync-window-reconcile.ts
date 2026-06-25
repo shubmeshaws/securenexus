@@ -3,10 +3,11 @@ import { addHours } from 'date-fns';
 import type { InstantRun, Schedule } from '@prisma/client';
 import {
   applyManualSyncDenyForScheduleRepair,
+  buildSyncBlockHoldSet,
   clearManualSyncDenyForScheduleRepair,
+  scheduleShouldBeSyncBlockedNow,
 } from './scheduler-actions';
 import { isNonEksSchedule } from './workload-utils';
-import { isScheduleInStoppedWindow } from './scheduler-utils';
 import argocdClient, {
   appMatchesK8sCluster,
   getArgoListErrors,
@@ -43,19 +44,6 @@ function scheduleNeedsSyncWindowReconcile(schedule: {
   if (schedule.liveStopSource === 'manual') return true;
   if (schedule.pausedArgoApps.length > 0) return true;
   return false;
-}
-
-/**
- * Whether the schedule should be sync-blocked RIGHT NOW. A manual stop persists until a
- * manual start; a manual start during a stop window means the user wants it running; an
- * automatic schedule is blocked only while inside its stop window. This is the authority
- * the reconcile uses to decide ADD (block) vs REMOVE (unblock) — independent of the
- * possibly-stale liveActive flag, so windows track reality and never linger into runtime.
- */
-function scheduleShouldBeStoppedNow(schedule: Schedule, now: Date): boolean {
-  if (schedule.liveStopSource === 'manual') return true;
-  if (schedule.liveStopSource === 'manual-start') return false;
-  return isScheduleInStoppedWindow(schedule, now);
 }
 
 function resolveInstantRunApps(run: InstantRun, allApps: ArgoCDAppSummary[]): ArgoAppRef[] {
@@ -137,6 +125,13 @@ export async function reconcileStoppedScheduleSyncWindows(
     `[Argo reconcile] starting: ${candidates.length} schedule(s), ${instantRuns.length} instant run(s)`
   );
 
+  const syncBlockHoldKeys = await buildSyncBlockHoldSet(candidates, allApps, instanceMap, now);
+  if (syncBlockHoldKeys.size > 0) {
+    console.log(
+      `[Argo reconcile] ${syncBlockHoldKeys.size} app(s) must stay sync-blocked across stopped schedule(s)`
+    );
+  }
+
   report({
     schedulesTotal: candidates.length,
     schedulesDone: 0,
@@ -150,17 +145,17 @@ export async function reconcileStoppedScheduleSyncWindows(
   const clearedScheduleIds: string[] = [];
 
   await runWithConcurrency(candidates, 4, async (schedule) => {
-    const shouldBeStopped = scheduleShouldBeStoppedNow(schedule, now);
+    const shouldBeStopped = scheduleShouldBeSyncBlockedNow(schedule, now);
 
     // BIDIRECTIONAL reconcile:
     //  - in stop window (or manual stop)  → ensure deny window present + sync paused.
-    //  - outside stop window (should run) → REMOVE deny window + restore sync. This is the
-    //    self-heal for "window not removed automatically": startup is no longer the only
-    //    thing that can clear it, and a stale liveActive/pausedArgoApps can no longer keep
-    //    a running schedule blocked.
+    //  - outside stop window (should run) → REMOVE deny window + restore sync for apps this
+    //    schedule owns, but never apps another stopped schedule still needs (syncBlockHoldKeys).
     const outcome = shouldBeStopped
       ? await applyManualSyncDenyForScheduleRepair(schedule, allApps, instanceMap, now)
-      : await clearManualSyncDenyForScheduleRepair(schedule, allApps, instanceMap);
+      : await clearManualSyncDenyForScheduleRepair(schedule, allApps, instanceMap, {
+          holdKeys: syncBlockHoldKeys,
+        });
 
     schedulesDone++;
     report({

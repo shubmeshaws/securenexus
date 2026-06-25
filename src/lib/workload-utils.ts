@@ -40,9 +40,8 @@ export function isNamespaceSchedule(schedule: {
 }
 
 /**
- * Namespace schedules with excluded workloads only stop/sync-block the included workloads
- * (e.g. "all except 50 apps" → only the one remaining app). Full namespace sync-off applies
- * only when nothing is excluded.
+ * @deprecated Sync-off no longer uses full namespace catalog. Kept only for removing legacy
+ * namespace-scoped deny windows written by older SecureNexus versions.
  */
 export function namespaceScheduleUsesFullNamespaceSyncBlock(schedule: {
   scope?: string | null;
