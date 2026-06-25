@@ -37,8 +37,14 @@ export interface SyncOffNamespaceGroup {
   scheduleName: string;
   completed: string[];
   pending: string[];
+  /** Sync still enabled during downtime — should have manual sync off. */
+  syncOnDuringDowntime: string[];
+  /** Sync enabled outside stop window — expected / healthy. */
+  syncOnExpected: string[];
   completedCount: number;
   pendingCount: number;
+  syncOnDuringDowntimeCount: number;
+  syncOnExpectedCount: number;
   total: number;
   percent: number;
   /** Schedule is inside its stop window (or manual stop). */
@@ -86,6 +92,8 @@ export interface ScheduleActivityTracker {
     syncTotal: number;
     syncPercent: number;
     lingeringSchedules: number;
+    syncOnDuringDowntime: number;
+    syncOnExpected: number;
     percent: number;
   };
 }
@@ -301,6 +309,8 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
     .map((row) => {
       const schedule = eksSchedules.find((s) => s.id === row.id)!;
       const inStopWindow = isInStopContext(schedule, now);
+      const syncOnDuringDowntime = inStopWindow ? row.syncOff.pending : [];
+      const syncOnExpected = !inStopWindow ? row.syncOff.pending : [];
       return {
         cluster: row.cluster,
         namespace: row.namespace,
@@ -308,8 +318,12 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
         scheduleName: row.name,
         completed: row.syncOff.applied,
         pending: row.syncOff.pending,
+        syncOnDuringDowntime,
+        syncOnExpected,
         completedCount: row.syncOff.done,
         pendingCount: row.syncOff.pending.length,
+        syncOnDuringDowntimeCount: syncOnDuringDowntime.length,
+        syncOnExpectedCount: syncOnExpected.length,
         total: row.syncOff.total,
         percent:
           row.syncOff.total === 0
@@ -347,11 +361,18 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
       syncTotal: 0,
       syncPercent: 0,
       lingeringSchedules: 0,
+      syncOnDuringDowntime: 0,
+      syncOnExpected: 0,
       percent: 0,
     }
   );
 
   totals.lingeringSchedules = syncOffGroups.filter((g) => g.lingeringSyncOff).length;
+  totals.syncOnDuringDowntime = syncOffGroups.reduce(
+    (n, g) => n + g.syncOnDuringDowntimeCount,
+    0
+  );
+  totals.syncOnExpected = syncOffGroups.reduce((n, g) => n + g.syncOnExpectedCount, 0);
 
   totals.syncPercent =
     totals.syncTotal === 0 ? 100 : Math.round((totals.syncDone / totals.syncTotal) * 100);

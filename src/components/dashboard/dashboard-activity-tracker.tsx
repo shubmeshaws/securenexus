@@ -19,6 +19,8 @@ import { formatRelativeTime, parseClusterDisplay, cn } from '@/lib/utils';
 
 const POLL_INTERVAL_MS = 15_000;
 
+type ListMode = 'blocked' | 'sync-on-downtime' | 'sync-on-expected';
+
 function pct(done: number, total: number): number {
   if (total <= 0) return 100;
   return Math.round((done / total) * 100);
@@ -31,18 +33,20 @@ function ProgressBar({
 }: {
   done: number;
   total: number;
-  variant: 'completed' | 'pending';
+  variant: 'emerald' | 'amber' | 'sky';
 }) {
   const value = pct(done, total);
   const complete = total === 0 || done >= total;
   const barColor =
-    variant === 'completed'
+    variant === 'emerald'
       ? complete
         ? 'bg-emerald-500'
         : 'bg-emerald-500/70'
-      : complete
-        ? 'bg-emerald-500'
-        : 'bg-amber-500/80';
+      : variant === 'sky'
+        ? 'bg-sky-500/70'
+        : complete
+          ? 'bg-emerald-500'
+          : 'bg-amber-500/80';
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
       <div
@@ -53,10 +57,20 @@ function ProgressBar({
   );
 }
 
-type ClusterGroups = Map<string, SyncOffNamespaceGroup[]>;
+function servicesForMode(group: SyncOffNamespaceGroup, mode: ListMode): string[] {
+  if (mode === 'blocked') return group.completed;
+  if (mode === 'sync-on-downtime') return group.syncOnDuringDowntime;
+  return group.syncOnExpected;
+}
 
-function groupByCluster(groups: SyncOffNamespaceGroup[]): ClusterGroups {
-  const map: ClusterGroups = new Map();
+function countForMode(group: SyncOffNamespaceGroup, mode: ListMode): number {
+  if (mode === 'blocked') return group.completedCount;
+  if (mode === 'sync-on-downtime') return group.syncOnDuringDowntimeCount;
+  return group.syncOnExpectedCount;
+}
+
+function groupByCluster(groups: SyncOffNamespaceGroup[]): Map<string, SyncOffNamespaceGroup[]> {
+  const map = new Map<string, SyncOffNamespaceGroup[]>();
   for (const group of groups) {
     const list = map.get(group.cluster) ?? [];
     list.push(group);
@@ -65,20 +79,16 @@ function groupByCluster(groups: SyncOffNamespaceGroup[]): ClusterGroups {
   return map;
 }
 
-function ServiceList({
-  services,
-  variant,
-}: {
-  services: string[];
-  variant: 'completed' | 'pending';
-}) {
+function ServiceList({ services, mode }: { services: string[]; mode: ListMode }) {
   if (!services.length) {
     return <p className="text-xs text-muted-foreground">None</p>;
   }
   const tone =
-    variant === 'completed'
-      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-      : 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
+    mode === 'blocked'
+      ? 'bg-red-500/10 text-red-700 dark:text-red-300'
+      : mode === 'sync-on-downtime'
+        ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300'
+        : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
   return (
     <div className="flex flex-wrap gap-1.5">
       {services.map((name) => (
@@ -90,18 +100,12 @@ function ServiceList({
   );
 }
 
-function NamespaceGroupCard({
-  group,
-  mode,
-}: {
-  group: SyncOffNamespaceGroup;
-  mode: 'completed' | 'pending';
-}) {
+function NamespaceGroupCard({ group, mode }: { group: SyncOffNamespaceGroup; mode: ListMode }) {
   const { clusterName } = parseClusterDisplay(group.cluster);
-  const services = mode === 'completed' ? group.completed : group.pending;
+  const services = servicesForMode(group, mode);
+  const count = countForMode(group, mode);
 
-  if (mode === 'pending' && group.pendingCount === 0) return null;
-  if (mode === 'completed' && group.completedCount === 0) return null;
+  if (count === 0) return null;
 
   return (
     <div className="rounded-lg border border-border bg-card/30 p-3">
@@ -109,7 +113,7 @@ function NamespaceGroupCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <p className="text-xs font-semibold text-foreground">{group.scheduleName}</p>
-            {group.lingeringSyncOff ? (
+            {mode === 'blocked' && group.lingeringSyncOff ? (
               <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:text-amber-300">
                 <CircleAlert className="h-2.5 w-2.5" strokeWidth={2} />
                 Outside stop window
@@ -118,65 +122,65 @@ function NamespaceGroupCard({
               <span className="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400">
                 In downtime
               </span>
-            ) : null}
+            ) : (
+              <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+                Running hours
+              </span>
+            )}
           </div>
           <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
             {clusterName} · {group.namespace}
           </p>
         </div>
         <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
-          {mode === 'completed'
-            ? `${group.completedCount}/${group.total} · ${group.percent}%`
-            : `${group.pendingCount} pending`}
+          {mode === 'blocked'
+            ? `${count}/${group.total} · ${group.percent}%`
+            : `${count} service${count === 1 ? '' : 's'}`}
         </span>
       </div>
-      <ProgressBar
-        done={mode === 'completed' ? group.completedCount : group.completedCount}
-        total={group.total}
-        variant={mode}
-      />
+      {mode === 'blocked' ? (
+        <ProgressBar done={count} total={group.total} variant="emerald" />
+      ) : mode === 'sync-on-downtime' ? (
+        <ProgressBar done={group.completedCount} total={group.total} variant="amber" />
+      ) : null}
       <div className="mt-2.5 max-h-40 overflow-y-auto">
-        <ServiceList services={services} variant={mode} />
+        <ServiceList services={services} mode={mode} />
       </div>
     </div>
   );
 }
 
-function SyncOffListPanel({
+function SyncListPanel({
   title,
+  subtitle,
   mode,
   groups,
   overallDone,
   overallTotal,
+  emptyMessage,
 }: {
   title: string;
-  mode: 'completed' | 'pending';
+  subtitle: string;
+  mode: ListMode;
   groups: SyncOffNamespaceGroup[];
-  overallDone: number;
-  overallTotal: number;
+  overallDone?: number;
+  overallTotal?: number;
+  emptyMessage: string;
 }) {
   const byCluster = useMemo(() => groupByCluster(groups), [groups]);
+  const visible = groups.filter((g) => countForMode(g, mode) > 0);
+  const serviceCount = visible.reduce((n, g) => n + countForMode(g, mode), 0);
 
-  const filteredGroups =
-    mode === 'completed'
-      ? groups.filter((g) => g.completedCount > 0)
-      : groups.filter((g) => g.pendingCount > 0);
+  const accent: 'emerald' | 'amber' | 'sky' =
+    mode === 'blocked' ? 'emerald' : mode === 'sync-on-downtime' ? 'amber' : 'sky';
 
-  const serviceCount =
-    mode === 'completed'
-      ? filteredGroups.reduce((n, g) => n + g.completedCount, 0)
-      : filteredGroups.reduce((n, g) => n + g.pendingCount, 0);
-
-  if (!filteredGroups.length) {
+  if (!visible.length) {
     return (
       <GlassPanel>
-        <PanelHeader title={title} icon={Workflow} accent={mode === 'completed' ? 'emerald' : 'amber'} />
-        <div className="p-5">
-          <p className="text-sm text-muted-foreground">
-            {mode === 'completed'
-              ? 'No services have manual sync off applied yet.'
-              : 'All scheduled services have manual sync off applied.'}
-          </p>
+        <PanelHeader title={title} icon={Workflow} accent={accent} />
+        <div className="space-y-1 p-5">
+          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          <p className="text-[11px] text-muted-foreground">{subtitle}</p>
         </div>
       </GlassPanel>
     );
@@ -184,47 +188,42 @@ function SyncOffListPanel({
 
   return (
     <GlassPanel>
-      <PanelHeader title={title} icon={Workflow} accent={mode === 'completed' ? 'emerald' : 'amber'} />
+      <PanelHeader title={title} icon={Workflow} accent={accent} />
       <div className="space-y-4 p-5">
+        <p className="text-[11px] text-muted-foreground">{subtitle}</p>
+
         <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
           <div className="flex items-center justify-between text-sm">
-            <span className="font-medium text-foreground">
-              {mode === 'completed' ? 'Overall completed' : 'Overall pending'}
-            </span>
+            <span className="font-medium text-foreground">Overall</span>
             <span className="tabular-nums text-muted-foreground">
-              {mode === 'completed'
+              {mode === 'blocked' && overallDone != null && overallTotal != null
                 ? `${overallDone}/${overallTotal} · ${pct(overallDone, overallTotal)}%`
                 : `${serviceCount} service${serviceCount === 1 ? '' : 's'}`}
             </span>
           </div>
-          {mode === 'completed' ? (
-            <ProgressBar done={overallDone} total={overallTotal} variant="completed" />
-          ) : (
+          {mode === 'blocked' && overallDone != null && overallTotal != null ? (
+            <ProgressBar done={overallDone} total={overallTotal} variant="emerald" />
+          ) : mode === 'sync-on-downtime' && overallTotal != null ? (
             <ProgressBar
-              done={overallTotal - serviceCount}
-              total={overallTotal}
-              variant="pending"
+              done={(overallTotal ?? 0) - serviceCount}
+              total={overallTotal ?? 0}
+              variant="amber"
             />
-          )}
+          ) : null}
         </div>
 
         {Array.from(byCluster.entries())
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([cluster, clusterGroups]) => {
             const { clusterName } = parseClusterDisplay(cluster);
-            const visible = clusterGroups.filter((g) =>
-              mode === 'completed' ? g.completedCount > 0 : g.pendingCount > 0
-            );
-            if (!visible.length) return null;
+            const clusterVisible = clusterGroups.filter((g) => countForMode(g, mode) > 0);
+            if (!clusterVisible.length) return null;
 
-            const clusterDone =
-              mode === 'completed'
-                ? visible.reduce((n, g) => n + g.completedCount, 0)
-                : visible.reduce((n, g) => n + g.pendingCount, 0);
+            const clusterCount = clusterVisible.reduce((n, g) => n + countForMode(g, mode), 0);
             const clusterTotal =
-              mode === 'completed'
-                ? visible.reduce((n, g) => n + g.total, 0)
-                : visible.reduce((n, g) => n + g.pendingCount, 0);
+              mode === 'blocked'
+                ? clusterVisible.reduce((n, g) => n + g.total, 0)
+                : clusterCount;
 
             return (
               <div key={cluster} className="space-y-3">
@@ -234,17 +233,17 @@ function SyncOffListPanel({
                       {clusterName}
                     </h3>
                     <span className="text-[11px] tabular-nums text-muted-foreground">
-                      {mode === 'completed'
-                        ? `${clusterDone}/${clusterTotal}`
-                        : `${clusterDone} pending`}
+                      {mode === 'blocked'
+                        ? `${clusterCount}/${clusterTotal}`
+                        : `${clusterCount} service${clusterCount === 1 ? '' : 's'}`}
                     </span>
                   </div>
-                  {mode === 'completed' ? (
-                    <ProgressBar done={clusterDone} total={clusterTotal} variant="completed" />
+                  {mode === 'blocked' ? (
+                    <ProgressBar done={clusterCount} total={clusterTotal} variant="emerald" />
                   ) : null}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {visible.map((group) => (
+                  {clusterVisible.map((group) => (
                     <NamespaceGroupCard key={group.scheduleId} group={group} mode={mode} />
                   ))}
                 </div>
@@ -267,12 +266,13 @@ export function DashboardActivityTracker() {
   const groups = data?.syncOffGroups ?? [];
   const totals = data?.totals;
   const hasActivity = groups.length > 0;
+  const hasDowntimeSchedules = groups.some((g) => g.inStopWindow);
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Activity tracker"
-        description="Manual sync off status across all schedules — shown during downtime and anytime sync off is still active outside the stop window."
+        description="Two-way manual sync visibility: who is blocked (sync off) and who is still enabled (sync on) — during downtime and outside it."
         action={
           <button
             type="button"
@@ -295,10 +295,10 @@ export function DashboardActivityTracker() {
       ) : !hasActivity ? (
         <div className="rounded-xl border border-border bg-card/40 p-10 text-center">
           <BadgeCheck className="mx-auto mb-3 h-8 w-8 text-emerald-500" strokeWidth={1.5} />
-          <p className="text-sm font-medium text-foreground">No manual sync off activity</p>
+          <p className="text-sm font-medium text-foreground">No manual sync activity</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            No schedules currently have manual sync off applied, and none are in their stop window.
-            If sync windows get stuck after startup, they will appear here automatically.
+            No sync-off windows are active and no schedules are in downtime. Stuck windows or
+            downtime gaps will appear here automatically.
           </p>
         </div>
       ) : (
@@ -309,12 +309,27 @@ export function DashboardActivityTracker() {
               <div>
                 <p className="font-medium">
                   {totals?.lingeringSchedules} schedule
-                  {(totals?.lingeringSchedules ?? 0) === 1 ? '' : 's'} still have manual sync off
-                  outside the stop window
+                  {(totals?.lingeringSchedules ?? 0) === 1 ? '' : 's'} have manual sync OFF outside
+                  the stop window
                 </p>
                 <p className="mt-0.5 text-xs opacity-90">
-                  These should have been cleared at startup. Check the completed list below —
-                  entries marked &quot;Outside stop window&quot; need cleanup.
+                  Sync should be enabled again during running hours. These need cleanup.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {(totals?.syncOnDuringDowntime ?? 0) > 0 ? (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} />
+              <div>
+                <p className="font-medium">
+                  {totals?.syncOnDuringDowntime} service
+                  {(totals?.syncOnDuringDowntime ?? 0) === 1 ? '' : 's'} still have manual sync ON
+                  during downtime
+                </p>
+                <p className="mt-0.5 text-xs opacity-90">
+                  These should be blocked (sync off) but deny windows are missing.
                 </p>
               </div>
             </div>
@@ -324,23 +339,39 @@ export function DashboardActivityTracker() {
             <p className="text-[11px] text-muted-foreground">
               Updated {formatRelativeTime(new Date(dataUpdatedAt))} ·{' '}
               {totals?.schedules ?? 0} schedule{(totals?.schedules ?? 0) === 1 ? '' : 's'} tracked
+              {hasDowntimeSchedules ? ' · some in downtime' : ' · running hours'}
             </p>
           ) : null}
 
-          <SyncOffListPanel
-            title="Manual sync off services — completed"
-            mode="completed"
+          <SyncListPanel
+            title="Manual sync OFF (blocked)"
+            subtitle="Services with deny window applied — sync is blocked."
+            mode="blocked"
             groups={groups}
             overallDone={totals?.syncDone ?? 0}
             overallTotal={totals?.syncTotal ?? 0}
+            emptyMessage="No services currently have manual sync off applied."
           />
 
-          <SyncOffListPanel
-            title="Manual sync off services — pending"
-            mode="pending"
+          <SyncListPanel
+            title="Manual sync ON during downtime"
+            subtitle="Services still enabled during stop window — should be blocked but are not."
+            mode="sync-on-downtime"
             groups={groups}
-            overallDone={totals?.syncDone ?? 0}
             overallTotal={totals?.syncTotal ?? 0}
+            emptyMessage={
+              hasDowntimeSchedules
+                ? 'All scheduled services are blocked during downtime.'
+                : 'No schedules are currently in their stop window.'
+            }
+          />
+
+          <SyncListPanel
+            title="Manual sync ON during running hours"
+            subtitle="Services correctly unblocked outside the stop window — expected state."
+            mode="sync-on-expected"
+            groups={groups}
+            emptyMessage="No running-hour schedules tracked, or all are still in downtime."
           />
         </>
       )}
