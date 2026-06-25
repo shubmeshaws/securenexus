@@ -107,7 +107,19 @@ function NamespaceGroupCard({
     <div className="rounded-lg border border-border bg-card/30 p-3">
       <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-foreground">{group.scheduleName}</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="text-xs font-semibold text-foreground">{group.scheduleName}</p>
+            {group.lingeringSyncOff ? (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                <CircleAlert className="h-2.5 w-2.5" strokeWidth={2} />
+                Outside stop window
+              </span>
+            ) : group.inStopWindow ? (
+              <span className="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400">
+                In downtime
+              </span>
+            ) : null}
+          </div>
           <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
             {clusterName} · {group.namespace}
           </p>
@@ -260,7 +272,7 @@ export function DashboardActivityTracker() {
     <div className="space-y-5">
       <PageHeader
         title="Activity tracker"
-        description="Manual sync off status for stopped schedules — grouped by cluster and namespace. Only scheduled workload services are listed."
+        description="Manual sync off status across all schedules — shown during downtime and anytime sync off is still active outside the stop window."
         action={
           <button
             type="button"
@@ -283,14 +295,31 @@ export function DashboardActivityTracker() {
       ) : !hasActivity ? (
         <div className="rounded-xl border border-border bg-card/40 p-10 text-center">
           <BadgeCheck className="mx-auto mb-3 h-8 w-8 text-emerald-500" strokeWidth={1.5} />
-          <p className="text-sm font-medium text-foreground">No stopped schedules</p>
+          <p className="text-sm font-medium text-foreground">No manual sync off activity</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            No schedules are currently in their stop window. Manual sync off lists appear here
-            during downtime.
+            No schedules currently have manual sync off applied, and none are in their stop window.
+            If sync windows get stuck after startup, they will appear here automatically.
           </p>
         </div>
       ) : (
         <>
+          {(totals?.lingeringSchedules ?? 0) > 0 ? (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} />
+              <div>
+                <p className="font-medium">
+                  {totals?.lingeringSchedules} schedule
+                  {(totals?.lingeringSchedules ?? 0) === 1 ? '' : 's'} still have manual sync off
+                  outside the stop window
+                </p>
+                <p className="mt-0.5 text-xs opacity-90">
+                  These should have been cleared at startup. Check the completed list below —
+                  entries marked &quot;Outside stop window&quot; need cleanup.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
           {dataUpdatedAt > 0 ? (
             <p className="text-[11px] text-muted-foreground">
               Updated {formatRelativeTime(new Date(dataUpdatedAt))} ·{' '}

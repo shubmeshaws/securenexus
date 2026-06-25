@@ -243,6 +243,8 @@ export interface SyncOffNamespaceGroup {
   pendingCount: number;
   total: number;
   percent: number;
+  inStopWindow: boolean;
+  lingeringSyncOff: boolean;
 }
 
 export interface ScheduleActivityRow {
@@ -281,6 +283,7 @@ export interface ScheduleActivityTracker {
     syncDone: number;
     syncTotal: number;
     syncPercent: number;
+    lingeringSchedules: number;
     percent: number;
   };
 }

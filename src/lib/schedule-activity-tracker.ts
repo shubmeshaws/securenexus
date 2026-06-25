@@ -41,6 +41,10 @@ export interface SyncOffNamespaceGroup {
   pendingCount: number;
   total: number;
   percent: number;
+  /** Schedule is inside its stop window (or manual stop). */
+  inStopWindow: boolean;
+  /** Sync off still active outside the stop window — likely needs cleanup. */
+  lingeringSyncOff: boolean;
 }
 
 export interface ScheduleActivityRow {
@@ -81,6 +85,7 @@ export interface ScheduleActivityTracker {
     syncDone: number;
     syncTotal: number;
     syncPercent: number;
+    lingeringSchedules: number;
     percent: number;
   };
 }
@@ -92,14 +97,26 @@ function stoppedSince(schedule: Schedule): Date | null {
   return schedule.lastRun ?? null;
 }
 
-/** Track schedules actively in a stop window, manual stop, or a recent transition only. */
-function shouldTrackSchedule(schedule: Schedule, now: Date): boolean {
-  if (!schedule.enabled || isNonEksSchedule(schedule)) return false;
+function isInStopContext(schedule: Schedule, now: Date): boolean {
   if (schedule.liveStopSource === 'manual-start') return false;
   if (schedule.liveStopSource === 'manual') return true;
-  if (isScheduleInStoppedWindow(schedule, now)) return true;
-  const since = stoppedSince(schedule);
-  if (since && now.getTime() - since.getTime() <= RECENT_TRANSITION_WINDOW_MS) return true;
+  return isScheduleInStoppedWindow(schedule, now);
+}
+
+/**
+ * Include a schedule when:
+ *  - it is in its stop window (show full pending + completed picture), OR
+ *  - manual sync off is still active outside the window (the stuck-window case), OR
+ *  - pausedArgoApps still recorded in DB.
+ */
+function shouldIncludeSchedule(
+  row: ScheduleActivityRow,
+  schedule: Schedule,
+  now: Date
+): boolean {
+  if (isInStopContext(schedule, now)) return true;
+  if (row.syncOff.applied.length > 0) return true;
+  if (schedule.pausedArgoApps.length > 0) return true;
   return false;
 }
 
@@ -234,11 +251,14 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
     loadScheduleArgoCatalog(),
   ]);
 
-  const tracked = schedules.filter((schedule) => shouldTrackSchedule(schedule, now));
-
   const rows: ScheduleActivityRow[] = [];
-  await runWithConcurrency(tracked, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
-    rows.push(await computeScheduleRow(schedule, catalog, now));
+  const eksSchedules = schedules.filter((s) => !isNonEksSchedule(s));
+
+  await runWithConcurrency(eksSchedules, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
+    const row = await computeScheduleRow(schedule, catalog, now);
+    if (shouldIncludeSchedule(row, schedule, now)) {
+      rows.push(row);
+    }
   });
 
   rows.sort((a, b) => {
@@ -278,21 +298,27 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
 
   const syncOffGroups: SyncOffNamespaceGroup[] = rows
     .filter((row) => row.syncOff.resolved || row.syncOff.total > 0)
-    .map((row) => ({
-      cluster: row.cluster,
-      namespace: row.namespace,
-      scheduleId: row.id,
-      scheduleName: row.name,
-      completed: row.syncOff.applied,
-      pending: row.syncOff.pending,
-      completedCount: row.syncOff.done,
-      pendingCount: row.syncOff.pending.length,
-      total: row.syncOff.total,
-      percent:
-        row.syncOff.total === 0
-          ? 100
-          : Math.round((row.syncOff.done / row.syncOff.total) * 100),
-    }))
+    .map((row) => {
+      const schedule = eksSchedules.find((s) => s.id === row.id)!;
+      const inStopWindow = isInStopContext(schedule, now);
+      return {
+        cluster: row.cluster,
+        namespace: row.namespace,
+        scheduleId: row.id,
+        scheduleName: row.name,
+        completed: row.syncOff.applied,
+        pending: row.syncOff.pending,
+        completedCount: row.syncOff.done,
+        pendingCount: row.syncOff.pending.length,
+        total: row.syncOff.total,
+        percent:
+          row.syncOff.total === 0
+            ? 100
+            : Math.round((row.syncOff.done / row.syncOff.total) * 100),
+        inStopWindow,
+        lingeringSyncOff: !inStopWindow && row.syncOff.applied.length > 0,
+      };
+    })
     .sort(
       (a, b) =>
         a.cluster.localeCompare(b.cluster) ||
@@ -320,9 +346,12 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
       syncDone: 0,
       syncTotal: 0,
       syncPercent: 0,
+      lingeringSchedules: 0,
       percent: 0,
     }
   );
+
+  totals.lingeringSchedules = syncOffGroups.filter((g) => g.lingeringSyncOff).length;
 
   totals.syncPercent =
     totals.syncTotal === 0 ? 100 : Math.round((totals.syncDone / totals.syncTotal) * 100);
