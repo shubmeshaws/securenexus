@@ -562,6 +562,22 @@ export async function applyManualSyncDenyForApps(
 ): Promise<{ apps: string[]; errors: string[] }> {
   if (isNonEksSchedule(schedule) || !targets.length) return { apps: [], errors: [] };
 
+  // Pause automated sync as well as adding the deny window. The deny window blocks sync
+  // only while it is *active*; if the original shutdown failed to resolve the app, auto
+  // sync was never turned off, so ArgoCD kept re-syncing the workload back up (the
+  // "Auto sync is enabled" + synced-during-downtime symptom). Re-asserting syncPolicy=none
+  // here makes the self-heal restore the same state a real shutdown would. Idempotent.
+  await runWithConcurrency(targets, resolveArgoOpConcurrency(), async (app) => {
+    try {
+      await argocdClient.updateSyncPolicy(app.name, 'none', app.instanceId);
+    } catch (err) {
+      console.error(
+        `[Argo reconcile] failed to pause automated sync for ${app.name}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  });
+
   const { blocked, errors } = await blockManualSyncForApps(targets, {
     blockUntil: resolveManualSyncBlockUntilForReconcile(schedule, now),
     timeZone: schedule.timezone || 'UTC',
@@ -579,7 +595,25 @@ async function pauseArgoForSchedule(
   workloadTargets?: WorkloadTarget[]
 ): Promise<{ note: string; apps: string[] }> {
   const catalog = await loadArgoCatalog();
-  const targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+
+  // Resolve the apps to block from the Argo CD catalog (listApplications), NOT from live
+  // Kubernetes tracking annotations. A stopping schedule's workloads are about to be (or
+  // already) scaled to 0 / deleted, so K8s-based resolution silently returns nothing and
+  // the sync-off never lands — the root cause of "worked for some, not all". Argo CD
+  // Application objects persist regardless of workload state, so the catalog is reliable.
+  //
+  // Namespace schedules block EVERY app in the namespace (true namespace-wide sync-off).
+  // Workload schedules keep single-app resolution (K8s tracking + catalog) so siblings in
+  // a shared namespace are not over-blocked.
+  let targets: ScheduleArgoApp[];
+  if (isNamespaceSchedule(schedule)) {
+    targets = await resolveCatalogAppsInNamespace(schedule, catalog);
+    if (!targets.length) {
+      targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+    }
+  } else {
+    targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
+  }
   console.log(
     `[Argo pause] ${schedule.namespace} resolved apps: ${
       targets.map((t) => t.name).join(', ') || '(none)'
@@ -1415,12 +1449,24 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
     let argoNote = '';
     try {
       const catalog = await catalogPromise;
+      // Resolve the apps to UN-block from the Argo catalog (not live K8s), mirroring the
+      // stop side. Namespace schedules cover the whole namespace, so even if the stored
+      // pausedArgoApps list was lost (e.g. a restart), startup still removes the deny
+      // window + re-enables sync for every app — otherwise the namespace would stay
+      // sync-blocked after start.
+      const resolveFromCatalog = async (): Promise<string[]> => {
+        const apps = isNamespaceSchedule(schedule)
+          ? await resolveCatalogAppsInNamespace(schedule, catalog)
+          : await collectScheduleArgoApps(schedule, catalog);
+        return apps.map((a) => a.name);
+      };
+
       let storedNames = storedPausedApps.length
         ? [...storedPausedApps]
-        : (await collectScheduleArgoApps(schedule, catalog)).map((a) => a.name);
+        : await resolveFromCatalog();
 
       if (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)) {
-        storedNames = (await collectScheduleArgoApps(schedule, catalog)).map((a) => a.name);
+        storedNames = await resolveFromCatalog();
       }
 
       const toResume = await resolveArgoAppsForResume(schedule, storedNames, catalog);
