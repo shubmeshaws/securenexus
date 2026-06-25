@@ -149,6 +149,63 @@ function resolveArgoAppsFromCatalogForTargets(
   return Array.from(byName.values());
 }
 
+/** Whether an Argo app name plausibly manages a K8s workload in the same namespace. */
+function argoAppMatchesWorkloadName(appName: string, workloadName: string): boolean {
+  if (appName === workloadName) return true;
+  return appName.includes(workloadName) || workloadName.includes(appName);
+}
+
+/** Resolve Argo apps for a namespace schedule's workload targets (with fallbacks). */
+async function resolveNamespaceScheduleArgoApps(
+  schedule: Schedule,
+  catalog: ArgoCatalog,
+  targets: WorkloadTarget[]
+): Promise<ScheduleArgoApp[]> {
+  const merged = new Map<string, ScheduleArgoApp>();
+  const add = (app: ScheduleArgoApp | null | undefined) => {
+    if (app) merged.set(app.name, app);
+  };
+
+  for (const app of await collectScheduleArgoApps(schedule, catalog, targets)) add(app);
+  for (const app of resolveArgoAppsFromCatalogForTargets(schedule, catalog, targets)) add(app);
+
+  if (!merged.size) {
+    const trackingNames = await getArgoAppNamesForNamespace(schedule.cluster, schedule.namespace);
+    console.log(
+      `[Argo resolve] namespace=${schedule.namespace} tracking apps: ${
+        trackingNames.join(', ') || '(none)'
+      }`
+    );
+    for (const name of trackingNames) {
+      add(findArgoAppInCatalog(catalog, schedule, name));
+    }
+  }
+
+  if (!merged.size) {
+    const relaxed = relaxedAppsFromCatalog(catalog, schedule);
+    for (const target of targets) {
+      for (const app of relaxed) {
+        if (argoAppMatchesWorkloadName(app.name, target.name)) {
+          add({ name: app.name, instanceId: app.instanceId });
+        }
+      }
+    }
+  }
+
+  // Dedicated data/shared namespaces often have one Argo app (e.g. pftech-data) for all workloads.
+  if (!merged.size) {
+    const relaxed = relaxedAppsFromCatalog(catalog, schedule);
+    if (relaxed.length === 1) {
+      add({ name: relaxed[0].name, instanceId: relaxed[0].instanceId });
+      console.log(
+        `[Argo resolve] namespace=${schedule.namespace} using sole catalog app: ${relaxed[0].name}`
+      );
+    }
+  }
+
+  return Array.from(merged.values());
+}
+
 /**
  * Resolve Argo apps to pause/unpause. Always follows the schedule's workload targets
  * (from getScheduleTargets) — never the whole Argo catalog for a namespace. A namespace
@@ -165,13 +222,12 @@ async function resolveScheduleArgoAppsForOperations(
       ? workloadTargets
       : await getScheduleTargets(schedule);
     if (!targets.length) {
+      console.warn(
+        `[Argo resolve] namespace=${schedule.namespace} no K8s workload targets for schedule "${schedule.name}"`
+      );
       return [];
     }
-    const fromK8s = await collectScheduleArgoApps(schedule, catalog, targets);
-    const fromCatalog = resolveArgoAppsFromCatalogForTargets(schedule, catalog, targets);
-    const merged = new Map<string, ScheduleArgoApp>();
-    for (const app of [...fromK8s, ...fromCatalog]) merged.set(app.name, app);
-    return Array.from(merged.values());
+    return resolveNamespaceScheduleArgoApps(schedule, catalog, targets);
   }
 
   let targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
@@ -873,9 +929,15 @@ async function pauseArgoForSchedule(
   );
 
   if (!targets.length) {
+    const k8sTargets = workloadTargets?.length
+      ? workloadTargets
+      : isNamespaceSchedule(schedule)
+        ? await getScheduleTargets(schedule).catch(() => [])
+        : [];
     console.warn(
       `[Argo pause] no Argo apps resolved for schedule "${schedule.name}" ` +
-        `(cluster=${schedule.cluster}, namespace=${schedule.namespace}, app=${schedule.appName})`
+        `(cluster=${schedule.cluster}, namespace=${schedule.namespace}, app=${schedule.appName}, ` +
+        `k8sTargets=${k8sTargets.length})`
     );
   }
 
