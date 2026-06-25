@@ -38,7 +38,7 @@ const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
  */
 const SYNC_WINDOW_RECONCILE_INTERVAL_MS = (() => {
   const fromEnv = Number(process.env.SYNC_WINDOW_RECONCILE_INTERVAL_MS);
-  return Number.isFinite(fromEnv) && fromEnv >= 60_000 ? fromEnv : 5 * 60_000;
+  return Number.isFinite(fromEnv) && fromEnv >= 60_000 ? fromEnv : 15 * 60_000;
 })();
 
 let tickJob: ReturnType<typeof cron.schedule> | null = null;
@@ -285,9 +285,12 @@ export function initScheduler() {
     console.error('[PodScheduler] Failed to compute next runs:', err);
   });
 
-  reconcileStoppedScheduleSyncWindows().catch((err) => {
-    console.error('[PodScheduler] Failed to reconcile stopped sync windows:', err);
-  });
+  // Defer first reconcile so cold-start page loads are not competing with Argo/K8s scans.
+  setTimeout(() => {
+    reconcileStoppedScheduleSyncWindows().catch((err) => {
+      console.error('[PodScheduler] Failed to reconcile stopped sync windows:', err);
+    });
+  }, 120_000);
 }
 
 /** Safe to call repeatedly — starts the cron runner if it is not already active. */

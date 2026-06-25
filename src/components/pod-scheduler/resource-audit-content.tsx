@@ -46,7 +46,7 @@ import {
   valuesFilePathFromRow,
 } from '@/lib/helm-values-path';
 
-export const RESOURCE_AUDIT_POLL_INTERVAL = 90_000;
+export const RESOURCE_AUDIT_POLL_INTERVAL = 180_000;
 
 interface AuditRow {
   id: string;

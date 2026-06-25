@@ -17,7 +17,7 @@ import {
 import { GlassPanel, PageHeader, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { formatRelativeTime, parseClusterDisplay, cn } from '@/lib/utils';
 
-const POLL_INTERVAL_MS = 15_000;
+const POLL_INTERVAL_MS = 120_000;
 
 type ListMode = 'blocked' | 'sync-on-downtime' | 'sync-on-expected';
 
@@ -260,7 +260,9 @@ export function DashboardActivityTracker() {
     queryKey: ['activity-tracker'],
     queryFn: () => apiFetch<ScheduleActivityTracker>('/api/dashboard/activity-tracker'),
     refetchInterval: POLL_INTERVAL_MS,
-    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    staleTime: 90_000,
   });
 
   const groups = data?.syncOffGroups ?? [];

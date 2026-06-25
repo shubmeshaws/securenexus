@@ -41,6 +41,8 @@ export interface ArgoCDAppSummary {
   syncPolicy: 'automated' | 'none';
   lastSyncedAt: string | null;
   destinationNamespace: string;
+  /** AppProject name — included in list API to avoid per-app fetches. */
+  project: string;
   instanceId: string;
   instanceName: string;
 }
@@ -82,8 +84,12 @@ export interface ArgoCDConnectionConfig {
 
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const APPS_LIST_CACHE_TTL_MS = 90_000;
+const APPS_LIST_CACHE_TTL_MS = (() => {
+  const fromEnv = Number(process.env.ARGO_APPS_CACHE_TTL_MS);
+  return Number.isFinite(fromEnv) && fromEnv >= 30_000 ? fromEnv : 180_000;
+})();
 let appsListCache: { at: number; apps: ArgoCDAppSummary[] } | null = null;
+let appsListInFlight: Promise<ArgoCDAppSummary[]> | null = null;
 
 /**
  * Per-instance failures from the most recent listApplications() call. A schedule on an
@@ -98,6 +104,11 @@ export function getArgoListErrors(): string[] {
 
 export function invalidateArgoAppsCache() {
   appsListCache = null;
+}
+
+/** Last cached app list (may be stale) — for degraded-mode reads without hitting Argo. */
+export function getCachedArgoApps(): ArgoCDAppSummary[] | null {
+  return appsListCache?.apps ?? null;
 }
 
 async function argoFetch(
@@ -245,6 +256,7 @@ function mapSyncStatus(status?: string): ArgoCDAppSummary['syncStatus'] {
 const APP_LIST_FIELDS = [
   'items.metadata.name',
   'items.metadata.namespace',
+  'items.spec.project',
   'items.spec.destination',
   'items.spec.syncPolicy',
   'items.status.sync.status',
@@ -264,6 +276,9 @@ function mapApp(
   const sync = status?.sync as Record<string, unknown> | undefined;
   const health = status?.health as Record<string, string> | undefined;
   const hasAutomated = Boolean(syncPolicy?.automated);
+  const projectRaw = spec?.project;
+  const project =
+    typeof projectRaw === 'string' && projectRaw.trim() ? projectRaw.trim() : 'default';
 
   return {
     name: metadata?.name ?? 'unknown',
@@ -274,6 +289,7 @@ function mapApp(
     syncPolicy: hasAutomated ? 'automated' : 'none',
     lastSyncedAt: (sync?.syncedAt as string) ?? null,
     destinationNamespace: destination?.namespace ?? 'default',
+    project,
     instanceId: instance.id,
     instanceName: instance.name,
   };
@@ -672,7 +688,7 @@ class InstanceArgoCDClient {
    * AppProject once. Used by the dashboard activity tracker to show sync-off progress.
    */
   async getScheduleDeniedAppNames(
-    apps: { name: string; namespace?: string }[]
+    apps: { name: string; namespace?: string; project?: string }[]
   ): Promise<Set<string>> {
     const denied = new Set<string>();
     const uniqueApps = Array.from(new Map(apps.map((a) => [a.name, a])).values());
@@ -681,7 +697,9 @@ class InstanceArgoCDClient {
     const appProjects = await Promise.all(
       uniqueApps.map(async (app) => ({
         app,
-        projectName: await this.getApplicationProjectName(app.name).catch(() => 'default'),
+        projectName:
+          app.project?.trim() ||
+          (await this.getApplicationProjectName(app.name).catch(() => 'default')),
       }))
     );
 
@@ -932,7 +950,15 @@ class MultiArgoCDClient {
     if (appsListCache && Date.now() - appsListCache.at < APPS_LIST_CACHE_TTL_MS) {
       return appsListCache.apps;
     }
+    if (appsListInFlight) return appsListInFlight;
 
+    appsListInFlight = this.fetchAllApplications().finally(() => {
+      appsListInFlight = null;
+    });
+    return appsListInFlight;
+  }
+
+  private async fetchAllApplications(): Promise<ArgoCDAppSummary[]> {
     const instances = await resolveInstances();
     if (!instances.length) {
       throw new Error('No ArgoCD instances configured. Add them in Admin → Settings.');
@@ -956,8 +982,6 @@ class MultiArgoCDClient {
           result.reason instanceof Error ? result.reason.message : 'unreachable'
         }`;
         errors.push(message);
-        // Always log: a partial failure (one instance down) is otherwise invisible
-        // because we still return the other instances' apps.
         console.warn(`[ArgoCD] listApplications failed for instance ${message}`);
       }
     }
@@ -1049,7 +1073,7 @@ class MultiArgoCDClient {
 
   /** Apps (all on one instance) that currently have a SecureNexus deny window applied. */
   async getScheduleDeniedAppNames(
-    apps: { name: string; namespace?: string }[],
+    apps: { name: string; namespace?: string; project?: string }[],
     instanceId?: string
   ): Promise<Set<string>> {
     if (!apps.length) return new Set<string>();

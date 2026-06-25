@@ -16,8 +16,8 @@ import type { Schedule } from '@prisma/client';
 /** Recent stop/start transitions stay visible briefly even after the window ends. */
 const RECENT_TRANSITION_WINDOW_MS = 15 * 60 * 1000;
 /** Recompute (live K8s/Argo calls) at most once per this interval; polls reuse the cache. */
-const CACHE_TTL_MS = 60_000;
-const SCHEDULE_SCAN_CONCURRENCY = 4;
+const CACHE_TTL_MS = 120_000;
+const SCHEDULE_SCAN_CONCURRENCY = 3;
 
 export type ActivityStatus = 'completed' | 'in-progress';
 
@@ -153,7 +153,7 @@ async function computeStopProgress(
   targets: WorkloadTarget[]
 ): Promise<{ done: number; total: number; pending: string[] }> {
   const pending: string[] = [];
-  await runWithConcurrency(targets, 8, async (target) => {
+  await runWithConcurrency(targets, 4, async (target) => {
     const replicas = await getWorkloadDesiredReplicas(
       schedule.cluster,
       schedule.namespace,
@@ -170,7 +170,8 @@ async function computeStopProgress(
 
 async function computeSyncOffProgress(
   schedule: Schedule,
-  apps: ScheduleArgoApp[]
+  apps: ScheduleArgoApp[],
+  projectByApp: Map<string, string>
 ): Promise<{
   done: number;
   total: number;
@@ -193,7 +194,11 @@ async function computeSyncOffProgress(
   await runWithConcurrency(Array.from(byInstance.entries()), 3, async ([instanceId, group]) => {
     const result = await argocdClient
       .getScheduleDeniedAppNames(
-        group.map((app) => ({ name: app.name, namespace: schedule.namespace })),
+        group.map((app) => ({
+          name: app.name,
+          namespace: schedule.namespace,
+          project: projectByApp.get(app.name),
+        })),
         instanceId
       )
       .catch(() => new Set<string>());
@@ -214,7 +219,9 @@ async function computeSyncOffProgress(
 async function computeScheduleRow(
   schedule: Schedule,
   catalog: ScheduleArgoCatalog,
-  now: Date
+  now: Date,
+  projectByApp: Map<string, string>,
+  targetsCache: Map<string, WorkloadTarget[]>
 ): Promise<ScheduleActivityRow> {
   const since = stoppedSince(schedule);
   const ageMs = since ? now.getTime() - since.getTime() : 0;
@@ -232,11 +239,16 @@ async function computeScheduleRow(
   };
 
   try {
-    const targets = await getScheduleTargets(schedule);
+    const targetsKey = `${schedule.cluster}:${schedule.namespace}:${isNamespaceSchedule(schedule) ? 'ns' : schedule.appName}`;
+    let targets = targetsCache.get(targetsKey);
+    if (!targets) {
+      targets = await getScheduleTargets(schedule);
+      targetsCache.set(targetsKey, targets);
+    }
     const apps = await resolveAppsForTracker(schedule, catalog, targets);
     const [stop, syncOff] = await Promise.all([
       computeStopProgress(schedule, targets),
-      computeSyncOffProgress(schedule, apps),
+      computeSyncOffProgress(schedule, apps, projectByApp),
     ]);
 
     const stopComplete = stop.total === 0 || stop.done === stop.total;
@@ -256,23 +268,63 @@ async function computeScheduleRow(
   }
 }
 
-async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker> {
-  const [schedules, catalog] = await Promise.all([
-    prisma.schedule.findMany({
-      where: {
-        enabled: true,
-        platformType: { not: 'non_eks' },
-      },
-    }),
-    loadScheduleArgoCatalog(),
-  ]);
+function buildEmptyTracker(now: Date): ScheduleActivityTracker {
+  return {
+    generatedAt: now.toISOString(),
+    activeWindowMinutes: RECENT_TRANSITION_WINDOW_MS / 60_000,
+    rows: [],
+    syncOffServices: [],
+    syncOffPendingServices: [],
+    syncOffGroups: [],
+    totals: {
+      schedules: 0,
+      completed: 0,
+      inProgress: 0,
+      stopDone: 0,
+      stopTotal: 0,
+      syncDone: 0,
+      syncTotal: 0,
+      syncPercent: 100,
+      lingeringSchedules: 0,
+      syncOnDuringDowntime: 0,
+      syncOnExpected: 0,
+      percent: 100,
+    },
+  };
+}
 
-  const rows: ScheduleActivityRow[] = [];
+async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker> {
+  const recentCutoff = new Date(now.getTime() - RECENT_TRANSITION_WINDOW_MS);
+  const schedules = await prisma.schedule.findMany({
+    where: {
+      platformType: { not: 'non_eks' },
+      OR: [
+        { liveActive: true },
+        { liveStopSource: 'manual' },
+        { pausedArgoApps: { isEmpty: false } },
+        { lastRun: { gte: recentCutoff } },
+      ],
+    },
+  });
+
   const eksSchedules = schedules.filter((s) => !isNonEksSchedule(s));
   const candidates = eksSchedules.filter((s) => isTrackerCandidate(s, now));
 
+  if (!candidates.length) {
+    return buildEmptyTracker(now);
+  }
+
+  const [catalog, allApps] = await Promise.all([
+    loadScheduleArgoCatalog(),
+    argocdClient.listApplications().catch(() => []),
+  ]);
+  const projectByApp = new Map(allApps.map((app) => [app.name, app.project]));
+  const targetsCache = new Map<string, WorkloadTarget[]>();
+
+  const rows: ScheduleActivityRow[] = [];
+
   await runWithConcurrency(candidates, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
-    const row = await computeScheduleRow(schedule, catalog, now);
+    const row = await computeScheduleRow(schedule, catalog, now, projectByApp, targetsCache);
     if (shouldIncludeSchedule(row, schedule, now)) {
       rows.push(row);
     }
@@ -316,7 +368,7 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
   const syncOffGroups: SyncOffNamespaceGroup[] = rows
     .filter((row) => row.syncOff.resolved || row.syncOff.total > 0)
     .map((row) => {
-      const schedule = eksSchedules.find((s) => s.id === row.id)!;
+      const schedule = candidates.find((s) => s.id === row.id)!;
       const inStopWindow = isInStopContext(schedule, now);
       const syncOnDuringDowntime = inStopWindow ? row.syncOff.pending : [];
       const syncOnExpected = !inStopWindow ? row.syncOff.pending : [];

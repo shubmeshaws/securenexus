@@ -1,11 +1,11 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import argocdClient from '@/lib/argocd-client';
+import argocdClient, { getCachedArgoApps } from '@/lib/argocd-client';
 import { getEnvironmentHours } from '@/lib/environment-metrics';
 import { sortSchedulesForDashboard } from '@/lib/schedule-dashboard';
 
-const OVERVIEW_CACHE_TTL_MS = 90_000;
+const OVERVIEW_CACHE_TTL_MS = 180_000;
 
 type OverviewPayload = Awaited<ReturnType<typeof buildOverviewPayload>>;
 
@@ -20,11 +20,21 @@ async function buildOverviewPayload() {
     getEnvironmentHours(),
     argocdClient.listApplications().then(
       (apps) => ({ reachable: true as const, apps }),
-      (err) => ({
-        reachable: false as const,
-        apps: [] as Awaited<ReturnType<typeof argocdClient.listApplications>>,
-        message: err instanceof Error ? err.message : 'ArgoCD unreachable',
-      })
+      (err) => {
+        const cached = getCachedArgoApps();
+        if (cached?.length) {
+          return {
+            reachable: true as const,
+            apps: cached,
+            stale: true as const,
+          };
+        }
+        return {
+          reachable: false as const,
+          apps: [] as Awaited<ReturnType<typeof argocdClient.listApplications>>,
+          message: err instanceof Error ? err.message : 'ArgoCD unreachable',
+        };
+      }
     ),
   ]);
 

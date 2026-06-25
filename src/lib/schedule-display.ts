@@ -2,20 +2,43 @@ import type { Schedule } from '@prisma/client';
 import prisma from './prisma';
 import { parseClusterDisplay } from './utils';
 
-export async function enrichSchedulesWithAccountId<T extends Schedule>(
-  schedules: T[]
-): Promise<Array<T & { awsAccountId: string | null; liveStoppedByName: string | null }>> {
+const CREDENTIAL_CACHE_TTL_MS = 5 * 60_000;
+
+let credentialCache: {
+  at: number;
+  byId: Map<string, string | null>;
+  byName: Map<string, string | null>;
+} | null = null;
+
+async function loadCredentialMaps() {
+  if (credentialCache && Date.now() - credentialCache.at < CREDENTIAL_CACHE_TTL_MS) {
+    return credentialCache;
+  }
+
   const allCreds = await prisma.awsCredential.findMany({
     select: { id: true, name: true, awsAccountId: true },
   });
 
-  const accountByCredId = new Map<string, string | null>();
-  const accountByCredName = new Map<string, string | null>();
+  const byId = new Map<string, string | null>();
+  const byName = new Map<string, string | null>();
 
   for (const cred of allCreds) {
-    accountByCredId.set(cred.id, cred.awsAccountId ?? null);
-    accountByCredName.set(cred.name, cred.awsAccountId ?? null);
+    byId.set(cred.id, cred.awsAccountId ?? null);
+    byName.set(cred.name, cred.awsAccountId ?? null);
   }
+
+  credentialCache = { at: Date.now(), byId, byName };
+  return credentialCache;
+}
+
+export function invalidateScheduleDisplayCache() {
+  credentialCache = null;
+}
+
+export async function enrichSchedulesWithAccountId<T extends Schedule>(
+  schedules: T[]
+): Promise<Array<T & { awsAccountId: string | null; liveStoppedByName: string | null }>> {
+  const { byId: accountByCredId, byName: accountByCredName } = await loadCredentialMaps();
 
   const stopperEmails = Array.from(
     new Set(

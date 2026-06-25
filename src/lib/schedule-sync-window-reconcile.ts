@@ -10,7 +10,6 @@ import { isScheduleInStoppedWindow } from './scheduler-utils';
 import argocdClient, {
   appMatchesK8sCluster,
   getArgoListErrors,
-  invalidateArgoAppsCache,
   type ArgoCDAppSummary,
 } from './argocd-client';
 import { listEnabledArgoCDInstances } from './argocd-instances';
@@ -91,9 +90,8 @@ export async function reconcileStoppedScheduleSyncWindows(
 
   const report = (progress: SyncWindowReconcileProgress) => onProgress?.(progress);
 
-  // Force a fresh catalog so a transiently-unreachable instance isn't masked by cache,
-  // and so getArgoListErrors() reflects this run.
-  invalidateArgoAppsCache();
+  // Reuse the shared Argo app list cache (3 min TTL) — do not bust cache here; reconcile
+  // runs every 15 min and cold lists were slowing every page/API that shares the cache.
 
   const [schedules, instantRuns, allApps, instances] = await Promise.all([
     // Load BOTH directions:

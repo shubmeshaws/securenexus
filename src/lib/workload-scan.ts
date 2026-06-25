@@ -1,7 +1,7 @@
 import { listClusterDeployments, listClusters, type DeploymentInfo } from '@/lib/k8s-client';
 
 const SYSTEM_NAMESPACES = new Set(['kube-system', 'kube-public', 'kube-node-lease']);
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 300_000;
 const SCAN_TIMEOUT_MS = 12_000;
 
 export interface ClusterWorkload {
