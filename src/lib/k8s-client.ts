@@ -721,6 +721,24 @@ export async function getDeploymentArgoAppName(
   }
 }
 
+/** Read the Argo CD application managing a CronJob from live tracking metadata. */
+export async function getCronJobArgoAppName(
+  cluster: string,
+  namespace: string,
+  name: string
+): Promise<string | null> {
+  try {
+    return await retryK8sArgoLookup(`cronjob ${namespace}/${name}`, async () => {
+      const kc = await getConfigForCluster(cluster);
+      const api = kc.makeApiClient(k8s.BatchV1Api);
+      const res = await api.readNamespacedCronJob(name, namespace);
+      return argoAppNameFromMeta(res.body.metadata);
+    });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Collect the set of ArgoCD application names managing workloads in a namespace,
  * derived from each live resource's tracking metadata. Covers Deployments and

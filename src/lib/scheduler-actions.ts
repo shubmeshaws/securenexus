@@ -6,6 +6,7 @@ import {
   deleteStatefulSet,
   getArgoAppNamesForNamespace,
   getClusterReadyNodeCount,
+  getCronJobArgoAppName,
   getDeploymentArgoAppName,
   getScaledObjectScaleTarget,
   getStatefulSetArgoAppName,
@@ -166,9 +167,11 @@ async function resolveScheduleArgoAppsForOperations(
     if (!targets.length) {
       return [];
     }
-    const scoped = await collectScheduleArgoApps(schedule, catalog, targets);
-    if (scoped.length) return scoped;
-    return resolveArgoAppsFromCatalogForTargets(schedule, catalog, targets);
+    const fromK8s = await collectScheduleArgoApps(schedule, catalog, targets);
+    const fromCatalog = resolveArgoAppsFromCatalogForTargets(schedule, catalog, targets);
+    const merged = new Map<string, ScheduleArgoApp>();
+    for (const app of [...fromK8s, ...fromCatalog]) merged.set(app.name, app);
+    return Array.from(merged.values());
   }
 
   let targets = await collectScheduleArgoApps(schedule, catalog, workloadTargets);
@@ -192,7 +195,8 @@ export interface WorkloadTarget {
 export type { ScheduleArgoApp };
 
 function scheduleAsWorkload(schedule: Schedule, target: WorkloadTarget): Schedule {
-  return { ...schedule, appName: target.name, workloadKind: target.kind };
+  // Treat as workload-scoped for Argo resolution — parent schedule may be namespace scope.
+  return { ...schedule, scope: 'workload', appName: target.name, workloadKind: target.kind };
 }
 
 /**
@@ -387,13 +391,20 @@ export async function collectScheduleArgoApps(
   if (isNamespaceSchedule(schedule)) {
     if (workloadTargets?.length) {
       await runWithConcurrency(workloadTargets, resolveArgoOpConcurrency(), async (target) => {
-        add(await resolveArgoAppForWorkload(schedule, target, ctx));
+        const resolved = await resolveArgoAppForWorkload(schedule, target, ctx);
+        if (resolved) {
+          add(resolved);
+          return;
+        }
+        add(resolveWorkloadArgoAppFromCatalogOnly(scheduleAsWorkload(schedule, target), ctx));
       });
-      console.log(
-        `[Argo resolve] namespace=${schedule.namespace} workload-scoped apps: ${
-          Array.from(byName.keys()).join(', ') || '(none)'
-        }`
-      );
+      if (workloadTargets.length > 1) {
+        console.log(
+          `[Argo resolve] namespace=${schedule.namespace} workload-scoped apps: ${
+            Array.from(byName.keys()).join(', ') || '(none)'
+          }`
+        );
+      }
       return Array.from(byName.values());
     }
 
@@ -663,12 +674,8 @@ export async function buildSyncBlockHoldSet(
     const workloadTargets = isNamespaceSchedule(schedule)
       ? await getScheduleTargets(schedule).catch(() => [])
       : undefined;
-    const apps = await resolveScheduleArgoAppsFromCatalog(
-      schedule,
-      allApps,
-      instanceMap,
-      workloadTargets
-    );
+    const catalog = buildCatalogForApps(allApps, instanceMap);
+    const apps = await resolveScheduleArgoAppsForOperations(schedule, catalog, workloadTargets);
     for (const app of apps) hold.add(syncBlockHoldKey(app));
   });
 
@@ -693,15 +700,8 @@ export async function applyManualSyncDenyForScheduleRepair(
     ? await getScheduleTargets(schedule)
     : undefined;
 
-  let targets = await resolveScheduleArgoAppsFromCatalog(
-    schedule,
-    allApps,
-    instanceMap,
-    workloadTargets
-  );
-  if (!targets.length) {
-    targets = await collectScheduleArgoApps(schedule, undefined, workloadTargets);
-  }
+  const catalog = buildCatalogForApps(allApps, instanceMap);
+  const targets = await resolveScheduleArgoAppsForOperations(schedule, catalog, workloadTargets);
   return applyManualSyncDenyForApps(schedule, targets, now);
 }
 
@@ -999,6 +999,18 @@ async function resolveArgoApp(
       `[Argo resolve] deployment ${schedule.namespace}/${schedule.appName} trackingApp=${
         trackingApp ?? '(none)'
       }`
+    );
+    if (trackingApp) {
+      const byTracking = findArgoAppInCatalog(ctx, schedule, trackingApp);
+      if (byTracking) return byTracking;
+    }
+  }
+
+  if (schedule.workloadKind === 'CronJob') {
+    const trackingApp = await getCronJobArgoAppName(
+      schedule.cluster,
+      schedule.namespace,
+      schedule.appName
     );
     if (trackingApp) {
       const byTracking = findArgoAppInCatalog(ctx, schedule, trackingApp);
