@@ -58,6 +58,8 @@ model Schedule {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  userGrants      UserScheduleGrant[]
+
   @@index([enabled])
   @@index([liveActive])
   @@index([cluster, namespace, appName])
@@ -135,6 +137,22 @@ model User {
   lastLogin    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+
+  scheduleGrants UserScheduleGrant[]
+}
+
+/// Per-user allowlist when scheduleAccessMode is "selected" — limits which schedules a user can see and act on.
+model UserScheduleGrant {
+  id         String   @id @default(cuid())
+  userId     String
+  scheduleId String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scheduleId])
+  @@index([userId])
+  @@index([scheduleId])
 }
 
 model Cluster {

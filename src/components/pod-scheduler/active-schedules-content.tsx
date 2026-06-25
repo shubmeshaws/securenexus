@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { Activity, CircleStop, Icons, Loader2, ScanSearch } from '@/lib/icons';
+import { CircleStop, Icons, Loader2, ScanSearch } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { apiFetch, type Schedule } from '@/lib/api-client';
 import { formatRelativeTime, parseClusterDisplay } from '@/lib/utils';
@@ -21,6 +21,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CountdownTimer } from '@/components/pod-scheduler/countdown-timer';
+import {
+  ScheduleStatusCountBar,
+  type ScheduleStatusCountKey,
+} from '@/components/pod-scheduler/schedule-status-count-bar';
 import {
   ScheduleClusterCell,
   ScheduleTargetCell,
@@ -68,7 +72,7 @@ interface LiveSchedulesResponse {
   checkedAt: string;
 }
 
-type LiveScheduleStatusKey = 'stopped' | 'completed' | 'enabled' | 'disabled';
+type LiveScheduleStatusKey = ScheduleStatusCountKey;
 
 function liveScheduleAccountId(schedule: LiveScheduleItem): string {
   return parseClusterDisplay(schedule.cluster).accountId ?? '';
@@ -207,21 +211,6 @@ export function ActiveSchedulesContent() {
         }
       />
 
-      <GlassPanel className="flex items-center gap-3 px-4 py-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-400 dark:ring-0">
-          <AppIcon icon={Activity} />
-        </div>
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">In stopped window</p>
-          <p className="text-lg font-semibold text-foreground">
-            {filtersActive ? filteredSchedules.length : total}
-            {filtersActive && filteredSchedules.length !== total ? (
-              <span className="ml-1 text-sm font-normal text-muted-foreground">/ {total}</span>
-            ) : null}
-          </p>
-        </div>
-      </GlassPanel>
-
       {isLoading ? (
         <div className="flex justify-center py-20">
           <Loader2 className="h-7 w-7 animate-spin text-blue-500/50" />
@@ -333,6 +322,14 @@ export function ActiveSchedulesContent() {
                 </Button>
               )}
             </DashboardFilterBar>
+          </div>
+          <div className="border-b border-border px-5 py-3">
+            <ScheduleStatusCountBar
+              filteredItems={filteredSchedules}
+              allItems={schedules}
+              getStatusKey={liveScheduleStatusKey}
+              filtersActive={filtersActive}
+            />
           </div>
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full text-sm table-modern">

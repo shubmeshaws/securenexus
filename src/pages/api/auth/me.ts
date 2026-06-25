@@ -2,6 +2,7 @@ import type { NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getTokenFromRequest, verifyToken, type AuthenticatedRequest } from '@/lib/auth';
 import { resolveUserPermissions } from '@/lib/user-permissions';
+import { loadUserScheduleAccess } from '@/lib/schedule-access';
 
 export default async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -24,6 +25,13 @@ export default async function handler(req: AuthenticatedRequest, res: NextApiRes
       .slice(0, 2)
       .toUpperCase() || dbUser.email.slice(0, 2).toUpperCase();
 
+    const permissions = resolveUserPermissions(dbUser.role, dbUser.permissions);
+    const scheduleAccess = await loadUserScheduleAccess(
+      dbUser.id,
+      dbUser.role,
+      dbUser.permissions
+    );
+
     return res.status(200).json({
       user: {
         id: dbUser.id,
@@ -32,7 +40,8 @@ export default async function handler(req: AuthenticatedRequest, res: NextApiRes
         role: dbUser.role,
         active: dbUser.active,
         initials: initials || 'SN',
-        permissions: resolveUserPermissions(dbUser.role, dbUser.permissions),
+        permissions,
+        scheduleAccess,
       },
     });
   } catch {

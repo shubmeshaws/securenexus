@@ -1,6 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import { enforcePermission } from '@/lib/permission-auth';
+import { enforceScheduleAccess } from '@/lib/schedule-access';
 import prisma from '@/lib/prisma';
 import { runScheduleSchema } from '@/lib/validation';
 import { runScheduleNow } from '@/lib/scheduler';
@@ -24,6 +25,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
 
   const schedule = await prisma.schedule.findUnique({ where: { id } });
   if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+  if (!(await enforceScheduleAccess(req, res, id))) return;
 
   try {
     await runScheduleNow(id, parsed.data.mode, req.user?.email ?? 'manual');

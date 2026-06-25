@@ -188,13 +188,20 @@ export interface AdminUser {
   active: boolean;
   lastLogin: string | null;
   createdAt: string;
+  scheduleIds?: string[];
   permissions?: {
     scheduleEdit: boolean;
     scheduleStart: boolean;
     scheduleStop: boolean;
     liveScheduleStop: boolean;
     instantSchedule: boolean;
+    scheduleAccessMode: 'all' | 'selected';
   };
+}
+
+export interface UserScheduleAccess {
+  mode: 'all' | 'selected';
+  scheduleIds: string[];
 }
 
 export interface EnvironmentHoursSummary {

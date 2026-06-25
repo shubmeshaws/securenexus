@@ -2,6 +2,7 @@ import prisma from '@/lib/prisma';
 import {
   hasPermission,
   resolveUserPermissions,
+  type UserActionPermission,
   type UserPermissions,
 } from '@/lib/user-permissions';
 import { requireAuth, type AuthenticatedRequest } from '@/lib/auth';
@@ -20,7 +21,7 @@ export async function getUserPermissionsForRequest(
   return resolveUserPermissions(role, user.permissions);
 }
 
-export function requirePermission(permission: keyof UserPermissions) {
+export function requirePermission(permission: UserActionPermission) {
   return (
     handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<void> | void
   ) =>
@@ -33,7 +34,7 @@ export function requirePermission(permission: keyof UserPermissions) {
 export async function enforcePermission(
   req: AuthenticatedRequest,
   res: NextApiResponse,
-  permission: keyof UserPermissions
+  permission: UserActionPermission
 ): Promise<boolean> {
   if (!req.user) {
     res.status(401).json({ error: 'Not authenticated' });

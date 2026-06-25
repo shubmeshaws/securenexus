@@ -37,6 +37,10 @@ import { usePermissions } from '@/components/auth/session-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
+  ScheduleStatusCountBar,
+  type ScheduleStatusCountKey,
+} from '@/components/pod-scheduler/schedule-status-count-bar';
+import {
   ScheduleClusterCell,
   ScheduleAccountIdCell,
   ScheduleEnvironmentCell,
@@ -47,7 +51,7 @@ import {
   ScheduleStatusCell,
 } from '@/components/pod-scheduler/schedule-table-cells';
 
-type ScheduleStatusKey = 'stopped' | 'completed' | 'enabled' | 'disabled';
+type ScheduleStatusKey = ScheduleStatusCountKey;
 
 const STATUS_FILTER_OPTIONS: { value: ScheduleStatusKey; label: string }[] = [
   { value: 'enabled', label: 'Enabled' },
@@ -324,6 +328,14 @@ export default function SchedulesPage() {
                 </Button>
               )}
             </DashboardFilterBar>
+          </div>
+          <div className="border-b border-border px-5 py-3">
+            <ScheduleStatusCountBar
+              filteredItems={filteredSchedules}
+              allItems={schedules}
+              getStatusKey={scheduleStatusKey}
+              filtersActive={filtersActive}
+            />
           </div>
           <div className="flex flex-wrap items-center gap-3 px-5 pb-3 pt-3 text-[10px] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5 leading-none">

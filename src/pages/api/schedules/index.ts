@@ -5,12 +5,21 @@ import prisma from '@/lib/prisma';
 import { createScheduleSchema } from '@/lib/validation';
 import { computeNextRun, ensureSchedulerRunning } from '@/lib/scheduler';
 import { enrichSchedulesWithAccountId } from '@/lib/schedule-display';
+import {
+  filterSchedulesForUser,
+  getScheduleAccessForRequest,
+} from '@/lib/schedule-access';
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   ensureSchedulerRunning();
   const schedules = await prisma.schedule.findMany({ orderBy: { name: 'asc' } });
   const enriched = await enrichSchedulesWithAccountId(schedules);
-  return res.status(200).json({ schedules: enriched });
+  const access = await getScheduleAccessForRequest(req);
+  const filtered =
+    access && req.user
+      ? filterSchedulesForUser(enriched, access, req.user.role)
+      : enriched;
+  return res.status(200).json({ schedules: filtered });
 }
 
 async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {

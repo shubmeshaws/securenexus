@@ -21,7 +21,7 @@ import { apiFetch, type AdminUser } from '@/lib/api-client';
 import { POLL_INTERVAL } from '@/components/providers/query-provider';
 import { PageHeader, StatCard, GlassPanel, UserAvatar } from '@/components/pod-scheduler/ui-primitives';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
-import { UserAccessDialog } from '@/components/pod-scheduler/user-access-dialog';
+import { UserAccessDialog, type UserAccessSavePayload } from '@/components/pod-scheduler/user-access-dialog';
 import { useSession } from '@/components/auth/session-context';
 import { ROLE_LABELS, type AppRole, type UserPermissions } from '@/lib/permissions';
 import { normalizeAppRole } from '@/lib/user-permissions';
@@ -79,7 +79,10 @@ export function AdminPanelContent() {
       body,
     }: {
       id: string;
-      body: Partial<Pick<AdminUser, 'role' | 'active'>> & { permissions?: UserPermissions };
+      body: Partial<Pick<AdminUser, 'role' | 'active'>> & {
+        permissions?: UserPermissions;
+        scheduleIds?: string[];
+      };
     }) => apiFetch(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
     onMutate: async ({ id, body }) => {
       await queryClient.cancelQueries({ queryKey: ['admin-users'] });
@@ -131,8 +134,11 @@ export function AdminPanelContent() {
     });
   };
 
-  const saveUserAccess = (userId: string, permissions: UserPermissions) => {
-    updateUserMutation.mutate({ id: userId, body: { permissions } });
+  const saveUserAccess = (userId: string, payload: UserAccessSavePayload) => {
+    updateUserMutation.mutate({
+      id: userId,
+      body: { permissions: payload.permissions, scheduleIds: payload.scheduleIds },
+    });
     setAccessUser(null);
   };
 
@@ -256,6 +262,12 @@ export function AdminPanelContent() {
                             <span className="text-sm font-medium text-foreground">
                               {user.displayName || user.email || 'User'}
                             </span>
+                            {user.permissions?.scheduleAccessMode === 'selected' ? (
+                              <Badge variant="outline" className="text-[10px]">
+                                {user.scheduleIds?.length ?? 0} schedule
+                                {(user.scheduleIds?.length ?? 0) === 1 ? '' : 's'}
+                              </Badge>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-5 py-4 font-mono text-xs text-muted-foreground">{user.email}</td>

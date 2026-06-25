@@ -5,6 +5,10 @@ import { computeCurrentLiveStartupAt, isLiveScheduleVisible } from '@/lib/schedu
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
 import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
+import {
+  filterSchedulesForUser,
+  getScheduleAccessForRequest,
+} from '@/lib/schedule-access';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
@@ -15,7 +19,13 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   });
 
   const now = new Date();
-  const live = schedules
+  const access = await getScheduleAccessForRequest(req);
+  const visibleSchedules =
+    access && req.user
+      ? filterSchedulesForUser(schedules, access, req.user.role)
+      : schedules;
+
+  const live = visibleSchedules
     .filter((schedule) => isLiveScheduleVisible(schedule, now))
     .map((schedule) => {
       const startupAt =
