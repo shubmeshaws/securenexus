@@ -397,6 +397,9 @@ export function ScheduleStatusCell({
   if (schedule.liveStopSource === 'manual') {
     return <ScheduleStatusBadge variant="manualStopSolid" label="Manual stop" />;
   }
+  if (schedule.liveStopSource === 'manual-start') {
+    return <ScheduleStatusBadge variant="successSolid" label="Manual start" />;
+  }
   if (isScheduleActivelyStopped(schedule)) {
     return <ScheduleStatusBadge variant="failedSolid" label="Scheduled stop" />;
   }

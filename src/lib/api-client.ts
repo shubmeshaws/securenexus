@@ -92,7 +92,7 @@ export interface Schedule {
   teamsAlertEnabled: boolean;
   teamsManualAlertEnabled: boolean;
   liveActive: boolean;
-  liveStopSource: 'manual' | 'scheduled' | null;
+  liveStopSource: 'manual' | 'manual-start' | 'scheduled' | null;
   liveStoppedBy: string | null;
   liveStoppedByName?: string | null;
   savedReplicas: number | null;

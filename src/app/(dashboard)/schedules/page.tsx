@@ -107,11 +107,13 @@ export default function SchedulesPage() {
         method: 'POST',
         body: JSON.stringify({ mode }),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedules'] });
-      queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
-      queryClient.invalidateQueries({ queryKey: ['overview'] });
-      queryClient.invalidateQueries({ queryKey: ['activity'] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['schedules'] }),
+        queryClient.refetchQueries({ queryKey: ['schedules-live'] }),
+        queryClient.refetchQueries({ queryKey: ['overview'] }),
+        queryClient.refetchQueries({ queryKey: ['activity'] }),
+      ]);
     },
   });
 

@@ -1784,13 +1784,20 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         return apps.map((a) => a.name);
       };
 
+      const scopedNames = await resolveFromCatalog();
       let storedNames = storedPausedApps.length
-        ? [...storedPausedApps]
-        : await resolveFromCatalog();
+        ? filterPausedAppsToScheduleScope(storedPausedApps, scopedNames)
+        : scopedNames;
 
       if (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)) {
-        storedNames = await resolveFromCatalog();
+        storedNames = scopedNames;
       }
+
+      runLog.phase('argo-resume', 'Apps to resume (scoped)', {
+        storedPausedCount: storedPausedApps.length,
+        scopedCount: scopedNames.length,
+        resumeCount: storedNames.length,
+      });
 
       const toResume = await resolveArgoAppsForResume(schedule, storedNames, catalog);
       runLog.phase('argo-resume', 'Resolving Argo apps to resume', {
@@ -1910,6 +1917,15 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
   }
 }
 
+/** Keep only paused apps that belong to this schedule's workload scope (not a stale namespace-wide list). */
+function filterPausedAppsToScheduleScope(storedNames: string[], scopedNames: string[]): string[] {
+  if (!storedNames.length) return scopedNames;
+  if (!scopedNames.length) return storedNames;
+  const scoped = new Set(scopedNames);
+  const filtered = storedNames.filter((name) => scoped.has(name));
+  return filtered.length > 0 ? filtered : scopedNames;
+}
+
 export async function runScheduleNow(
   scheduleId: string,
   mode: 'shutdown' | 'startup',
@@ -1918,17 +1934,26 @@ export async function runScheduleNow(
   const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
   if (!schedule) throw new Error('Schedule not found');
 
-  if (mode === 'shutdown') {
-    await executeShutdown(schedule, triggeredBy, { markLive: true });
-  } else {
+  const now = new Date();
+
+  if (mode === 'startup') {
+    const manualStartInStoppedWindow = isScheduleInStoppedWindow(schedule, now);
+    // Clear "Manual stop" immediately — do not wait for slow Argo resume on EC2.
+    await prisma.schedule.update({
+      where: { id: scheduleId },
+      data: {
+        liveActive: false,
+        liveStartupAt: null,
+        liveStopSource: manualStartInStoppedWindow ? 'manual-start' : null,
+        liveStoppedBy: null,
+      },
+    });
     await executeStartup(schedule, triggeredBy);
+  } else {
+    await executeShutdown(schedule, triggeredBy, { markLive: true });
   }
 
-  const now = new Date();
   const nextRun = computeNextRun(schedule, now);
-  // A manual start during the schedule's stopped window is a deliberate "run it now"
-  // override — tag it 'manual-start' so the stopped-state self-heal leaves it running
-  // (instead of immediately re-stopping it). It clears at the next scheduled event.
   const manualStartInStoppedWindow =
     mode === 'startup' && isScheduleInStoppedWindow(schedule, now);
   await prisma.schedule.update({
