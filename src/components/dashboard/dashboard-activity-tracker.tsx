@@ -52,11 +52,46 @@ function ProgressBar({
   );
 }
 
+function ServiceBadges({
+  items,
+  variant,
+  limit = 8,
+}: {
+  items: string[];
+  variant: 'applied' | 'pending';
+  limit?: number;
+}) {
+  if (!items.length) return null;
+  const shown = items.slice(0, limit);
+  const tone =
+    variant === 'applied'
+      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+      : 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  return (
+    <div className="flex flex-wrap gap-1 pt-0.5">
+      {shown.map((item) => (
+        <span
+          key={item}
+          className={cn('rounded-md px-1.5 py-0.5 font-mono text-[10px]', tone)}
+        >
+          {item}
+        </span>
+      ))}
+      {items.length > limit ? (
+        <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
+          +{items.length - limit} more
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function MetricRow({
   label,
   done,
   total,
   pending,
+  applied,
   accent,
   notResolved,
 }: {
@@ -64,6 +99,7 @@ function MetricRow({
   done: number;
   total: number;
   pending: string[];
+  applied?: string[];
   accent: 'emerald' | 'sky';
   notResolved?: boolean;
 }) {
@@ -76,21 +112,20 @@ function MetricRow({
         </span>
       </div>
       <ProgressBar done={done} total={total} accent={accent} />
+      {applied && applied.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-[10px] font-medium text-muted-foreground">
+            Sync off ({applied.length})
+          </p>
+          <ServiceBadges items={applied} variant="applied" />
+        </div>
+      ) : null}
       {pending.length > 0 ? (
-        <div className="flex flex-wrap gap-1 pt-0.5">
-          {pending.slice(0, 6).map((item) => (
-            <span
-              key={item}
-              className="rounded-md bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-300"
-            >
-              {item}
-            </span>
-          ))}
-          {pending.length > 6 ? (
-            <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
-              +{pending.length - 6} more
-            </span>
-          ) : null}
+        <div className="space-y-1">
+          <p className="text-[10px] font-medium text-muted-foreground">
+            Pending ({pending.length})
+          </p>
+          <ServiceBadges items={pending} variant="pending" />
         </div>
       ) : null}
     </div>
@@ -164,12 +199,85 @@ function ScheduleCard({ row }: { row: ScheduleActivityRow }) {
             done={row.syncOff.done}
             total={row.syncOff.total}
             pending={row.syncOff.pending}
+            applied={row.syncOff.applied}
             accent="sky"
             notResolved={!row.syncOff.resolved}
           />
         </div>
       )}
     </div>
+  );
+}
+
+function SyncOffServicesPanel({
+  applied,
+  pending,
+}: {
+  applied: ScheduleActivityTracker['syncOffServices'];
+  pending: ScheduleActivityTracker['syncOffPendingServices'];
+}) {
+  if (!applied.length && !pending.length) return null;
+
+  return (
+    <GlassPanel>
+      <PanelHeader title="Manual sync off — services" icon={Workflow} accent="blue" />
+      <div className="grid gap-5 p-5 lg:grid-cols-2">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-foreground">Sync off applied</p>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {applied.length} service{applied.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          {applied.length === 0 ? (
+            <p className="text-xs text-muted-foreground">None yet</p>
+          ) : (
+            <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
+              {applied.map((entry) => (
+                <div
+                  key={`${entry.scheduleId}:${entry.appName}`}
+                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]"
+                >
+                  <span className="font-mono font-medium text-emerald-700 dark:text-emerald-300">
+                    {entry.appName}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {entry.scheduleName} · {entry.namespace}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-foreground">Still pending sync off</p>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {pending.length} service{pending.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          {pending.length === 0 ? (
+            <p className="text-xs text-muted-foreground">All linked services blocked</p>
+          ) : (
+            <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
+              {pending.map((entry) => (
+                <div
+                  key={`${entry.scheduleId}:${entry.appName}`}
+                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]"
+                >
+                  <span className="font-mono font-medium text-amber-700 dark:text-amber-300">
+                    {entry.appName}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {entry.scheduleName} · {entry.namespace}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </GlassPanel>
   );
 }
 
@@ -211,9 +319,7 @@ export function DashboardActivityTracker() {
     <div className="space-y-5">
       <PageHeader
         title="Activity tracker"
-        description={`Live stop & manual-sync-off progress for schedules stopped in the last ${
-          data?.activeWindowMinutes ?? 15
-        } minutes — refreshed every ${POLL_INTERVAL_MS / 1000}s.`}
+        description="Live stop & manual-sync-off progress for all currently stopped schedules — refreshed every 15s."
         action={
           <button
             type="button"
@@ -270,6 +376,11 @@ export function DashboardActivityTracker() {
         </div>
       </GlassPanel>
 
+      <SyncOffServicesPanel
+        applied={data?.syncOffServices ?? []}
+        pending={data?.syncOffPendingServices ?? []}
+      />
+
       {isLoading ? (
         <div className="flex items-center justify-center rounded-xl border border-border bg-card/40 p-12">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -277,10 +388,10 @@ export function DashboardActivityTracker() {
       ) : sortedRows.length === 0 ? (
         <div className="rounded-xl border border-border bg-card/40 p-10 text-center">
           <BadgeCheck className="mx-auto mb-3 h-8 w-8 text-emerald-500" strokeWidth={1.5} />
-          <p className="text-sm font-medium text-foreground">No active stop operations</p>
+          <p className="text-sm font-medium text-foreground">No stopped schedules</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Nothing has stopped in the last {data?.activeWindowMinutes ?? 15} minutes. New shutdowns
-            appear here while they settle.
+            No enabled schedules are currently in their stop window. When schedules stop, their
+            workloads and manual sync-off status appear here.
           </p>
         </div>
       ) : (

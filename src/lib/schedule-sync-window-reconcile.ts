@@ -1,8 +1,12 @@
 import prisma from './prisma';
 import { addHours } from 'date-fns';
-import type { InstantRun } from '@prisma/client';
-import { applyManualSyncDenyForScheduleRepair } from './scheduler-actions';
+import type { InstantRun, Schedule } from '@prisma/client';
+import {
+  applyManualSyncDenyForScheduleRepair,
+  clearManualSyncDenyForScheduleRepair,
+} from './scheduler-actions';
 import { isNonEksSchedule } from './workload-utils';
+import { isScheduleInStoppedWindow } from './scheduler-utils';
 import argocdClient, {
   appMatchesK8sCluster,
   getArgoListErrors,
@@ -42,6 +46,19 @@ function scheduleNeedsSyncWindowReconcile(schedule: {
   return false;
 }
 
+/**
+ * Whether the schedule should be sync-blocked RIGHT NOW. A manual stop persists until a
+ * manual start; a manual start during a stop window means the user wants it running; an
+ * automatic schedule is blocked only while inside its stop window. This is the authority
+ * the reconcile uses to decide ADD (block) vs REMOVE (unblock) — independent of the
+ * possibly-stale liveActive flag, so windows track reality and never linger into runtime.
+ */
+function scheduleShouldBeStoppedNow(schedule: Schedule, now: Date): boolean {
+  if (schedule.liveStopSource === 'manual') return true;
+  if (schedule.liveStopSource === 'manual-start') return false;
+  return isScheduleInStoppedWindow(schedule, now);
+}
+
 function resolveInstantRunApps(run: InstantRun, allApps: ArgoCDAppSummary[]): ArgoAppRef[] {
   const clusterApps = allApps.filter((app) => appMatchesK8sCluster(app, run.cluster));
 
@@ -79,10 +96,16 @@ export async function reconcileStoppedScheduleSyncWindows(
   invalidateArgoAppsCache();
 
   const [schedules, instantRuns, allApps, instances] = await Promise.all([
+    // Load BOTH directions:
+    //  - enabled EKS schedules (running ones may carry orphaned deny windows to remove),
+    //  - any schedule still showing stop-evidence (must stay blocked or be cleaned up).
+    // The clear path is a cheap no-op when an app has nothing blocked, so scanning running
+    // schedules is safe; it is the only way to auto-remove windows that startup left behind.
     prisma.schedule.findMany({
       where: {
         platformType: { not: 'non_eks' },
         OR: [
+          { enabled: true },
           { liveActive: true },
           { liveStopSource: 'manual' },
           { pausedArgoApps: { isEmpty: false } },
@@ -106,7 +129,9 @@ export async function reconcileStoppedScheduleSyncWindows(
 
   const instanceMap = new Map(instances.map((i) => [i.id, i]));
   const candidates = schedules.filter(
-    (schedule) => !isNonEksSchedule(schedule) && scheduleNeedsSyncWindowReconcile(schedule)
+    (schedule) =>
+      !isNonEksSchedule(schedule) &&
+      (schedule.enabled || scheduleNeedsSyncWindowReconcile(schedule))
   );
   result.schedulesScanned = candidates.length;
 
@@ -124,14 +149,20 @@ export async function reconcileStoppedScheduleSyncWindows(
 
   let schedulesDone = 0;
   const scheduleOutcomes: { apps: string[]; errors: string[] }[] = [];
+  const clearedScheduleIds: string[] = [];
 
   await runWithConcurrency(candidates, 4, async (schedule) => {
-    const outcome = await applyManualSyncDenyForScheduleRepair(
-      schedule,
-      allApps,
-      instanceMap,
-      now
-    );
+    const shouldBeStopped = scheduleShouldBeStoppedNow(schedule, now);
+
+    // BIDIRECTIONAL reconcile:
+    //  - in stop window (or manual stop)  → ensure deny window present + sync paused.
+    //  - outside stop window (should run) → REMOVE deny window + restore sync. This is the
+    //    self-heal for "window not removed automatically": startup is no longer the only
+    //    thing that can clear it, and a stale liveActive/pausedArgoApps can no longer keep
+    //    a running schedule blocked.
+    const outcome = shouldBeStopped
+      ? await applyManualSyncDenyForScheduleRepair(schedule, allApps, instanceMap, now)
+      : await clearManualSyncDenyForScheduleRepair(schedule, allApps, instanceMap);
 
     schedulesDone++;
     report({
@@ -141,6 +172,20 @@ export async function reconcileStoppedScheduleSyncWindows(
       instantRunsDone: 0,
       phase: 'schedules',
     });
+
+    if (!shouldBeStopped) {
+      // Running schedule: drop the stop-evidence so it stops being a reconcile candidate
+      // once its windows are cleared. liveActive is left to the scheduler tick's
+      // shouldReconcileToStarted/startup path.
+      if (schedule.pausedArgoApps.length > 0) {
+        clearedScheduleIds.push(schedule.id);
+      }
+      scheduleOutcomes.push({
+        apps: [],
+        errors: outcome.errors.map((error) => `${schedule.name}: unblock: ${error}`),
+      });
+      return;
+    }
 
     if (!outcome.apps.length && !outcome.errors.length) {
       scheduleOutcomes.push({
@@ -155,6 +200,20 @@ export async function reconcileStoppedScheduleSyncWindows(
       errors: outcome.errors.map((error) => `${schedule.name}: ${error}`),
     });
   });
+
+  if (clearedScheduleIds.length > 0) {
+    await prisma.schedule
+      .updateMany({
+        where: { id: { in: clearedScheduleIds } },
+        data: { pausedArgoApps: [] },
+      })
+      .catch((err) =>
+        console.error(
+          '[Argo reconcile] failed to clear pausedArgoApps for unblocked schedules:',
+          err instanceof Error ? err.message : err
+        )
+      );
+  }
 
   for (const outcome of scheduleOutcomes) {
     if (outcome.apps.length) {

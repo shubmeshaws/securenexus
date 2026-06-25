@@ -224,6 +224,14 @@ export interface DashboardInsights {
   };
 }
 
+export interface SyncOffServiceEntry {
+  scheduleId: string;
+  scheduleName: string;
+  cluster: string;
+  namespace: string;
+  appName: string;
+}
+
 export interface ScheduleActivityRow {
   id: string;
   name: string;
@@ -234,7 +242,13 @@ export interface ScheduleActivityRow {
   ageMs: number;
   status: 'completed' | 'in-progress';
   stop: { done: number; total: number; pending: string[] };
-  syncOff: { done: number; total: number; pending: string[]; resolved: boolean };
+  syncOff: {
+    done: number;
+    total: number;
+    pending: string[];
+    applied: string[];
+    resolved: boolean;
+  };
   error?: string;
 }
 
@@ -242,6 +256,8 @@ export interface ScheduleActivityTracker {
   generatedAt: string;
   activeWindowMinutes: number;
   rows: ScheduleActivityRow[];
+  syncOffServices: SyncOffServiceEntry[];
+  syncOffPendingServices: SyncOffServiceEntry[];
   totals: {
     schedules: number;
     completed: number;

@@ -4,24 +4,31 @@ import { getWorkloadDesiredReplicas } from './k8s-client';
 import {
   collectScheduleArgoApps,
   getScheduleTargets,
+  loadScheduleArgoCatalog,
+  resolveCatalogAppsInNamespaceForSchedule,
   type ScheduleArgoApp,
   type WorkloadTarget,
 } from './scheduler-actions';
 import { isNamespaceSchedule, isNonEksSchedule, workloadKey } from './workload-utils';
+import { isScheduleInStoppedWindow } from './scheduler-utils';
 import { runWithConcurrency } from './concurrency';
 import type { Schedule } from '@prisma/client';
 
-/**
- * Only schedules stopped within this window are live-checked against the cluster /
- * Argo CD. Older stops are assumed settled (the per-minute self-heal and 5-min sync
- * reconcile keep them correct) so the tracker never fans out across every schedule.
- */
-const ACTIVE_TRACK_WINDOW_MS = 15 * 60 * 1000;
+/** Recent stop/start transitions stay visible briefly even after the window ends. */
+const RECENT_TRANSITION_WINDOW_MS = 15 * 60 * 1000;
 /** Recompute (live K8s/Argo calls) at most once per this interval; polls reuse the cache. */
 const CACHE_TTL_MS = 60_000;
 const SCHEDULE_SCAN_CONCURRENCY = 4;
 
 export type ActivityStatus = 'completed' | 'in-progress';
+
+export interface SyncOffServiceEntry {
+  scheduleId: string;
+  scheduleName: string;
+  cluster: string;
+  namespace: string;
+  appName: string;
+}
 
 export interface ScheduleActivityRow {
   id: string;
@@ -33,7 +40,13 @@ export interface ScheduleActivityRow {
   ageMs: number;
   status: ActivityStatus;
   stop: { done: number; total: number; pending: string[] };
-  syncOff: { done: number; total: number; pending: string[]; resolved: boolean };
+  syncOff: {
+    done: number;
+    total: number;
+    pending: string[];
+    applied: string[];
+    resolved: boolean;
+  };
   error?: string;
 }
 
@@ -41,6 +54,10 @@ export interface ScheduleActivityTracker {
   generatedAt: string;
   activeWindowMinutes: number;
   rows: ScheduleActivityRow[];
+  /** All Argo apps with manual sync off, grouped for quick scanning. */
+  syncOffServices: SyncOffServiceEntry[];
+  /** Argo apps still missing manual sync off while their schedule is stopped. */
+  syncOffPendingServices: SyncOffServiceEntry[];
   totals: {
     schedules: number;
     completed: number;
@@ -58,6 +75,32 @@ let inFlight: Promise<ScheduleActivityTracker> | null = null;
 
 function stoppedSince(schedule: Schedule): Date | null {
   return schedule.lastRun ?? null;
+}
+
+/** Track any schedule that should currently have sync off, not only recent shutdowns. */
+function shouldTrackSchedule(schedule: Schedule, now: Date): boolean {
+  if (!schedule.enabled || isNonEksSchedule(schedule)) return false;
+  if (schedule.liveStopSource === 'manual') return true;
+  if (schedule.liveStopSource === 'manual-start') return false;
+  if (schedule.liveActive) return true;
+  if (isScheduleInStoppedWindow(schedule, now)) return true;
+  const since = stoppedSince(schedule);
+  if (since && now.getTime() - since.getTime() <= RECENT_TRANSITION_WINDOW_MS) return true;
+  return false;
+}
+
+type ScheduleArgoCatalog = Awaited<ReturnType<typeof loadScheduleArgoCatalog>>;
+
+async function resolveAppsForTracker(
+  schedule: Schedule,
+  catalog: ScheduleArgoCatalog,
+  targets: WorkloadTarget[]
+): Promise<ScheduleArgoApp[]> {
+  if (isNamespaceSchedule(schedule)) {
+    const fromCatalog = await resolveCatalogAppsInNamespaceForSchedule(schedule, catalog);
+    if (fromCatalog.length) return fromCatalog;
+  }
+  return collectScheduleArgoApps(schedule, catalog, targets);
 }
 
 async function computeStopProgress(
@@ -83,9 +126,15 @@ async function computeStopProgress(
 async function computeSyncOffProgress(
   schedule: Schedule,
   apps: ScheduleArgoApp[]
-): Promise<{ done: number; total: number; pending: string[]; resolved: boolean }> {
+): Promise<{
+  done: number;
+  total: number;
+  pending: string[];
+  applied: string[];
+  resolved: boolean;
+}> {
   if (!apps.length) {
-    return { done: 0, total: 0, pending: [], resolved: false };
+    return { done: 0, total: 0, pending: [], applied: [], resolved: false };
   }
 
   const byInstance = new Map<string, ScheduleArgoApp[]>();
@@ -106,12 +155,20 @@ async function computeSyncOffProgress(
     result.forEach((name) => denied.add(name));
   });
 
+  const applied = apps.filter((app) => denied.has(app.name)).map((app) => app.name);
   const pending = apps.filter((app) => !denied.has(app.name)).map((app) => app.name);
-  return { done: apps.length - pending.length, total: apps.length, pending, resolved: true };
+  return {
+    done: applied.length,
+    total: apps.length,
+    pending,
+    applied,
+    resolved: true,
+  };
 }
 
 async function computeScheduleRow(
   schedule: Schedule,
+  catalog: ScheduleArgoCatalog,
   now: Date
 ): Promise<ScheduleActivityRow> {
   const since = stoppedSince(schedule);
@@ -126,12 +183,12 @@ async function computeScheduleRow(
     ageMs,
     status: 'in-progress',
     stop: { done: 0, total: 0, pending: [] },
-    syncOff: { done: 0, total: 0, pending: [], resolved: false },
+    syncOff: { done: 0, total: 0, pending: [], applied: [], resolved: false },
   };
 
   try {
     const targets = await getScheduleTargets(schedule);
-    const apps = await collectScheduleArgoApps(schedule, undefined, targets);
+    const apps = await resolveAppsForTracker(schedule, catalog, targets);
     const [stop, syncOff] = await Promise.all([
       computeStopProgress(schedule, targets),
       computeSyncOffProgress(schedule, apps),
@@ -155,30 +212,57 @@ async function computeScheduleRow(
 }
 
 async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker> {
-  const schedules = await prisma.schedule.findMany({
-    where: {
-      enabled: true,
-      platformType: { not: 'non_eks' },
-      OR: [{ liveActive: true }, { liveStopSource: 'manual' }],
-    },
-  });
+  const [schedules, catalog] = await Promise.all([
+    prisma.schedule.findMany({
+      where: {
+        enabled: true,
+        platformType: { not: 'non_eks' },
+      },
+    }),
+    loadScheduleArgoCatalog(),
+  ]);
 
-  const recent = schedules.filter((schedule) => {
-    if (isNonEksSchedule(schedule)) return false;
-    const since = stoppedSince(schedule);
-    if (!since) return false;
-    return now.getTime() - since.getTime() <= ACTIVE_TRACK_WINDOW_MS;
-  });
+  const tracked = schedules.filter((schedule) => shouldTrackSchedule(schedule, now));
 
   const rows: ScheduleActivityRow[] = [];
-  await runWithConcurrency(recent, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
-    rows.push(await computeScheduleRow(schedule, now));
+  await runWithConcurrency(tracked, SCHEDULE_SCAN_CONCURRENCY, async (schedule) => {
+    rows.push(await computeScheduleRow(schedule, catalog, now));
   });
 
   rows.sort((a, b) => {
     if (a.status !== b.status) return a.status === 'in-progress' ? -1 : 1;
     return b.ageMs - a.ageMs;
   });
+
+  const syncOffServices: SyncOffServiceEntry[] = [];
+  const syncOffPendingServices: SyncOffServiceEntry[] = [];
+  for (const row of rows) {
+    for (const appName of row.syncOff.applied) {
+      syncOffServices.push({
+        scheduleId: row.id,
+        scheduleName: row.name,
+        cluster: row.cluster,
+        namespace: row.namespace,
+        appName,
+      });
+    }
+    for (const appName of row.syncOff.pending) {
+      syncOffPendingServices.push({
+        scheduleId: row.id,
+        scheduleName: row.name,
+        cluster: row.cluster,
+        namespace: row.namespace,
+        appName,
+      });
+    }
+  }
+
+  syncOffServices.sort((a, b) =>
+    a.namespace.localeCompare(b.namespace) || a.appName.localeCompare(b.appName)
+  );
+  syncOffPendingServices.sort((a, b) =>
+    a.namespace.localeCompare(b.namespace) || a.appName.localeCompare(b.appName)
+  );
 
   const totals = rows.reduce(
     (acc, row) => {
@@ -209,8 +293,10 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
 
   return {
     generatedAt: now.toISOString(),
-    activeWindowMinutes: ACTIVE_TRACK_WINDOW_MS / 60_000,
+    activeWindowMinutes: RECENT_TRANSITION_WINDOW_MS / 60_000,
     rows,
+    syncOffServices,
+    syncOffPendingServices,
     totals,
   };
 }

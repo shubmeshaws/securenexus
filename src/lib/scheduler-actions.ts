@@ -139,6 +139,19 @@ interface ArgoCatalog {
   find(schedule: Schedule, appName: string): ScheduleArgoApp | null;
 }
 
+/** Shared Argo CD catalog loader for tracker / reconcile callers. */
+export async function loadScheduleArgoCatalog(): Promise<ArgoCatalog> {
+  return loadArgoCatalog();
+}
+
+/** Namespace-wide app list from the Argo catalog (no live K8s lookups). */
+export async function resolveCatalogAppsInNamespaceForSchedule(
+  schedule: Schedule,
+  catalog: ArgoCatalog
+): Promise<ScheduleArgoApp[]> {
+  return resolveCatalogAppsInNamespace(schedule, catalog);
+}
+
 async function loadArgoCatalog(): Promise<ArgoCatalog> {
   const [allApps, instances] = await Promise.all([
     argocdClient.listApplications(),
@@ -553,6 +566,84 @@ export async function applyManualSyncDenyForScheduleRepair(
     targets = await collectScheduleArgoApps(schedule);
   }
   return applyManualSyncDenyForApps(schedule, targets, now);
+}
+
+/**
+ * Inverse of applyManualSyncDenyForScheduleRepair: a schedule that is currently OUTSIDE its
+ * stop window (should be running) but still has SecureNexus deny windows / paused sync must
+ * be cleaned up. Resolves apps from the Argo catalog (K8s-free, namespace-wide) and removes
+ * the deny windows + restores automated sync. This is the missing self-heal for "manual sync
+ * window not removed automatically" — startup is no longer the only thing that can remove it.
+ */
+export async function clearManualSyncDenyForScheduleRepair(
+  schedule: Schedule,
+  allApps: ArgoCDAppSummary[],
+  instanceMap: Map<string, Awaited<ReturnType<typeof listEnabledArgoCDInstances>>[number]>
+): Promise<{ apps: string[]; errors: string[] }> {
+  if (isNonEksSchedule(schedule)) return { apps: [], errors: [] };
+
+  const apps = await resolveScheduleArgoAppsFromCatalog(schedule, allApps, instanceMap);
+  if (!apps.length) return { apps: [], errors: [] };
+
+  const cleared: string[] = [];
+  const errors: string[] = [];
+
+  // Remove per-app deny windows. removeScheduleManualSyncDenyWindows reads the project and
+  // only writes when something matches, so this is a cheap no-op for already-clean apps.
+  await runWithConcurrency(apps, resolveArgoOpConcurrency(), async (app) => {
+    try {
+      const removed = await argocdClient.removeScheduleManualSyncDenyWindows(
+        app.name,
+        app.instanceId
+      );
+      if (removed > 0) cleared.push(app.name);
+    } catch (err) {
+      errors.push(`${app.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  // Remove any legacy namespace-scoped deny window (one sample app per instance/project).
+  if (isNamespaceSchedule(schedule)) {
+    const sampleByInstance = new Map<string, ScheduleArgoApp>();
+    for (const app of apps) {
+      if (!sampleByInstance.has(app.instanceId)) sampleByInstance.set(app.instanceId, app);
+    }
+    await runWithConcurrency(
+      Array.from(sampleByInstance.values()),
+      resolveArgoOpConcurrency(),
+      async (app) => {
+        try {
+          const removed = await argocdClient.removeScheduleNamespaceDenyWindow(
+            schedule.namespace,
+            app.name,
+            app.instanceId
+          );
+          if (removed > 0 && !cleared.includes(app.name)) cleared.push(app.name);
+        } catch (err) {
+          errors.push(`${schedule.namespace}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    );
+  }
+
+  // ONLY restore automated sync for apps we actually unblocked, and only when the schedule is
+  // configured for automated sync. Critical: a running schedule with nothing blocked makes no
+  // Argo writes here, so this is safe to run every reconcile without triggering spurious syncs.
+  if (cleared.length > 0 && schedule.syncPolicy === 'automated') {
+    await runWithConcurrency(
+      apps.filter((a) => cleared.includes(a.name)),
+      resolveArgoOpConcurrency(),
+      async (app) => {
+        try {
+          await argocdClient.updateSyncPolicy(app.name, 'automated', app.instanceId);
+        } catch (err) {
+          errors.push(`${app.name}: restore: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    );
+  }
+
+  return { apps: cleared, errors };
 }
 
 export async function applyManualSyncDenyForApps(
