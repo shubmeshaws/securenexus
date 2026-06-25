@@ -232,6 +232,19 @@ export interface SyncOffServiceEntry {
   appName: string;
 }
 
+export interface SyncOffNamespaceGroup {
+  cluster: string;
+  namespace: string;
+  scheduleId: string;
+  scheduleName: string;
+  completed: string[];
+  pending: string[];
+  completedCount: number;
+  pendingCount: number;
+  total: number;
+  percent: number;
+}
+
 export interface ScheduleActivityRow {
   id: string;
   name: string;
@@ -258,6 +271,7 @@ export interface ScheduleActivityTracker {
   rows: ScheduleActivityRow[];
   syncOffServices: SyncOffServiceEntry[];
   syncOffPendingServices: SyncOffServiceEntry[];
+  syncOffGroups: SyncOffNamespaceGroup[];
   totals: {
     schedules: number;
     completed: number;
@@ -266,6 +280,7 @@ export interface ScheduleActivityTracker {
     stopTotal: number;
     syncDone: number;
     syncTotal: number;
+    syncPercent: number;
     percent: number;
   };
 }

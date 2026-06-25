@@ -5,7 +5,6 @@ import {
   collectScheduleArgoApps,
   getScheduleTargets,
   loadScheduleArgoCatalog,
-  resolveCatalogAppsInNamespaceForSchedule,
   type ScheduleArgoApp,
   type WorkloadTarget,
 } from './scheduler-actions';
@@ -28,6 +27,20 @@ export interface SyncOffServiceEntry {
   cluster: string;
   namespace: string;
   appName: string;
+}
+
+/** Per schedule (cluster + namespace) sync-off breakdown for the dashboard lists. */
+export interface SyncOffNamespaceGroup {
+  cluster: string;
+  namespace: string;
+  scheduleId: string;
+  scheduleName: string;
+  completed: string[];
+  pending: string[];
+  completedCount: number;
+  pendingCount: number;
+  total: number;
+  percent: number;
 }
 
 export interface ScheduleActivityRow {
@@ -54,10 +67,11 @@ export interface ScheduleActivityTracker {
   generatedAt: string;
   activeWindowMinutes: number;
   rows: ScheduleActivityRow[];
-  /** All Argo apps with manual sync off, grouped for quick scanning. */
+  /** Flat lists (legacy / export). */
   syncOffServices: SyncOffServiceEntry[];
-  /** Argo apps still missing manual sync off while their schedule is stopped. */
   syncOffPendingServices: SyncOffServiceEntry[];
+  /** Grouped cluster → namespace view for the dashboard sync-off lists. */
+  syncOffGroups: SyncOffNamespaceGroup[];
   totals: {
     schedules: number;
     completed: number;
@@ -66,6 +80,7 @@ export interface ScheduleActivityTracker {
     stopTotal: number;
     syncDone: number;
     syncTotal: number;
+    syncPercent: number;
     percent: number;
   };
 }
@@ -77,12 +92,11 @@ function stoppedSince(schedule: Schedule): Date | null {
   return schedule.lastRun ?? null;
 }
 
-/** Track any schedule that should currently have sync off, not only recent shutdowns. */
+/** Track schedules actively in a stop window, manual stop, or a recent transition only. */
 function shouldTrackSchedule(schedule: Schedule, now: Date): boolean {
   if (!schedule.enabled || isNonEksSchedule(schedule)) return false;
-  if (schedule.liveStopSource === 'manual') return true;
   if (schedule.liveStopSource === 'manual-start') return false;
-  if (schedule.liveActive) return true;
+  if (schedule.liveStopSource === 'manual') return true;
   if (isScheduleInStoppedWindow(schedule, now)) return true;
   const since = stoppedSince(schedule);
   if (since && now.getTime() - since.getTime() <= RECENT_TRANSITION_WINDOW_MS) return true;
@@ -96,10 +110,8 @@ async function resolveAppsForTracker(
   catalog: ScheduleArgoCatalog,
   targets: WorkloadTarget[]
 ): Promise<ScheduleArgoApp[]> {
-  if (isNamespaceSchedule(schedule)) {
-    const fromCatalog = await resolveCatalogAppsInNamespaceForSchedule(schedule, catalog);
-    if (fromCatalog.length) return fromCatalog;
-  }
+  // Match the schedule's workload scope — not every Argo app in a shared namespace
+  // (grafana/jenkins/etc. live in the same namespace but are not scheduled workloads).
   return collectScheduleArgoApps(schedule, catalog, targets);
 }
 
@@ -264,6 +276,30 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
     a.namespace.localeCompare(b.namespace) || a.appName.localeCompare(b.appName)
   );
 
+  const syncOffGroups: SyncOffNamespaceGroup[] = rows
+    .filter((row) => row.syncOff.resolved || row.syncOff.total > 0)
+    .map((row) => ({
+      cluster: row.cluster,
+      namespace: row.namespace,
+      scheduleId: row.id,
+      scheduleName: row.name,
+      completed: row.syncOff.applied,
+      pending: row.syncOff.pending,
+      completedCount: row.syncOff.done,
+      pendingCount: row.syncOff.pending.length,
+      total: row.syncOff.total,
+      percent:
+        row.syncOff.total === 0
+          ? 100
+          : Math.round((row.syncOff.done / row.syncOff.total) * 100),
+    }))
+    .sort(
+      (a, b) =>
+        a.cluster.localeCompare(b.cluster) ||
+        a.namespace.localeCompare(b.namespace) ||
+        a.scheduleName.localeCompare(b.scheduleName)
+    );
+
   const totals = rows.reduce(
     (acc, row) => {
       acc.schedules += 1;
@@ -283,10 +319,13 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
       stopTotal: 0,
       syncDone: 0,
       syncTotal: 0,
+      syncPercent: 0,
       percent: 0,
     }
   );
 
+  totals.syncPercent =
+    totals.syncTotal === 0 ? 100 : Math.round((totals.syncDone / totals.syncTotal) * 100);
   const totalUnits = totals.stopTotal + totals.syncTotal;
   const doneUnits = totals.stopDone + totals.syncDone;
   totals.percent = totalUnits === 0 ? 100 : Math.round((doneUnits / totalUnits) * 100);
@@ -297,6 +336,7 @@ async function computeTracker(now = new Date()): Promise<ScheduleActivityTracker
     rows,
     syncOffServices,
     syncOffPendingServices,
+    syncOffGroups,
     totals,
   };
 }

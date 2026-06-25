@@ -3,10 +3,8 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  Activity,
   BadgeCheck,
   CircleAlert,
-  CircleStop,
   Loader2,
   RefreshCcw,
   Workflow,
@@ -14,7 +12,7 @@ import {
 import {
   apiFetch,
   type ScheduleActivityTracker,
-  type ScheduleActivityRow,
+  type SyncOffNamespaceGroup,
 } from '@/lib/api-client';
 import { GlassPanel, PageHeader, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { formatRelativeTime, parseClusterDisplay, cn } from '@/lib/utils';
@@ -29,19 +27,22 @@ function pct(done: number, total: number): number {
 function ProgressBar({
   done,
   total,
-  accent,
+  variant,
 }: {
   done: number;
   total: number;
-  accent: 'emerald' | 'sky';
+  variant: 'completed' | 'pending';
 }) {
   const value = pct(done, total);
   const complete = total === 0 || done >= total;
-  const barColor = complete
-    ? 'bg-emerald-500'
-    : accent === 'emerald'
-      ? 'bg-emerald-500/70'
-      : 'bg-sky-500/70';
+  const barColor =
+    variant === 'completed'
+      ? complete
+        ? 'bg-emerald-500'
+        : 'bg-emerald-500/70'
+      : complete
+        ? 'bg-emerald-500'
+        : 'bg-amber-500/80';
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
       <div
@@ -52,246 +53,194 @@ function ProgressBar({
   );
 }
 
-function ServiceBadges({
-  items,
+type ClusterGroups = Map<string, SyncOffNamespaceGroup[]>;
+
+function groupByCluster(groups: SyncOffNamespaceGroup[]): ClusterGroups {
+  const map: ClusterGroups = new Map();
+  for (const group of groups) {
+    const list = map.get(group.cluster) ?? [];
+    list.push(group);
+    map.set(group.cluster, list);
+  }
+  return map;
+}
+
+function ServiceList({
+  services,
   variant,
-  limit = 8,
 }: {
-  items: string[];
-  variant: 'applied' | 'pending';
-  limit?: number;
+  services: string[];
+  variant: 'completed' | 'pending';
 }) {
-  if (!items.length) return null;
-  const shown = items.slice(0, limit);
+  if (!services.length) {
+    return <p className="text-xs text-muted-foreground">None</p>;
+  }
   const tone =
-    variant === 'applied'
+    variant === 'completed'
       ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
       : 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
   return (
-    <div className="flex flex-wrap gap-1 pt-0.5">
-      {shown.map((item) => (
-        <span
-          key={item}
-          className={cn('rounded-md px-1.5 py-0.5 font-mono text-[10px]', tone)}
-        >
-          {item}
+    <div className="flex flex-wrap gap-1.5">
+      {services.map((name) => (
+        <span key={name} className={cn('rounded-md px-2 py-0.5 font-mono text-[10px]', tone)}>
+          {name}
         </span>
       ))}
-      {items.length > limit ? (
-        <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
-          +{items.length - limit} more
-        </span>
-      ) : null}
     </div>
   );
 }
 
-function MetricRow({
-  label,
-  done,
-  total,
-  pending,
-  applied,
-  accent,
-  notResolved,
+function NamespaceGroupCard({
+  group,
+  mode,
 }: {
-  label: string;
-  done: number;
-  total: number;
-  pending: string[];
-  applied?: string[];
-  accent: 'emerald' | 'sky';
-  notResolved?: boolean;
+  group: SyncOffNamespaceGroup;
+  mode: 'completed' | 'pending';
 }) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs">
-        <span className="font-medium text-foreground">{label}</span>
-        <span className="tabular-nums text-muted-foreground">
-          {notResolved ? 'no linked Argo app' : `${done}/${total} · ${pct(done, total)}%`}
-        </span>
-      </div>
-      <ProgressBar done={done} total={total} accent={accent} />
-      {applied && applied.length > 0 ? (
-        <div className="space-y-1">
-          <p className="text-[10px] font-medium text-muted-foreground">
-            Sync off ({applied.length})
-          </p>
-          <ServiceBadges items={applied} variant="applied" />
-        </div>
-      ) : null}
-      {pending.length > 0 ? (
-        <div className="space-y-1">
-          <p className="text-[10px] font-medium text-muted-foreground">
-            Pending ({pending.length})
-          </p>
-          <ServiceBadges items={pending} variant="pending" />
-        </div>
-      ) : null}
-    </div>
-  );
-}
+  const { clusterName } = parseClusterDisplay(group.cluster);
+  const services = mode === 'completed' ? group.completed : group.pending;
 
-function StatusChip({ row }: { row: ScheduleActivityRow }) {
-  if (row.error) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400">
-        <CircleAlert className="h-3 w-3" strokeWidth={1.75} />
-        Error
-      </span>
-    );
-  }
-  if (row.status === 'completed') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-        <BadgeCheck className="h-3 w-3" strokeWidth={1.75} />
-        Completed
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400">
-      <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.75} />
-      In progress
-    </span>
-  );
-}
+  if (mode === 'pending' && group.pendingCount === 0) return null;
+  if (mode === 'completed' && group.completedCount === 0) return null;
 
-function ScheduleCard({ row }: { row: ScheduleActivityRow }) {
-  const { clusterName } = parseClusterDisplay(row.cluster);
   return (
-    <div className="rounded-xl border border-border bg-card/40 p-4">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div className="rounded-lg border border-border bg-card/30 p-3">
+      <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-foreground">{row.name}</span>
-            <StatusChip row={row} />
-          </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-            <span className="font-mono">{clusterName}</span>
-            <span aria-hidden>·</span>
-            <span className="font-mono">{row.namespace}</span>
-            <span aria-hidden>·</span>
-            <span className="capitalize">{row.scope}</span>
-            {row.stoppedSince ? (
-              <>
-                <span aria-hidden>·</span>
-                <span>stopped {formatRelativeTime(new Date(row.stoppedSince))}</span>
-              </>
-            ) : null}
-          </div>
+          <p className="text-xs font-semibold text-foreground">{group.scheduleName}</p>
+          <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+            {clusterName} · {group.namespace}
+          </p>
         </div>
+        <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
+          {mode === 'completed'
+            ? `${group.completedCount}/${group.total} · ${group.percent}%`
+            : `${group.pendingCount} pending`}
+        </span>
       </div>
-
-      {row.error ? (
-        <p className="text-xs text-red-600 dark:text-red-400">{row.error}</p>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <MetricRow
-            label="Workloads stopped"
-            done={row.stop.done}
-            total={row.stop.total}
-            pending={row.stop.pending}
-            accent="emerald"
-          />
-          <MetricRow
-            label="Manual sync off"
-            done={row.syncOff.done}
-            total={row.syncOff.total}
-            pending={row.syncOff.pending}
-            applied={row.syncOff.applied}
-            accent="sky"
-            notResolved={!row.syncOff.resolved}
-          />
-        </div>
-      )}
+      <ProgressBar
+        done={mode === 'completed' ? group.completedCount : group.completedCount}
+        total={group.total}
+        variant={mode}
+      />
+      <div className="mt-2.5 max-h-40 overflow-y-auto">
+        <ServiceList services={services} variant={mode} />
+      </div>
     </div>
   );
 }
 
-function SyncOffServicesPanel({
-  applied,
-  pending,
+function SyncOffListPanel({
+  title,
+  mode,
+  groups,
+  overallDone,
+  overallTotal,
 }: {
-  applied: ScheduleActivityTracker['syncOffServices'];
-  pending: ScheduleActivityTracker['syncOffPendingServices'];
+  title: string;
+  mode: 'completed' | 'pending';
+  groups: SyncOffNamespaceGroup[];
+  overallDone: number;
+  overallTotal: number;
 }) {
-  if (!applied.length && !pending.length) return null;
+  const byCluster = useMemo(() => groupByCluster(groups), [groups]);
+
+  const filteredGroups =
+    mode === 'completed'
+      ? groups.filter((g) => g.completedCount > 0)
+      : groups.filter((g) => g.pendingCount > 0);
+
+  const serviceCount =
+    mode === 'completed'
+      ? filteredGroups.reduce((n, g) => n + g.completedCount, 0)
+      : filteredGroups.reduce((n, g) => n + g.pendingCount, 0);
+
+  if (!filteredGroups.length) {
+    return (
+      <GlassPanel>
+        <PanelHeader title={title} icon={Workflow} accent={mode === 'completed' ? 'emerald' : 'amber'} />
+        <div className="p-5">
+          <p className="text-sm text-muted-foreground">
+            {mode === 'completed'
+              ? 'No services have manual sync off applied yet.'
+              : 'All scheduled services have manual sync off applied.'}
+          </p>
+        </div>
+      </GlassPanel>
+    );
+  }
 
   return (
     <GlassPanel>
-      <PanelHeader title="Manual sync off — services" icon={Workflow} accent="blue" />
-      <div className="grid gap-5 p-5 lg:grid-cols-2">
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-foreground">Sync off applied</p>
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              {applied.length} service{applied.length === 1 ? '' : 's'}
+      <PanelHeader title={title} icon={Workflow} accent={mode === 'completed' ? 'emerald' : 'amber'} />
+      <div className="space-y-4 p-5">
+        <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium text-foreground">
+              {mode === 'completed' ? 'Overall completed' : 'Overall pending'}
+            </span>
+            <span className="tabular-nums text-muted-foreground">
+              {mode === 'completed'
+                ? `${overallDone}/${overallTotal} · ${pct(overallDone, overallTotal)}%`
+                : `${serviceCount} service${serviceCount === 1 ? '' : 's'}`}
             </span>
           </div>
-          {applied.length === 0 ? (
-            <p className="text-xs text-muted-foreground">None yet</p>
+          {mode === 'completed' ? (
+            <ProgressBar done={overallDone} total={overallTotal} variant="completed" />
           ) : (
-            <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
-              {applied.map((entry) => (
-                <div
-                  key={`${entry.scheduleId}:${entry.appName}`}
-                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]"
-                >
-                  <span className="font-mono font-medium text-emerald-700 dark:text-emerald-300">
-                    {entry.appName}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {entry.scheduleName} · {entry.namespace}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <ProgressBar
+              done={overallTotal - serviceCount}
+              total={overallTotal}
+              variant="pending"
+            />
           )}
         </div>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-foreground">Still pending sync off</p>
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              {pending.length} service{pending.length === 1 ? '' : 's'}
-            </span>
-          </div>
-          {pending.length === 0 ? (
-            <p className="text-xs text-muted-foreground">All linked services blocked</p>
-          ) : (
-            <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-muted/20 p-2">
-              {pending.map((entry) => (
-                <div
-                  key={`${entry.scheduleId}:${entry.appName}`}
-                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]"
-                >
-                  <span className="font-mono font-medium text-amber-700 dark:text-amber-300">
-                    {entry.appName}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {entry.scheduleName} · {entry.namespace}
-                  </span>
+
+        {Array.from(byCluster.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([cluster, clusterGroups]) => {
+            const { clusterName } = parseClusterDisplay(cluster);
+            const visible = clusterGroups.filter((g) =>
+              mode === 'completed' ? g.completedCount > 0 : g.pendingCount > 0
+            );
+            if (!visible.length) return null;
+
+            const clusterDone =
+              mode === 'completed'
+                ? visible.reduce((n, g) => n + g.completedCount, 0)
+                : visible.reduce((n, g) => n + g.pendingCount, 0);
+            const clusterTotal =
+              mode === 'completed'
+                ? visible.reduce((n, g) => n + g.total, 0)
+                : visible.reduce((n, g) => n + g.pendingCount, 0);
+
+            return (
+              <div key={cluster} className="space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {clusterName}
+                    </h3>
+                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                      {mode === 'completed'
+                        ? `${clusterDone}/${clusterTotal}`
+                        : `${clusterDone} pending`}
+                    </span>
+                  </div>
+                  {mode === 'completed' ? (
+                    <ProgressBar done={clusterDone} total={clusterTotal} variant="completed" />
+                  ) : null}
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {visible.map((group) => (
+                    <NamespaceGroupCard key={group.scheduleId} group={group} mode={mode} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
       </div>
     </GlassPanel>
-  );
-}
-
-function OverallBar({ percent }: { percent: number }) {
-  return (
-    <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
-      <div
-        className={cn(
-          'h-full rounded-full transition-all duration-500',
-          percent >= 100 ? 'bg-emerald-500' : 'bg-sky-500'
-        )}
-        style={{ width: `${percent}%` }}
-      />
-    </div>
   );
 }
 
@@ -303,103 +252,68 @@ export function DashboardActivityTracker() {
     refetchOnWindowFocus: true,
   });
 
-  const rows = data?.rows ?? [];
+  const groups = data?.syncOffGroups ?? [];
   const totals = data?.totals;
-
-  const sortedRows = useMemo(
-    () =>
-      [...rows].sort((a, b) => {
-        if (a.status !== b.status) return a.status === 'in-progress' ? -1 : 1;
-        return b.ageMs - a.ageMs;
-      }),
-    [rows]
-  );
+  const hasActivity = groups.length > 0;
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Activity tracker"
-        description="Live stop & manual-sync-off progress for all currently stopped schedules — refreshed every 15s."
+        description="Manual sync off status for stopped schedules — grouped by cluster and namespace. Only scheduled workload services are listed."
         action={
           <button
             type="button"
             onClick={() => refetch()}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card/60 px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
-            <RefreshCcw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} strokeWidth={1.75} />
+            <RefreshCcw
+              className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')}
+              strokeWidth={1.75}
+            />
             {isFetching ? 'Refreshing…' : 'Refresh'}
           </button>
         }
-      />
-
-      <GlassPanel>
-        <PanelHeader title="Overall progress" icon={Activity} accent="blue" />
-        <div className="space-y-3 p-5">
-          {totals ? (
-            <>
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl font-semibold tabular-nums text-foreground">
-                    {totals.percent}%
-                  </span>
-                  <span className="text-xs text-muted-foreground">complete</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <BadgeCheck className="h-3.5 w-3.5 text-emerald-500" strokeWidth={1.75} />
-                  {totals.completed} completed
-                </div>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 text-sky-500" strokeWidth={1.75} />
-                  {totals.inProgress} in progress
-                </div>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <CircleStop className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  {totals.stopDone}/{totals.stopTotal} workloads stopped
-                </div>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Workflow className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  {totals.syncDone}/{totals.syncTotal} sync-off applied
-                </div>
-              </div>
-              <OverallBar percent={totals.percent} />
-              {dataUpdatedAt > 0 ? (
-                <p className="text-[11px] text-muted-foreground">
-                  Updated {formatRelativeTime(new Date(dataUpdatedAt))}
-                </p>
-              ) : null}
-            </>
-          ) : (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-            </div>
-          )}
-        </div>
-      </GlassPanel>
-
-      <SyncOffServicesPanel
-        applied={data?.syncOffServices ?? []}
-        pending={data?.syncOffPendingServices ?? []}
       />
 
       {isLoading ? (
         <div className="flex items-center justify-center rounded-xl border border-border bg-card/40 p-12">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
         </div>
-      ) : sortedRows.length === 0 ? (
+      ) : !hasActivity ? (
         <div className="rounded-xl border border-border bg-card/40 p-10 text-center">
           <BadgeCheck className="mx-auto mb-3 h-8 w-8 text-emerald-500" strokeWidth={1.5} />
           <p className="text-sm font-medium text-foreground">No stopped schedules</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            No enabled schedules are currently in their stop window. When schedules stop, their
-            workloads and manual sync-off status appear here.
+            No schedules are currently in their stop window. Manual sync off lists appear here
+            during downtime.
           </p>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {sortedRows.map((row) => (
-            <ScheduleCard key={row.id} row={row} />
-          ))}
-        </div>
+        <>
+          {dataUpdatedAt > 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              Updated {formatRelativeTime(new Date(dataUpdatedAt))} ·{' '}
+              {totals?.schedules ?? 0} schedule{(totals?.schedules ?? 0) === 1 ? '' : 's'} tracked
+            </p>
+          ) : null}
+
+          <SyncOffListPanel
+            title="Manual sync off services — completed"
+            mode="completed"
+            groups={groups}
+            overallDone={totals?.syncDone ?? 0}
+            overallTotal={totals?.syncTotal ?? 0}
+          />
+
+          <SyncOffListPanel
+            title="Manual sync off services — pending"
+            mode="pending"
+            groups={groups}
+            overallDone={totals?.syncDone ?? 0}
+            overallTotal={totals?.syncTotal ?? 0}
+          />
+        </>
       )}
     </div>
   );
