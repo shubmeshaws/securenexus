@@ -26,6 +26,7 @@ import { buildShutdownActivityDetails } from './shutdown-node-count';
 import prisma from './prisma';
 import {
   computeCurrentLiveStartupAt,
+  resolveLiveStartupAt,
   computeNextRun,
   computeNextStartupAt,
   formatScheduleStartupLabel,
@@ -813,7 +814,7 @@ function resolveManualSyncBlockUntilForShutdown(schedule: Schedule, now: Date): 
 }
 
 function resolveManualSyncBlockUntilForReconcile(schedule: Schedule, now: Date): Date {
-  return schedule.liveStartupAt ?? resolveManualSyncBlockUntilForShutdown(schedule, now);
+  return resolveLiveStartupAt(schedule, now) ?? resolveManualSyncBlockUntilForShutdown(schedule, now);
 }
 
 async function resolveScheduleArgoAppsForSyncDeny(schedule: Schedule): Promise<ScheduleArgoApp[]> {
@@ -1664,7 +1665,7 @@ function buildLiveScheduleUpdate(
     const scheduled = isAutomaticScheduleTrigger(triggeredBy);
     return {
       liveActive: true,
-      liveStartupAt: computeCurrentLiveStartupAt(schedule, new Date()),
+      liveStartupAt: resolveLiveStartupAt(schedule, new Date()),
       liveStopSource: scheduled ? 'scheduled' : 'manual',
       liveStoppedBy: scheduled ? null : triggeredBy,
     };

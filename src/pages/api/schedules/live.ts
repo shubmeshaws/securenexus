@@ -1,7 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import { computeCurrentLiveStartupAt, isLiveScheduleVisible } from '@/lib/scheduler-utils';
+import { isLiveScheduleVisible, resolveLiveStartupAt } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
 import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
@@ -28,9 +28,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   const live = visibleSchedules
     .filter((schedule) => isLiveScheduleVisible(schedule, now))
     .map((schedule) => {
-      const startupAt =
-        schedule.liveStartupAt ??
-        computeCurrentLiveStartupAt(schedule, now);
+      const startupAt = resolveLiveStartupAt(schedule, now);
       return {
         id: schedule.id,
         name: schedule.name,

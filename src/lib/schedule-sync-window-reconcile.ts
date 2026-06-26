@@ -8,6 +8,10 @@ import {
   scheduleShouldBeSyncBlockedNow,
 } from './scheduler-actions';
 import { isNonEksSchedule } from './workload-utils';
+import {
+  isScheduleInStoppedWindow,
+  resolveLiveStartupAt,
+} from './scheduler-utils';
 import argocdClient, {
   appMatchesK8sCluster,
   getArgoListErrors,
@@ -146,6 +150,23 @@ export async function reconcileStoppedScheduleSyncWindows(
 
   await runWithConcurrency(candidates, 4, async (schedule) => {
     const shouldBeStopped = scheduleShouldBeSyncBlockedNow(schedule, now);
+
+    if (schedule.liveActive && isScheduleInStoppedWindow(schedule, now)) {
+      const startupAt = resolveLiveStartupAt(schedule, now);
+      if (
+        startupAt &&
+        (!schedule.liveStartupAt || schedule.liveStartupAt.getTime() !== startupAt.getTime())
+      ) {
+        await prisma.schedule
+          .update({ where: { id: schedule.id }, data: { liveStartupAt: startupAt } })
+          .catch((err) =>
+            console.warn(
+              `[Argo reconcile] failed to refresh liveStartupAt for "${schedule.name}":`,
+              err instanceof Error ? err.message : err
+            )
+          );
+      }
+    }
 
     // BIDIRECTIONAL reconcile:
     //  - in stop window (or manual stop)  → ensure deny window present + sync paused.

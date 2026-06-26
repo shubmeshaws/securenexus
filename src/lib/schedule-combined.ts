@@ -144,11 +144,13 @@ function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizon
 }
 
 export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date): Date | null {
+  // While inside a stop window, always return that window's exit startup — not the next
+  // cycle from enumeration (e.g. long stop Fri→Mon must show Mon 7:30, not Tue nightly).
   if (isInWindowStoppedPeriod(asWindowSchedule(schedule), from)) {
     const lastShutdown = shutdownInstantAtOrBefore(asWindowSchedule(schedule), from);
     if (lastShutdown) {
       const startup = startupAfterShutdown(asWindowSchedule(schedule), lastShutdown);
-      if (startup && startup > from) return startup;
+      if (startup) return startup;
     }
   }
 
@@ -156,7 +158,7 @@ export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date)
     const tz = schedule.timezone || 'UTC';
     const zoned = toZonedTime(from, tz);
     const startup = overnightStartupOnDay(schedule, zoned);
-    if (startup && startup > from) return startup;
+    if (startup) return startup;
   }
 
   const events = enumerateCombinedEvents(schedule, from).filter((d) => d > from);

@@ -13,13 +13,16 @@ import {
   computeCurrentLiveStartupAtWindow,
   computeNextRunWindow,
   isInWindowStoppedPeriod,
+  nextShutdownAfter,
   shouldRunWindowShutdown,
   shouldRunWindowStartup,
+  type WindowSchedule,
 } from './schedule-window';
 import {
   computeCurrentLiveStartupAtCombined,
   computeNextRunCombined,
   isInCombinedStoppedPeriod,
+  nextCombinedShutdownAfter,
   shouldRunCombinedShutdown,
   shouldRunCombinedStartup,
   shouldRunMissedCombinedOvernightStartup,
@@ -354,6 +357,18 @@ export function isScheduleInStoppedWindow(schedule: Schedule, now = new Date()):
   return !isScheduleActiveNow(schedule, now);
 }
 
+/**
+ * Startup instant shown for a live (stopped) schedule. Recomputes from the schedule
+ * definition while inside a stop window so stale `liveStartupAt` rows (e.g. Tue nightly
+ * after a Fri→Mon long stop) do not distort the countdown.
+ */
+export function resolveLiveStartupAt(schedule: Schedule, now = new Date()): Date | null {
+  if (isScheduleInStoppedWindow(schedule, now)) {
+    return computeCurrentLiveStartupAt(schedule, now);
+  }
+  return schedule.liveStartupAt ?? computeCurrentLiveStartupAt(schedule, now);
+}
+
 export function isLiveScheduleVisible(schedule: Schedule, now = new Date()): boolean {
   return schedule.liveActive && isScheduleInStoppedWindow(schedule, now);
 }
@@ -442,6 +457,69 @@ export function shouldRunStartup(schedule: Schedule, now = new Date()): boolean 
 const STARTUP_CATCHUP_WINDOW_MS = 2 * 60 * 60 * 1000;
 /** Short same-day retry after combined overnight micro-windows (e.g. 13:05→13:07). */
 const OVERNIGHT_STARTUP_CATCHUP_MS = 30 * 60 * 1000;
+/**
+ * Do not self-heal startup when a scheduled shutdown is this soon — prevents a
+ * reconcile startup (stale liveActive) from racing a long-stop shutdown (e.g. Fri 23:29
+ * startup vs Fri 23:30 shutdown on combined schedules).
+ */
+const RECONCILE_STARTUP_BEFORE_SHUTDOWN_MS = 15 * 60 * 1000;
+
+/** Next scheduled shutdown instant strictly after `from`. */
+export function nextScheduledShutdownAfter(schedule: Schedule, from: Date): Date | null {
+  if (isCombinedSchedule(schedule)) {
+    return nextCombinedShutdownAfter(schedule, from);
+  }
+  if (isWindowSchedule(schedule)) {
+    return nextShutdownAfter(schedule as WindowSchedule, from);
+  }
+  if (isOnetimeSchedule(schedule)) {
+    const at = schedule.oneTimeShutdownAt;
+    return at && at > from ? at : null;
+  }
+  if (schedule.daysOfWeek.length === 0) return null;
+
+  const tz = schedule.timezone || 'UTC';
+  const zonedNow = toZonedTime(from, tz);
+  for (let offset = 0; offset < 8; offset++) {
+    const candidate = addDays(zonedNow, offset);
+    const dayOfWeek = isoDayOfWeek(candidate);
+    if (!schedule.daysOfWeek.includes(dayOfWeek)) continue;
+
+    const { shutdownTime } = effectiveTimesForDay(schedule, dayOfWeek);
+    const [shH, shM] = shutdownTime.split(':').map(Number);
+    const shutdownLocal = setMinutes(setHours(candidate, shH), shM);
+    const shutdownUtc = fromZonedTime(shutdownLocal, tz);
+    if (shutdownUtc > from) return shutdownUtc;
+  }
+  return null;
+}
+
+/**
+ * Self-heal: schedule still flagged stopped (liveActive) but currently outside its stop
+ * window — should be running. Skips when a scheduled shutdown is imminent so reconcile
+ * does not race the long-stop cron (e.g. combined Fri 23:30 stop after overnight flag).
+ */
+export function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean {
+  if (!schedule.enabled || !schedule.liveActive) return false;
+  if (schedule.liveStopSource === 'manual' || schedule.liveStopSource === 'manual-start') {
+    return false;
+  }
+  if (shouldRunShutdown(schedule, now)) return false;
+  if (isScheduleInStoppedWindow(schedule, now)) return false;
+
+  const startupAt = resolveLiveStartupAt(schedule, now);
+  if (!startupAt || now < startupAt) return false;
+
+  const nextShutdown = nextScheduledShutdownAfter(schedule, now);
+  if (
+    nextShutdown &&
+    nextShutdown.getTime() - now.getTime() <= RECONCILE_STARTUP_BEFORE_SHUTDOWN_MS
+  ) {
+    return false;
+  }
+
+  return true;
+}
 
 /** Retry startup if the exact minute was missed or failed while still in a stopped window. */
 export function shouldRunStartupCatchup(schedule: Schedule, now = new Date()): boolean {
@@ -515,7 +593,7 @@ export function isOvernightSchedule(schedule: Schedule): boolean {
 }
 
 export function formatScheduleStartupLabel(schedule: Schedule, now = new Date()): string | undefined {
-  const startupAt = computeCurrentLiveStartupAt(schedule, now);
+  const startupAt = resolveLiveStartupAt(schedule, now);
   if (!startupAt) return undefined;
   return formatNextRunAt(startupAt, schedule.timezone);
 }

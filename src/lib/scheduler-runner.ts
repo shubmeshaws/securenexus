@@ -4,10 +4,12 @@ import { executeShutdown, executeStartup } from './scheduler-actions';
 import { AUTOMATIC_CRON_TRIGGER } from './alert-display';
 import {
   computeCurrentLiveStartupAt,
+  resolveLiveStartupAt,
   computeNextRun,
   shouldRunShutdown,
   shouldRunStartup,
   shouldRunStartupCatchup,
+  shouldReconcileToStarted,
   isScheduleInStoppedWindow,
   reloadAllSchedules,
 } from './scheduler-utils';
@@ -45,6 +47,8 @@ let tickJob: ReturnType<typeof cron.schedule> | null = null;
 let lastRetentionPruneAt = 0;
 let lastSyncWindowReconcileAt = 0;
 let syncWindowReconcileInFlight = false;
+/** One in-flight shutdown/startup per schedule — avoids parallel stop+start races. */
+const scheduleExecutionInFlight = new Set<string>();
 
 export interface SchedulerTickResult {
   scheduleId: string;
@@ -61,20 +65,6 @@ function startOfScheduleMinute(now: Date, tz: string): Date {
     0
   );
   return fromZonedTime(floored, tz);
-}
-
-/**
- * Self-heal: a schedule still flagged stopped (liveActive) by the SCHEDULER, but currently
- * outside its stopped window, should be running. shouldRunStartupCatchup only retries within
- * a 2h window after the startup time, so a startup that failed/was missed beyond that window
- * leaves the schedule stranded as "Scheduled stop" until the next day. This has no time cap
- * and respects manual stops (which must persist until a manual start).
- */
-function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean {
-  if (!schedule.enabled || !schedule.liveActive) return false;
-  if (schedule.liveStopSource === 'manual') return false;
-  if (shouldRunShutdown(schedule, now)) return false;
-  return !isScheduleInStoppedWindow(schedule, now);
 }
 
 /**
@@ -119,6 +109,20 @@ async function executeClaimedSchedule(
   runStartup: boolean,
   previousLastRun: Date | null
 ): Promise<SchedulerTickResult> {
+  if (scheduleExecutionInFlight.has(schedule.id)) {
+    await prisma.schedule
+      .update({ where: { id: schedule.id }, data: { lastRun: previousLastRun } })
+      .catch(() => undefined);
+    return {
+      scheduleId: schedule.id,
+      name: schedule.name,
+      mode,
+      status: 'skipped',
+      message: 'Schedule execution already in progress',
+    };
+  }
+
+  scheduleExecutionInFlight.add(schedule.id);
   try {
     if (runShutdown) {
       await executeShutdown(schedule, AUTOMATIC_CRON_TRIGGER, { markLive: true });
@@ -131,7 +135,7 @@ async function executeClaimedSchedule(
       data: {
         nextRun: computeNextRun(schedule, now),
         liveActive: runShutdown,
-        liveStartupAt: runShutdown ? computeCurrentLiveStartupAt(schedule, now) : null,
+        liveStartupAt: runShutdown ? resolveLiveStartupAt(schedule, now) : null,
         ...(runShutdown
           ? { liveStopSource: 'scheduled', liveStoppedBy: null }
           : { liveStopSource: null, liveStoppedBy: null }),
@@ -151,6 +155,8 @@ async function executeClaimedSchedule(
       data: { lastRun: previousLastRun },
     });
     return { scheduleId: schedule.id, name: schedule.name, mode, status: 'failed', message };
+  } finally {
+    scheduleExecutionInFlight.delete(schedule.id);
   }
 }
 
