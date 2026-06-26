@@ -45,6 +45,12 @@ import { startEc2Instance, stopEc2Instance } from './aws-credential-store';
 import { runWithConcurrency, withRetry } from './concurrency';
 import { resolveArgoOpConcurrency, resolveWorkloadOpConcurrency } from './schedule-execution-pool';
 import { createScheduleRunLogger } from './schedule-run-logger';
+import {
+  getCatalogAppsForClusterNamespace,
+  getSnapshotAppsForNamespace,
+} from './resource-app-catalog';
+import { clusterNameVariants } from './cluster-name-utils';
+import { HELM_VALUES_ENV_NAMES, listHelmEnvsForCluster } from './helm-env-cluster';
 
 /** Delay after pausing Argo before deleting a StatefulSet (ms). Override: STS_SHUTDOWN_SETTLE_MS */
 const STS_SHUTDOWN_SETTLE_MS = (() => {
@@ -156,6 +162,102 @@ function argoAppMatchesWorkloadName(appName: string, workloadName: string): bool
   return appName.includes(workloadName) || workloadName.includes(appName);
 }
 
+/** Helm env prefix for Argo app names (e.g. namespace pftech → pftech-mongodb). */
+function envPrefixForSchedule(schedule: Schedule): string {
+  const ns = schedule.namespace.trim().toLowerCase();
+  if ((HELM_VALUES_ENV_NAMES as readonly string[]).includes(ns)) return ns;
+  for (const env of listHelmEnvsForCluster(schedule.cluster)) {
+    if (ns === env || ns.startsWith(`${env}-`) || ns.endsWith(`-${env}`) || ns.includes(`-${env}-`)) {
+      return env;
+    }
+  }
+  return ns;
+}
+
+const DATA_TOOL_APP_SUFFIXES = [
+  'mongodb',
+  'mongo',
+  'data',
+  'redis',
+  'postgres',
+  'mysql',
+  'elastic',
+  'kafka',
+  'rabbitmq',
+  'minio',
+  'cassandra',
+  'neo4j',
+] as const;
+
+function isDataToolsArgoAppName(appName: string, envPrefix: string): boolean {
+  const lower = appName.toLowerCase();
+  if (!lower.startsWith(`${envPrefix}-`)) return false;
+  const suffix = lower.slice(envPrefix.length + 1);
+  return DATA_TOOL_APP_SUFFIXES.some(
+    (token) => suffix === token || suffix.startsWith(`${token}-`) || suffix.includes(token)
+  );
+}
+
+function scheduleNameImpliesDataTools(schedule: Schedule): boolean {
+  return /\bdata\b/i.test(schedule.name);
+}
+
+/**
+ * Last-resort Argo resolution when a namespace schedule has no live K8s workloads and no
+ * apps with destinationNamespace matching the schedule namespace (common for DATA schedules
+ * where tools like pftech-mongodb deploy via a named Argo app, not a namespace-wide catalog).
+ */
+async function resolveFallbackAppsForEmptyNamespace(
+  schedule: Schedule,
+  catalog: ArgoCatalog
+): Promise<ScheduleArgoApp[]> {
+  const merged = new Map<string, ScheduleArgoApp>();
+  const add = (app: ScheduleArgoApp | null | undefined) => {
+    if (app) merged.set(app.name, app);
+  };
+
+  const catalogNames = new Set<string>();
+  for (const cluster of clusterNameVariants(schedule.cluster)) {
+    for (const name of await getCatalogAppsForClusterNamespace(cluster, schedule.namespace)) {
+      catalogNames.add(name);
+    }
+  }
+  for (const name of await getSnapshotAppsForNamespace(schedule.namespace)) {
+    catalogNames.add(name);
+  }
+  for (const name of Array.from(catalogNames)) {
+    add(findArgoAppInCatalog(catalog, schedule, name));
+  }
+
+  if (merged.size) {
+    console.log(
+      `[Argo resolve] namespace=${schedule.namespace} using ${merged.size} app(s) from resource/snapshot catalog`
+    );
+    return Array.from(merged.values());
+  }
+
+  if (!scheduleNameImpliesDataTools(schedule)) return [];
+
+  const [allApps, instances] = await Promise.all([
+    argocdClient.listApplications(),
+    listEnabledArgoCDInstances(),
+  ]);
+  const instanceMap = new Map(instances.map((i) => [i.id, i]));
+  let pool = filterAppsForSchedule(schedule, allApps, instanceMap);
+  if (!pool.length) {
+    pool = allApps.filter((app) => appMatchesK8sCluster(app, schedule.cluster));
+  }
+
+  const envPrefix = envPrefixForSchedule(schedule);
+  const dataApps = pool.filter((app) => isDataToolsArgoAppName(app.name, envPrefix));
+  if (!dataApps.length) return [];
+
+  console.log(
+    `[Argo resolve] namespace=${schedule.namespace} schedule="${schedule.name}" matched ${dataApps.length} data/tools app(s) by name: ${dataApps.map((a) => a.name).join(', ')}`
+  );
+  return dataApps.map((app) => ({ name: app.name, instanceId: app.instanceId }));
+}
+
 /** Resolve Argo apps for a namespace schedule's workload targets (with fallbacks). */
 async function resolveNamespaceScheduleArgoApps(
   schedule: Schedule,
@@ -225,6 +327,10 @@ async function resolveNamespaceScheduleArgoApps(
         `[Argo resolve] namespace=${schedule.namespace} using all ${relaxed.length} catalog apps`
       );
     }
+  }
+
+  if (!merged.size) {
+    for (const app of await resolveFallbackAppsForEmptyNamespace(schedule, catalog)) add(app);
   }
 
   return Array.from(merged.values());
@@ -2025,11 +2131,11 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       }
 
       if (!storedNames.length && isNamespace) {
-        const fallbackApps = relaxedCatalogAppsForSchedule(catalog, schedule);
+        const fallbackApps = await resolveScheduleArgoAppsForOperations(schedule, catalog, targets);
         if (fallbackApps.length) {
           storedNames = fallbackApps.map((a) => a.name);
           console.log(
-            `[Argo resume] namespace=${schedule.namespace} using ${storedNames.length} catalog app(s) for unblock (no stored/scoped apps)`
+            `[Argo resume] namespace=${schedule.namespace} using ${storedNames.length} fallback app(s) for unblock (no stored/scoped apps)`
           );
         }
       }
