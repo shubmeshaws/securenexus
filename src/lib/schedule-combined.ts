@@ -4,6 +4,7 @@ import type { Schedule } from '@prisma/client';
 import {
   dayLabel,
   isoDayOfWeek,
+  coerceIsoDay,
   isInWindowStoppedPeriod,
   nextShutdownAfter,
   shutdownInstantAtOrBefore,
@@ -42,8 +43,8 @@ function asWindowSchedule(schedule: CombinedSchedule): WindowSchedule {
     timezone: schedule.timezone,
     shutdownTime: schedule.shutdownTime,
     startupTime: schedule.startupTime,
-    shutdownDayOfWeek: schedule.shutdownDayOfWeek,
-    startupDayOfWeek: schedule.startupDayOfWeek,
+    shutdownDayOfWeek: coerceIsoDay(schedule.shutdownDayOfWeek),
+    startupDayOfWeek: coerceIsoDay(schedule.startupDayOfWeek),
     windowRepeatWeekly: true,
     oneTimeShutdownAt: null,
     oneTimeStartupAt: null,
@@ -54,7 +55,9 @@ function asWindowSchedule(schedule: CombinedSchedule): WindowSchedule {
 
 /** Same-calendar-day overnight stop (e.g. Tue 00:00 → Tue 07:00). */
 export function isInOvernightStoppedPeriod(schedule: CombinedSchedule, now: Date): boolean {
-  const days = schedule.overnightDays ?? [];
+  const days = (schedule.overnightDays ?? [])
+    .map((d) => coerceIsoDay(d))
+    .filter((d): d is number => d != null);
   const shutdownTime = schedule.overnightShutdownTime;
   const startupTime = schedule.overnightStartupTime;
   if (!days.length || !shutdownTime || !startupTime) return false;
@@ -144,12 +147,20 @@ function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizon
 }
 
 export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date): Date | null {
+  const window = asWindowSchedule(schedule);
+  const lastShutdown = shutdownInstantAtOrBefore(window, from);
+  if (lastShutdown) {
+    const exitStartup = startupAfterShutdown(window, lastShutdown);
+    if (exitStartup && from >= lastShutdown && from < exitStartup) {
+      return exitStartup;
+    }
+  }
+
   // While inside a stop window, always return that window's exit startup — not the next
   // cycle from enumeration (e.g. long stop Fri→Mon must show Mon 7:30, not Tue nightly).
-  if (isInWindowStoppedPeriod(asWindowSchedule(schedule), from)) {
-    const lastShutdown = shutdownInstantAtOrBefore(asWindowSchedule(schedule), from);
+  if (isInWindowStoppedPeriod(window, from)) {
     if (lastShutdown) {
-      const startup = startupAfterShutdown(asWindowSchedule(schedule), lastShutdown);
+      const startup = startupAfterShutdown(window, lastShutdown);
       if (startup) return startup;
     }
   }
@@ -162,18 +173,23 @@ export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date)
   }
 
   const events = enumerateCombinedEvents(schedule, from).filter((d) => d > from);
+  const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
+  const overnightDays = (schedule.overnightDays ?? [])
+    .map((d) => coerceIsoDay(d))
+    .filter((d): d is number => d != null);
+
   for (const event of events) {
     const tz = schedule.timezone || 'UTC';
     const zoned = toZonedTime(event, tz);
     const dow = isoDayOfWeek(zoned);
 
-    if (dow === schedule.startupDayOfWeek) {
+    if (startupDay != null && dow === startupDay) {
       const { h, m } = parseHm(schedule.startupTime);
       if (zoned.getHours() === h && zoned.getMinutes() === m) return event;
     }
 
     if (
-      schedule.overnightDays?.includes(dow) &&
+      overnightDays.includes(dow) &&
       schedule.overnightStartupTime
     ) {
       const { h, m } = parseHm(schedule.overnightStartupTime);

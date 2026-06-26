@@ -9,6 +9,13 @@ export function isoDayOfWeek(date: Date): number {
   return d === 0 ? 7 : d;
 }
 
+/** Normalize schedule day fields — DB/JSON may store numeric strings. */
+export function coerceIsoDay(day: number | null | undefined): number | null {
+  if (day == null) return null;
+  const n = Number(day);
+  return Number.isFinite(n) && n >= 1 && n <= 7 ? Math.trunc(n) : null;
+}
+
 export type WindowSchedule = Pick<
   Schedule,
   | 'recurrence'
@@ -41,7 +48,7 @@ export function shutdownInstantAtOrBefore(
   schedule: WindowSchedule,
   from: Date
 ): Date | null {
-  const shutdownDay = schedule.shutdownDayOfWeek;
+  const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return null;
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.shutdownTime);
@@ -58,7 +65,7 @@ export function shutdownInstantAtOrBefore(
 
 /** Next shutdown strictly after `from`. */
 export function nextShutdownAfter(schedule: WindowSchedule, from: Date): Date | null {
-  const shutdownDay = schedule.shutdownDayOfWeek;
+  const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return null;
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.shutdownTime);
@@ -75,7 +82,7 @@ export function nextShutdownAfter(schedule: WindowSchedule, from: Date): Date | 
 
 /** Startup instant that follows a given shutdown in the same cycle. */
 export function startupAfterShutdown(schedule: WindowSchedule, shutdownUtc: Date): Date | null {
-  const startupDay = schedule.startupDayOfWeek;
+  const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
   if (!startupDay) return null;
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.startupTime);
@@ -124,7 +131,7 @@ export function shouldRunWindowShutdown(schedule: WindowSchedule, now: Date): bo
     return matchesMinute(schedule, schedule.oneTimeShutdownAt, now);
   }
 
-  const shutdownDay = schedule.shutdownDayOfWeek;
+  const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return false;
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
@@ -139,7 +146,7 @@ export function shouldRunWindowStartup(schedule: WindowSchedule, now: Date): boo
     return matchesMinute(schedule, schedule.oneTimeStartupAt, now);
   }
 
-  const startupDay = schedule.startupDayOfWeek;
+  const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
   if (!startupDay) return false;
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);

@@ -10,8 +10,14 @@ import {
   getScheduleAccessForRequest,
 } from '@/lib/schedule-access';
 
+/** Bump when live startup resolution logic changes — verify in Network tab after deploy. */
+const LIVE_API_VERSION = 'live-v11';
+
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
 
   const schedules = await prisma.schedule.findMany({
     where: { enabled: true, liveActive: true },
@@ -29,7 +35,6 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
     visibleSchedules
       .filter((schedule) => isLiveScheduleVisible(schedule, now))
       .map(async (schedule) => {
-        // Always recompute — visible live rows are in a stop window; never trust stale DB.
         const startupAt = computeCurrentLiveStartupAt(schedule, now);
 
         if (
@@ -37,7 +42,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
           (!schedule.liveStartupAt ||
             schedule.liveStartupAt.getTime() !== startupAt.getTime())
         ) {
-          void prisma.schedule
+          await prisma.schedule
             .update({
               where: { id: schedule.id },
               data: { liveStartupAt: startupAt, nextRun: startupAt },
@@ -49,6 +54,8 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
               )
             );
         }
+
+        const startupIso = startupAt?.toISOString() ?? null;
 
         return {
           id: schedule.id,
@@ -77,8 +84,8 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
           timezone: schedule.timezone,
           daysOfWeek: schedule.daysOfWeek,
           lastRun: schedule.lastRun?.toISOString() ?? null,
-          nextRun: startupAt?.toISOString() ?? schedule.nextRun?.toISOString() ?? null,
-          startupAt: startupAt?.toISOString() ?? null,
+          nextRun: startupIso,
+          startupAt: startupIso,
           message: isOnetimeSchedule(schedule) && startupAt
             ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
             : isCombinedSchedule(schedule) && startupAt
@@ -93,6 +100,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   );
 
   return res.status(200).json({
+    apiVersion: LIVE_API_VERSION,
     schedules: live,
     total: live.length,
     checkedAt: now.toISOString(),
