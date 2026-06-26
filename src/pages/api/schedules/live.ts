@@ -1,7 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import { isLiveScheduleVisible, resolveLiveStartupAt } from '@/lib/scheduler-utils';
+import { isLiveScheduleVisible, computeCurrentLiveStartupAt } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
 import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
@@ -25,50 +25,72 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
       ? filterSchedulesForUser(schedules, access, req.user.role)
       : schedules;
 
-  const live = visibleSchedules
-    .filter((schedule) => isLiveScheduleVisible(schedule, now))
-    .map((schedule) => {
-      const startupAt = resolveLiveStartupAt(schedule, now);
-      return {
-        id: schedule.id,
-        name: schedule.name,
-        cluster: schedule.cluster,
-        namespace: schedule.namespace,
-        scope: schedule.scope,
-        appName: schedule.appName,
-        workloadKind: schedule.workloadKind,
-        excludedWorkloads: schedule.excludedWorkloads,
-        shutdownTime: schedule.shutdownTime,
-        startupTime: schedule.startupTime,
-        weekendShutdownTime: schedule.weekendShutdownTime,
-        weekendStartupTime: schedule.weekendStartupTime,
-        weekendDays: schedule.weekendDays,
-        recurrence: schedule.recurrence,
-        oneTimeShutdownAt: schedule.oneTimeShutdownAt?.toISOString() ?? null,
-        oneTimeStartupAt: schedule.oneTimeStartupAt?.toISOString() ?? null,
-        shutdownDayOfWeek: schedule.shutdownDayOfWeek,
-        startupDayOfWeek: schedule.startupDayOfWeek,
-        windowRepeatWeekly: schedule.windowRepeatWeekly,
-        oneTimeCompleted: schedule.oneTimeCompleted,
-        overnightDays: schedule.overnightDays,
-        overnightShutdownTime: schedule.overnightShutdownTime,
-        overnightStartupTime: schedule.overnightStartupTime,
-        timezone: schedule.timezone,
-        daysOfWeek: schedule.daysOfWeek,
-        lastRun: schedule.lastRun?.toISOString() ?? null,
-        nextRun: schedule.nextRun?.toISOString() ?? null,
-        startupAt: startupAt?.toISOString() ?? null,
-        message: isOnetimeSchedule(schedule) && startupAt
-          ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-          : isCombinedSchedule(schedule) && startupAt
+  const live = await Promise.all(
+    visibleSchedules
+      .filter((schedule) => isLiveScheduleVisible(schedule, now))
+      .map(async (schedule) => {
+        // Always recompute — visible live rows are in a stop window; never trust stale DB.
+        const startupAt = computeCurrentLiveStartupAt(schedule, now);
+
+        if (
+          startupAt &&
+          (!schedule.liveStartupAt ||
+            schedule.liveStartupAt.getTime() !== startupAt.getTime())
+        ) {
+          void prisma.schedule
+            .update({
+              where: { id: schedule.id },
+              data: { liveStartupAt: startupAt, nextRun: startupAt },
+            })
+            .catch((err) =>
+              console.warn(
+                `[schedules/live] failed to refresh liveStartupAt for "${schedule.name}":`,
+                err instanceof Error ? err.message : err
+              )
+            );
+        }
+
+        return {
+          id: schedule.id,
+          name: schedule.name,
+          cluster: schedule.cluster,
+          namespace: schedule.namespace,
+          scope: schedule.scope,
+          appName: schedule.appName,
+          workloadKind: schedule.workloadKind,
+          excludedWorkloads: schedule.excludedWorkloads,
+          shutdownTime: schedule.shutdownTime,
+          startupTime: schedule.startupTime,
+          weekendShutdownTime: schedule.weekendShutdownTime,
+          weekendStartupTime: schedule.weekendStartupTime,
+          weekendDays: schedule.weekendDays,
+          recurrence: schedule.recurrence,
+          oneTimeShutdownAt: schedule.oneTimeShutdownAt?.toISOString() ?? null,
+          oneTimeStartupAt: schedule.oneTimeStartupAt?.toISOString() ?? null,
+          shutdownDayOfWeek: schedule.shutdownDayOfWeek,
+          startupDayOfWeek: schedule.startupDayOfWeek,
+          windowRepeatWeekly: schedule.windowRepeatWeekly,
+          oneTimeCompleted: schedule.oneTimeCompleted,
+          overnightDays: schedule.overnightDays,
+          overnightShutdownTime: schedule.overnightShutdownTime,
+          overnightStartupTime: schedule.overnightStartupTime,
+          timezone: schedule.timezone,
+          daysOfWeek: schedule.daysOfWeek,
+          lastRun: schedule.lastRun?.toISOString() ?? null,
+          nextRun: startupAt?.toISOString() ?? schedule.nextRun?.toISOString() ?? null,
+          startupAt: startupAt?.toISOString() ?? null,
+          message: isOnetimeSchedule(schedule) && startupAt
             ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-            : isWindowSchedule(schedule) && startupAt
+            : isCombinedSchedule(schedule) && startupAt
               ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-              : isWindowSchedule(schedule) && schedule.startupDayOfWeek
-                ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
-                : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
-      };
-    });
+              : isWindowSchedule(schedule) && startupAt
+                ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
+                : isWindowSchedule(schedule) && schedule.startupDayOfWeek
+                  ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
+                  : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,
+        };
+      })
+  );
 
   return res.status(200).json({
     schedules: live,

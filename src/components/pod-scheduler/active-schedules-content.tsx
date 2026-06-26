@@ -402,7 +402,7 @@ export function ActiveSchedulesContent() {
                     <td className="px-5 py-3.5">
                       <ScheduleNextRunCell
                         schedule={{
-                          nextRun: schedule.startupAt ?? schedule.nextRun,
+                          nextRun: schedule.startupAt,
                           timezone: schedule.timezone,
                         }}
                       />
