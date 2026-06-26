@@ -1663,9 +1663,13 @@ function buildLiveScheduleUpdate(
   }
   if (options?.markLive) {
     const scheduled = isAutomaticScheduleTrigger(triggeredBy);
+    const now = new Date();
+    // Never persist stale liveStartupAt on shutdown — always derive exit startup from rules.
+    const startupAt =
+      computeCurrentLiveStartupAt(schedule, now) ?? computeNextStartupAt(schedule, now);
     return {
       liveActive: true,
-      liveStartupAt: resolveLiveStartupAt(schedule, new Date()),
+      liveStartupAt: startupAt,
       liveStopSource: scheduled ? 'scheduled' : 'manual',
       liveStoppedBy: scheduled ? null : triggeredBy,
     };
