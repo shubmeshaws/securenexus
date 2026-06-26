@@ -12,6 +12,10 @@ function k8sStatusCode(err: unknown): number | undefined {
   );
 }
 
+function isK8sNotFoundError(err: unknown): boolean {
+  return k8sStatusCode(err) === 404;
+}
+
 /**
  * Retry a Kubernetes read that is used to resolve Argo CD tracking metadata.
  * Transient failures (timeouts, 5xx, throttling) spike when many schedules run
@@ -360,17 +364,36 @@ export async function scaleDeployment(
 
   const patch = [{ op: 'replace', path: '/spec/replicas', value: replicas }];
 
-  const patched = await api.patchNamespacedDeployment(
-    name,
-    namespace,
-    patch,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { headers: { 'Content-Type': k8s.PatchUtils.PATCH_FORMAT_JSON_PATCH } }
-  );
+  let patched;
+  try {
+    patched = await api.patchNamespacedDeployment(
+      name,
+      namespace,
+      patch,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { headers: { 'Content-Type': k8s.PatchUtils.PATCH_FORMAT_JSON_PATCH } }
+    );
+  } catch (err) {
+    if (replicas === 0 && isK8sNotFoundError(err)) {
+      return {
+        name,
+        namespace,
+        cluster,
+        replicas: 0,
+        readyReplicas: 0,
+        availableReplicas: 0,
+        desiredReplicas: 0,
+        labels: {},
+        matchLabels: {},
+        createdAt: null,
+      };
+    }
+    throw err;
+  }
 
   const dep = patched.body;
   return {
@@ -570,21 +593,36 @@ export async function getWorkloadDesiredReplicas(
   const kc = await getConfigForCluster(cluster);
 
   if (kind === 'Deployment') {
-    const api = kc.makeApiClient(k8s.AppsV1Api);
-    const res = await api.readNamespacedDeployment(name, namespace);
-    return res.body.spec?.replicas ?? 0;
+    try {
+      const api = kc.makeApiClient(k8s.AppsV1Api);
+      const res = await api.readNamespacedDeployment(name, namespace);
+      return res.body.spec?.replicas ?? 0;
+    } catch (err) {
+      if (isK8sNotFoundError(err)) return 0;
+      throw err;
+    }
   }
 
   if (kind === 'StatefulSet') {
-    const api = kc.makeApiClient(k8s.AppsV1Api);
-    const res = await api.readNamespacedStatefulSet(name, namespace);
-    return res.body.spec?.replicas ?? 0;
+    try {
+      const api = kc.makeApiClient(k8s.AppsV1Api);
+      const res = await api.readNamespacedStatefulSet(name, namespace);
+      return res.body.spec?.replicas ?? 0;
+    } catch (err) {
+      if (isK8sNotFoundError(err)) return 0;
+      throw err;
+    }
   }
 
   if (kind === 'CronJob') {
-    const api = kc.makeApiClient(k8s.BatchV1Api);
-    const res = await api.readNamespacedCronJob(name, namespace);
-    return res.body.spec?.suspend ? 0 : 1;
+    try {
+      const api = kc.makeApiClient(k8s.BatchV1Api);
+      const res = await api.readNamespacedCronJob(name, namespace);
+      return res.body.spec?.suspend ? 0 : 1;
+    } catch (err) {
+      if (isK8sNotFoundError(err)) return 0;
+      throw err;
+    }
   }
 
   if (kind === 'ScaledJob') {
@@ -630,17 +668,22 @@ export async function scaleStatefulSet(
   const api = kc.makeApiClient(k8s.AppsV1Api);
   const patch = [{ op: 'replace', path: '/spec/replicas', value: replicas }];
 
-  await api.patchNamespacedStatefulSet(
-    name,
-    namespace,
-    patch,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    { headers: { 'Content-Type': k8s.PatchUtils.PATCH_FORMAT_JSON_PATCH } }
-  );
+  try {
+    await api.patchNamespacedStatefulSet(
+      name,
+      namespace,
+      patch,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { headers: { 'Content-Type': k8s.PatchUtils.PATCH_FORMAT_JSON_PATCH } }
+    );
+  } catch (err) {
+    if (replicas === 0 && isK8sNotFoundError(err)) return;
+    throw err;
+  }
 }
 
 export async function statefulSetExists(

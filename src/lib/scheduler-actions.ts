@@ -202,6 +202,38 @@ function scheduleNameImpliesDataTools(schedule: Schedule): boolean {
   return /\bdata\b/i.test(schedule.name);
 }
 
+async function loadDataToolsArgoPool(schedule: Schedule): Promise<ArgoCDAppSummary[]> {
+  const [allApps, instances] = await Promise.all([
+    argocdClient.listApplications(),
+    listEnabledArgoCDInstances(),
+  ]);
+  const instanceMap = new Map(instances.map((i) => [i.id, i]));
+  let pool = filterAppsForSchedule(schedule, allApps, instanceMap);
+  if (!pool.length) {
+    pool = allApps.filter((app) => appMatchesK8sCluster(app, schedule.cluster));
+  }
+  return pool;
+}
+
+/** Map STS names like pftech-redis-master → Argo app pftech-redis. */
+function resolveDataToolsArgoAppForWorkloadName(
+  schedule: Schedule,
+  workloadName: string,
+  pool: ArgoCDAppSummary[]
+): ScheduleArgoApp | null {
+  if (!pool.length) return null;
+  const envPrefix = envPrefixForSchedule(schedule);
+  for (const app of pool) {
+    if (
+      isDataToolsArgoAppName(app.name, envPrefix) &&
+      argoAppMatchesWorkloadName(app.name, workloadName)
+    ) {
+      return { name: app.name, instanceId: app.instanceId };
+    }
+  }
+  return null;
+}
+
 /**
  * Last-resort Argo resolution when a namespace schedule has no live K8s workloads and no
  * apps with destinationNamespace matching the schedule namespace (common for DATA schedules
@@ -509,7 +541,8 @@ async function findArgoAppByName(
 
 async function resolveArgoAppForStatefulSet(
   schedule: Schedule,
-  catalog: ArgoCatalog
+  catalog: ArgoCatalog,
+  dataToolsPool?: ArgoCDAppSummary[]
 ): Promise<ScheduleArgoApp | null> {
   const trackingApp = await getStatefulSetArgoAppName(
     schedule.cluster,
@@ -524,18 +557,29 @@ async function resolveArgoAppForStatefulSet(
     if (byTracking) return byTracking;
   }
 
-  return null;
+  const catalogOnly = resolveWorkloadArgoAppFromCatalogOnly(schedule, catalog);
+  if (catalogOnly) return catalogOnly;
+
+  const pool = dataToolsPool ?? (await loadDataToolsArgoPool(schedule));
+  const dataToolsMatch = resolveDataToolsArgoAppForWorkloadName(schedule, schedule.appName, pool);
+  if (dataToolsMatch) {
+    console.log(
+      `[Argo resolve] ${schedule.namespace}/${schedule.appName} data-tools app: ${dataToolsMatch.name}`
+    );
+  }
+  return dataToolsMatch;
 }
 
 /** Resolve the Argo app for one namespace-schedule workload target. */
 async function resolveArgoAppForWorkload(
   schedule: Schedule,
   target: WorkloadTarget,
-  catalog: ArgoCatalog
+  catalog: ArgoCatalog,
+  dataToolsPool?: ArgoCDAppSummary[]
 ): Promise<ScheduleArgoApp | null> {
   const workloadSchedule = scheduleAsWorkload(schedule, target);
   if (target.kind === 'StatefulSet') {
-    return resolveArgoAppForStatefulSet(workloadSchedule, catalog);
+    return resolveArgoAppForStatefulSet(workloadSchedule, catalog, dataToolsPool);
   }
   if (target.kind === 'ScaledObject') {
     return resolveArgoAppForScaledObject(workloadSchedule, catalog);
@@ -598,8 +642,16 @@ export async function collectScheduleArgoApps(
 
   if (isNamespaceSchedule(schedule)) {
     if (workloadTargets?.length) {
+      const dataToolsPool = workloadTargets.some((t) => t.kind === 'StatefulSet')
+        ? await loadDataToolsArgoPool(schedule)
+        : undefined;
       await runWithConcurrency(workloadTargets, resolveArgoOpConcurrency(), async (target) => {
-        const resolved = await resolveArgoAppForWorkload(schedule, target, ctx);
+        const resolved = await resolveArgoAppForWorkload(
+          schedule,
+          target,
+          ctx,
+          dataToolsPool
+        );
         if (resolved) {
           add(resolved);
           return;
@@ -1781,15 +1833,9 @@ export async function executeShutdown(
         }
       });
 
-      // Only treat as a hard failure when EVERY workload failed; a partial failure still
-      // lets the schedule transition to stopped so the status reflects reality and the
-      // resolved Argo apps stay paused/resumable.
-      if (targets.length > 0 && shutdownFailures.length === targets.length) {
-        throw new Error(
-          `All ${targets.length} workload(s) failed to stop: ${shutdownFailures.join('; ')}`
-        );
-      }
-
+      // Only hard-fail when every workload failed AND no Argo apps were blocked (nothing
+      // useful was accomplished). If Argo sync was blocked, persist state and succeed with
+      // a warning — workloads may already be gone from a prior stop.
       await prisma.schedule.update({
         where: { id: schedule.id },
         data: {
@@ -1799,6 +1845,24 @@ export async function executeShutdown(
           ...liveUpdate,
         },
       });
+
+      if (
+        targets.length > 0 &&
+        shutdownFailures.length === targets.length &&
+        pausedArgoApps.length === 0
+      ) {
+        throw new Error(
+          `All ${targets.length} workload(s) failed to stop: ${shutdownFailures.join('; ')}`
+        );
+      }
+
+      if (shutdownFailures.length === targets.length && pausedArgoApps.length > 0) {
+        runLog.warn(
+          'workload-stop',
+          'All workload stop ops failed but Argo sync was blocked — treating shutdown as success',
+          { shutdownFailures, pausedArgoApps }
+        );
+      }
     } else {
       const kind = schedule.workloadKind as WorkloadKind;
       const currentReplicas = await getWorkloadDesiredReplicas(
@@ -2047,6 +2111,20 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         }
         const replicas = resolveStartupReplicas(schedule, savedMap[key]);
         try {
+          if (target.kind === 'StatefulSet') {
+            const exists = await statefulSetExists(
+              schedule.cluster,
+              schedule.namespace,
+              target.name
+            ).catch(() => false);
+            if (!exists) {
+              statefulSetRecreatedViaArgo = true;
+              runLog.phase('workload-start', `StatefulSet ${key} missing — will recreate via Argo`, {
+                replicas,
+              });
+              return;
+            }
+          }
           runLog.phase('workload-start', `Scaling ${key} to ${replicas}`, { replicas });
           await retryWorkloadOp(`start ${key}`, () =>
             scaleWorkload(schedule.cluster, schedule.namespace, target.kind, target.name, replicas)
@@ -2059,9 +2137,13 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         }
       });
 
-      // Only treat startup as a hard failure when EVERY workload failed; a partial failure
-      // still lets the schedule transition to started so the status reflects reality.
-      if (targets.length > 0 && startupFailures.length === targets.length) {
+      // Only hard-fail when every workload failed AND none were deferred to Argo recreate.
+      if (
+        targets.length > 0 &&
+        startupFailures.length === targets.length &&
+        !statefulSetRecreatedViaArgo &&
+        !scaledObjectRecreatedViaArgo
+      ) {
         throw new Error(
           `All ${targets.length} workload(s) failed to start: ${startupFailures.join('; ')}`
         );
@@ -2126,8 +2208,12 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
         ? filterPausedAppsToScheduleScope(storedPausedApps, scopedNames)
         : scopedNames;
 
-      if (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)) {
-        storedNames = scopedNames;
+      if (
+        (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)) ||
+        statefulSetRecreatedViaArgo ||
+        hadArgoPause
+      ) {
+        if (scopedNames.length) storedNames = scopedNames;
       }
 
       if (!storedNames.length && isNamespace) {
@@ -2153,7 +2239,10 @@ export async function executeStartup(schedule: Schedule, triggeredBy: string): P
       });
       if (toResume.length) {
         argoNote = await resumeStoredArgoApps(schedule, toResume, {
-          forceSync: includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause),
+          forceSync:
+            statefulSetRecreatedViaArgo ||
+            hadArgoPause ||
+            (includesScaledObject && (scaledObjectRecreatedViaArgo || hadArgoPause)),
         });
         runLog.phase('argo-resume', 'Argo sync restored', { note: argoNote || null });
       } else if (storedNames.length) {
