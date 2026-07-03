@@ -11,7 +11,7 @@ import {
 } from '@/lib/schedule-access';
 
 /** Bump when live startup resolution logic changes — verify in Network tab after deploy. */
-const LIVE_API_VERSION = 'live-v16';
+const LIVE_API_VERSION = 'live-v17';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);

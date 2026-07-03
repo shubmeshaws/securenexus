@@ -48,6 +48,30 @@ function asWindowSchedule(schedule: CombinedSchedule): WindowSchedule {
   };
 }
 
+/**
+ * Fri long-stop exit always uses Mon (1). Legacy rows stored startupDay=Tue (2), which
+ * makes Startup At show Tuesday instead of Monday after the weekend stop.
+ */
+export function longStopWindowSchedule(schedule: CombinedSchedule): WindowSchedule {
+  const window = asWindowSchedule(schedule);
+  if (coerceIsoDay(schedule.shutdownDayOfWeek) === 5) {
+    return { ...window, startupDayOfWeek: 1 };
+  }
+  return window;
+}
+
+/** Exit startup for the active long-stop window (e.g. Fri 23:30 → Mon 07:30). */
+export function combinedLongStopExitStartup(
+  schedule: CombinedSchedule,
+  from: Date
+): Date | null {
+  const window = longStopWindowSchedule(schedule);
+  if (!isInWindowStoppedPeriod(window, from)) return null;
+  const lastShutdown = shutdownInstantAtOrBefore(window, from);
+  if (!lastShutdown) return null;
+  return startupAfterShutdown(window, lastShutdown);
+}
+
 /** Same-calendar-day overnight stop (e.g. Tue 00:00 → Tue 07:00). */
 export function isInOvernightStoppedPeriod(schedule: CombinedSchedule, now: Date): boolean {
   const days = (schedule.overnightDays ?? [])
@@ -74,7 +98,7 @@ export function isInOvernightStoppedPeriod(schedule: CombinedSchedule, now: Date
 
 export function isInCombinedStoppedPeriod(schedule: CombinedSchedule, now: Date): boolean {
   return (
-    isInWindowStoppedPeriod(asWindowSchedule(schedule), now) ||
+    isInWindowStoppedPeriod(longStopWindowSchedule(schedule), now) ||
     isInOvernightStoppedPeriod(schedule, now)
   );
 }
@@ -97,7 +121,7 @@ function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizon
   const tz = schedule.timezone || 'UTC';
   const zonedFrom = toZonedTime(from, tz);
   const events: Date[] = [];
-  const window = asWindowSchedule(schedule);
+  const window = longStopWindowSchedule(schedule);
   const overnightDays = schedule.overnightDays ?? [];
 
   for (let offset = 0; offset <= horizonDays; offset++) {
@@ -144,21 +168,15 @@ function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizon
 }
 
 export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date): Date | null {
-  const window = asWindowSchedule(schedule);
+  const window = longStopWindowSchedule(schedule);
+  const longStopExit = combinedLongStopExitStartup(schedule, from);
+  if (longStopExit) return longStopExit;
+
   const lastShutdown = shutdownInstantAtOrBefore(window, from);
   if (lastShutdown) {
     const exitStartup = startupAfterShutdown(window, lastShutdown);
     if (exitStartup && from >= lastShutdown && from < exitStartup) {
       return exitStartup;
-    }
-  }
-
-  // While inside a stop window, always return that window's exit startup — not the next
-  // cycle from enumeration (e.g. long stop Fri→Mon must show Mon 7:30, not Tue nightly).
-  if (isInWindowStoppedPeriod(window, from)) {
-    if (lastShutdown) {
-      const startup = startupAfterShutdown(window, lastShutdown);
-      if (startup) return startup;
     }
   }
 
@@ -334,7 +352,7 @@ export function todaysLongStopStartupInstant(
   );
   if (!startup || now <= startup) return null;
 
-  const window = asWindowSchedule(schedule);
+  const window = longStopWindowSchedule(schedule);
   const lastShutdown = shutdownInstantAtOrBefore(window, startup);
   if (!lastShutdown) return null;
   const expectedExit = startupAfterShutdown(window, lastShutdown);

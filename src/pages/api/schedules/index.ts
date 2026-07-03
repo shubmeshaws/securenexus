@@ -13,6 +13,8 @@ import {
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   ensureSchedulerRunning();
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   const now = new Date();
 
   await ensureTimingRepairApplied(now);

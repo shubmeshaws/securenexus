@@ -21,6 +21,7 @@ import {
 import {
   computeCurrentLiveStartupAtCombined,
   computeNextRunCombined,
+  combinedLongStopExitStartup,
   isInCombinedStoppedPeriod,
   nextCombinedShutdownAfter,
   shouldRunCombinedShutdown,
@@ -645,18 +646,17 @@ export interface ScheduleTimingRepairResult {
 }
 
 /** Bump after timing repair logic changes to re-run once per server boot. */
-export const TIMING_REPAIR_VERSION = 2;
+export const TIMING_REPAIR_VERSION = 3;
 
 let timingRepairVersionApplied = 0;
 
 /**
- * Older combined schedules were saved with startupDayOfWeek=2 (Tue) instead of 1 (Mon)
- * for Fri→Mon long stops — causes Startup At to show Tuesday.
+ * Fri→Mon combined long stops must use startupDayOfWeek=1 (Mon). Legacy rows used 2 (Tue).
  */
 function needsLegacyCombinedStartupDayRepair(schedule: Schedule): boolean {
   if (!isCombinedSchedule(schedule)) return false;
   if (coerceIsoDay(schedule.shutdownDayOfWeek) !== 5) return false;
-  return coerceIsoDay(schedule.startupDayOfWeek) === 2;
+  return coerceIsoDay(schedule.startupDayOfWeek) !== 1;
 }
 
 /** Recompute and persist nextRun / liveStartupAt for all enabled schedules. */
@@ -677,15 +677,19 @@ export async function repairAllScheduleTiming(now = new Date()): Promise<Schedul
     }
 
     const nextRun = resolveDisplayNextRun(working, now);
+    const longStopExit = isCombinedSchedule(working)
+      ? combinedLongStopExitStartup(working, now)
+      : null;
+    const resolvedNextRun = longStopExit ?? nextRun;
     const inStop = working.liveActive && isScheduleInStoppedWindow(working, now);
 
     const data: { nextRun?: Date | null; liveStartupAt?: Date | null } = {};
-    if (nextRun && (!working.nextRun || working.nextRun.getTime() !== nextRun.getTime())) {
-      data.nextRun = nextRun;
+    if (resolvedNextRun && (!working.nextRun || working.nextRun.getTime() !== resolvedNextRun.getTime())) {
+      data.nextRun = resolvedNextRun;
     }
-    if (inStop && nextRun) {
-      if (!working.liveStartupAt || working.liveStartupAt.getTime() !== nextRun.getTime()) {
-        data.liveStartupAt = nextRun;
+    if (inStop && resolvedNextRun) {
+      if (!working.liveStartupAt || working.liveStartupAt.getTime() !== resolvedNextRun.getTime()) {
+        data.liveStartupAt = resolvedNextRun;
       }
     } else if (!working.liveActive && working.liveStartupAt) {
       data.liveStartupAt = null;
@@ -714,6 +718,11 @@ export async function ensureTimingRepairApplied(now = new Date()): Promise<void>
     console.warn('[PodScheduler] Timing repair failed:', err)
   );
   timingRepairVersionApplied = TIMING_REPAIR_VERSION;
+}
+
+/** Force timing repair on next boot (e.g. after manual repair-timing POST). */
+export function resetTimingRepairVersion(): void {
+  timingRepairVersionApplied = 0;
 }
 
 export async function reloadAllSchedules() {
