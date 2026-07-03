@@ -646,7 +646,7 @@ export interface ScheduleTimingRepairResult {
 }
 
 /** Bump after timing repair logic changes to re-run once per server boot. */
-export const TIMING_REPAIR_VERSION = 3;
+export const TIMING_REPAIR_VERSION = 4;
 
 let timingRepairVersionApplied = 0;
 

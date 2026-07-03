@@ -1,10 +1,11 @@
-import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { addDays, getDay } from 'date-fns';
 import type { Schedule } from '@prisma/client';
 import {
   dayLabel,
-  isoDayOfWeek,
   coerceIsoDay,
+  wallClockParts,
+  isoDayOfWeekInTz,
+  isoDayOfWeekWall,
+  dayAnchorInTz,
   isInWindowStoppedPeriod,
   nextShutdownAfter,
   shutdownInstantAtOrBefore,
@@ -82,13 +83,13 @@ export function isInOvernightStoppedPeriod(schedule: CombinedSchedule, now: Date
   if (!days.length || !shutdownTime || !startupTime) return false;
 
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  const dow = isoDayOfWeek(zoned);
+  const dow = isoDayOfWeekInTz(now, tz);
   if (!days.includes(dow)) return false;
 
   const { h: shH, m: shM } = parseHm(shutdownTime);
   const { h: stH, m: stM } = parseHm(startupTime);
-  const minutesNow = zoned.getHours() * 60 + zoned.getMinutes();
+  const { hour, minute } = wallClockParts(now, tz);
+  const minutesNow = hour * 60 + minute;
   const shutdownMinutes = shH * 60 + shM;
   const startupMinutes = stH * 60 + stM;
 
@@ -119,35 +120,39 @@ function overnightShutdownOnDay(schedule: CombinedSchedule, anchor: Date): Date 
 
 function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizonDays = 14): Date[] {
   const tz = schedule.timezone || 'UTC';
-  const zonedFrom = toZonedTime(from, tz);
+  const { year, month, day } = wallClockParts(from, tz);
   const events: Date[] = [];
   const window = longStopWindowSchedule(schedule);
   const overnightDays = schedule.overnightDays ?? [];
 
   for (let offset = 0; offset <= horizonDays; offset++) {
-    const candidate = addDays(zonedFrom, offset);
-    const dow = isoDayOfWeek(candidate);
+    const candidate = new Date(year, month, day + offset);
+    const cy = candidate.getFullYear();
+    const cm = candidate.getMonth();
+    const cd = candidate.getDate();
+    const dow = isoDayOfWeekWall(cy, cm, cd);
+    const dayAnchor = dayAnchorInTz(cy, cm, cd, tz);
 
     const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
     const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
     if (shutdownDay != null && dow === shutdownDay) {
       const instant = overnightShutdownOnDay(
         { ...schedule, overnightShutdownTime: schedule.shutdownTime },
-        candidate
+        dayAnchor
       );
       if (instant) events.push(instant);
     }
     if (startupDay != null && dow === startupDay) {
       const instant = overnightStartupOnDay(
         { ...schedule, overnightStartupTime: schedule.startupTime },
-        candidate
+        dayAnchor
       );
       if (instant) events.push(instant);
     }
 
     if (overnightDays.includes(dow) && schedule.overnightShutdownTime && schedule.overnightStartupTime) {
-      const sh = overnightShutdownOnDay(schedule, candidate);
-      const st = overnightStartupOnDay(schedule, candidate);
+      const sh = overnightShutdownOnDay(schedule, dayAnchor);
+      const st = overnightStartupOnDay(schedule, dayAnchor);
       if (sh) events.push(sh);
       if (st) events.push(st);
     }
@@ -182,8 +187,7 @@ export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date)
 
   if (isInOvernightStoppedPeriod(schedule, from)) {
     const tz = schedule.timezone || 'UTC';
-    const zoned = toZonedTime(from, tz);
-    const startup = overnightStartupOnDay(schedule, zoned);
+    const startup = overnightStartupOnDay(schedule, from);
     if (startup) return startup;
   }
 
@@ -195,12 +199,12 @@ export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date)
 
   for (const event of events) {
     const tz = schedule.timezone || 'UTC';
-    const zoned = toZonedTime(event, tz);
-    const dow = isoDayOfWeek(zoned);
+    const dow = isoDayOfWeekInTz(event, tz);
+    const { hour, minute } = wallClockParts(event, tz);
 
     if (startupDay != null && dow === startupDay) {
       const { h, m } = parseHm(schedule.startupTime);
-      if (zoned.getHours() === h && zoned.getMinutes() === m) return event;
+      if (hour === h && minute === m) return event;
     }
 
     if (
@@ -208,7 +212,7 @@ export function nextCombinedStartupAfter(schedule: CombinedSchedule, from: Date)
       schedule.overnightStartupTime
     ) {
       const { h, m } = parseHm(schedule.overnightStartupTime);
-      if (zoned.getHours() === h && zoned.getMinutes() === m) return event;
+      if (hour === h && minute === m) return event;
     }
   }
 
@@ -219,12 +223,12 @@ export function nextCombinedShutdownAfter(schedule: CombinedSchedule, from: Date
   const events = enumerateCombinedEvents(schedule, from).filter((d) => d > from);
   for (const event of events) {
     const tz = schedule.timezone || 'UTC';
-    const zoned = toZonedTime(event, tz);
-    const dow = isoDayOfWeek(zoned);
+    const dow = isoDayOfWeekInTz(event, tz);
+    const { hour, minute } = wallClockParts(event, tz);
 
     if (dow === schedule.shutdownDayOfWeek) {
       const { h, m } = parseHm(schedule.shutdownTime);
-      if (zoned.getHours() === h && zoned.getMinutes() === m) return event;
+      if (hour === h && minute === m) return event;
     }
 
     if (
@@ -232,7 +236,7 @@ export function nextCombinedShutdownAfter(schedule: CombinedSchedule, from: Date
       schedule.overnightShutdownTime
     ) {
       const { h, m } = parseHm(schedule.overnightShutdownTime);
-      if (zoned.getHours() === h && zoned.getMinutes() === m) return event;
+      if (hour === h && minute === m) return event;
     }
   }
   return nextShutdownAfter(asWindowSchedule(schedule), from);
@@ -252,20 +256,20 @@ function shouldRunWindowShutdownCombined(schedule: CombinedSchedule, now: Date):
   const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  if (isoDayOfWeek(zoned) !== shutdownDay) return false;
+  if (isoDayOfWeekInTz(now, tz) !== shutdownDay) return false;
   const { h, m } = parseHm(schedule.shutdownTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 function shouldRunWindowStartupCombined(schedule: CombinedSchedule, now: Date): boolean {
   const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
   if (!startupDay) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  if (isoDayOfWeek(zoned) !== startupDay) return false;
+  if (isoDayOfWeekInTz(now, tz) !== startupDay) return false;
   const { h, m } = parseHm(schedule.startupTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 function shouldRunOvernightShutdown(schedule: CombinedSchedule, now: Date): boolean {
@@ -273,11 +277,11 @@ function shouldRunOvernightShutdown(schedule: CombinedSchedule, now: Date): bool
   const shutdownTime = schedule.overnightShutdownTime;
   if (!days.length || !shutdownTime) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  const dow = isoDayOfWeek(zoned);
+  const dow = isoDayOfWeekInTz(now, tz);
   if (!days.includes(dow)) return false;
   const { h, m } = parseHm(shutdownTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 function shouldRunOvernightStartup(schedule: CombinedSchedule, now: Date): boolean {
@@ -285,11 +289,11 @@ function shouldRunOvernightStartup(schedule: CombinedSchedule, now: Date): boole
   const startupTime = schedule.overnightStartupTime;
   if (!days.length || !startupTime) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  const dow = isoDayOfWeek(zoned);
+  const dow = isoDayOfWeekInTz(now, tz);
   if (!days.includes(dow)) return false;
   const { h, m } = parseHm(startupTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 /**
@@ -304,11 +308,10 @@ export function todaysOvernightStartupInstant(
   if (!days.length || !schedule.overnightStartupTime) return null;
 
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  const dow = isoDayOfWeek(zoned);
+  const dow = isoDayOfWeekInTz(now, tz);
   if (!days.includes(dow)) return null;
 
-  const startup = overnightStartupOnDay(schedule, zoned);
+  const startup = overnightStartupOnDay(schedule, now);
   if (!startup || now <= startup) return null;
   return startup;
 }
@@ -343,12 +346,11 @@ export function todaysLongStopStartupInstant(
   if (!startupDay || !schedule.startupTime) return null;
 
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  if (isoDayOfWeek(zoned) !== startupDay) return null;
+  if (isoDayOfWeekInTz(now, tz) !== startupDay) return null;
 
   const startup = overnightStartupOnDay(
     { ...schedule, overnightStartupTime: schedule.startupTime },
-    zoned
+    now
   );
   if (!startup || now <= startup) return null;
 

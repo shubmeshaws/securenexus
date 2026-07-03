@@ -1,11 +1,51 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { addDays, setHours, setMinutes, setSeconds, setMilliseconds, getDay } from 'date-fns';
 import type { Schedule } from '@prisma/client';
 import { isWindowOnce, isWindowRepeating } from './schedule-recurrence';
 
-/** ISO day-of-week (1=Mon … 7=Sun) for a zoned date. */
+/** Wall-clock parts for an instant in a schedule timezone (independent of process TZ). */
+export function wallClockParts(instant: Date, tz: string) {
+  const z = toZonedTime(instant, tz);
+  return {
+    year: z.getFullYear(),
+    month: z.getMonth(),
+    day: z.getDate(),
+    hour: z.getHours(),
+    minute: z.getMinutes(),
+    second: z.getSeconds(),
+  };
+}
+
+/** ISO day-of-week (1=Mon … 7=Sun) for an instant in `tz`. */
+export function isoDayOfWeekInTz(instant: Date, tz: string): number {
+  const { year, month, day } = wallClockParts(instant, tz);
+  return isoDayOfWeekWall(year, month, day);
+}
+
+/** ISO day-of-week from wall-calendar Y/M/D (month 0-based). */
+export function isoDayOfWeekWall(year: number, month: number, day: number): number {
+  const d = new Date(year, month, day).getDay();
+  return d === 0 ? 7 : d;
+}
+
+function calendarInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  tz: string
+): Date {
+  return fromZonedTime(new Date(year, month, day, hour, minute, 0, 0), tz);
+}
+
+/** Noon anchor on a wall-calendar day in `tz` (for same-day time lookups). */
+export function dayAnchorInTz(year: number, month: number, day: number, tz: string): Date {
+  return calendarInstant(year, month, day, 12, 0, tz);
+}
+
+/** ISO day-of-week (1=Mon … 7=Sun) for a Date's local getters (legacy). */
 export function isoDayOfWeek(date: Date): number {
-  const d = getDay(date);
+  const d = date.getDay();
   return d === 0 ? 7 : d;
 }
 
@@ -43,9 +83,8 @@ export function instantOnScheduleDay(
   minute: number,
   tz: string
 ): Date {
-  const zoned = toZonedTime(anchor, tz);
-  const local = setMilliseconds(setSeconds(setMinutes(setHours(zoned, hour), minute), 0), 0);
-  return fromZonedTime(local, tz);
+  const { year, month, day } = wallClockParts(anchor, tz);
+  return calendarInstant(year, month, day, hour, minute, tz);
 }
 
 function instantOnDay(anchor: Date, hour: number, minute: number, tz: string): Date {
@@ -62,11 +101,14 @@ export function shutdownInstantAtOrBefore(
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.shutdownTime);
 
-  const zonedFrom = toZonedTime(from, tz);
+  const { year, month, day } = wallClockParts(from, tz);
   for (let offset = 0; offset <= 7; offset++) {
-    const candidate = addDays(zonedFrom, -offset);
-    if (isoDayOfWeek(candidate) !== shutdownDay) continue;
-    const instant = instantOnDay(candidate, h, m, tz);
+    const candidate = new Date(year, month, day - offset);
+    const cy = candidate.getFullYear();
+    const cm = candidate.getMonth();
+    const cd = candidate.getDate();
+    if (isoDayOfWeekWall(cy, cm, cd) !== shutdownDay) continue;
+    const instant = calendarInstant(cy, cm, cd, h, m, tz);
     if (instant <= from) return instant;
   }
   return null;
@@ -78,12 +120,15 @@ export function nextShutdownAfter(schedule: WindowSchedule, from: Date): Date | 
   if (!shutdownDay) return null;
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.shutdownTime);
-  const zonedFrom = toZonedTime(from, tz);
 
+  const { year, month, day } = wallClockParts(from, tz);
   for (let offset = 0; offset <= 14; offset++) {
-    const candidate = addDays(zonedFrom, offset);
-    if (isoDayOfWeek(candidate) !== shutdownDay) continue;
-    const instant = instantOnDay(candidate, h, m, tz);
+    const candidate = new Date(year, month, day + offset);
+    const cy = candidate.getFullYear();
+    const cm = candidate.getMonth();
+    const cd = candidate.getDate();
+    if (isoDayOfWeekWall(cy, cm, cd) !== shutdownDay) continue;
+    const instant = calendarInstant(cy, cm, cd, h, m, tz);
     if (instant > from) return instant;
   }
   return null;
@@ -95,12 +140,15 @@ export function startupAfterShutdown(schedule: WindowSchedule, shutdownUtc: Date
   if (!startupDay) return null;
   const tz = schedule.timezone || 'UTC';
   const { h, m } = parseHm(schedule.startupTime);
-  const shutdownZoned = toZonedTime(shutdownUtc, tz);
 
+  const { year, month, day } = wallClockParts(shutdownUtc, tz);
   for (let offset = 0; offset <= 7; offset++) {
-    const candidate = addDays(shutdownZoned, offset);
-    if (isoDayOfWeek(candidate) !== startupDay) continue;
-    const instant = instantOnDay(candidate, h, m, tz);
+    const candidate = new Date(year, month, day + offset);
+    const cy = candidate.getFullYear();
+    const cm = candidate.getMonth();
+    const cd = candidate.getDate();
+    if (isoDayOfWeekWall(cy, cm, cd) !== startupDay) continue;
+    const instant = calendarInstant(cy, cm, cd, h, m, tz);
     if (instant > shutdownUtc) return instant;
   }
   return null;
@@ -143,10 +191,10 @@ export function shouldRunWindowShutdown(schedule: WindowSchedule, now: Date): bo
   const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  if (isoDayOfWeek(zoned) !== shutdownDay) return false;
+  if (isoDayOfWeekInTz(now, tz) !== shutdownDay) return false;
   const { h, m } = parseHm(schedule.shutdownTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 export function shouldRunWindowStartup(schedule: WindowSchedule, now: Date): boolean {
@@ -158,10 +206,10 @@ export function shouldRunWindowStartup(schedule: WindowSchedule, now: Date): boo
   const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
   if (!startupDay) return false;
   const tz = schedule.timezone || 'UTC';
-  const zoned = toZonedTime(now, tz);
-  if (isoDayOfWeek(zoned) !== startupDay) return false;
+  if (isoDayOfWeekInTz(now, tz) !== startupDay) return false;
   const { h, m } = parseHm(schedule.startupTime);
-  return zoned.getHours() === h && zoned.getMinutes() === m;
+  const parts = wallClockParts(now, tz);
+  return parts.hour === h && parts.minute === m;
 }
 
 export function computeCurrentLiveStartupAtWindow(
@@ -204,14 +252,14 @@ function matchesMinute(
   now: Date
 ): boolean {
   const tz = schedule.timezone || 'UTC';
-  const zonedNow = toZonedTime(now, tz);
-  const zonedTarget = toZonedTime(targetAt, tz);
+  const nowParts = wallClockParts(now, tz);
+  const targetParts = wallClockParts(targetAt, tz);
   return (
-    zonedNow.getFullYear() === zonedTarget.getFullYear() &&
-    zonedNow.getMonth() === zonedTarget.getMonth() &&
-    zonedNow.getDate() === zonedTarget.getDate() &&
-    zonedNow.getHours() === zonedTarget.getHours() &&
-    zonedNow.getMinutes() === zonedTarget.getMinutes()
+    nowParts.year === targetParts.year &&
+    nowParts.month === targetParts.month &&
+    nowParts.day === targetParts.day &&
+    nowParts.hour === targetParts.hour &&
+    nowParts.minute === targetParts.minute
   );
 }
 

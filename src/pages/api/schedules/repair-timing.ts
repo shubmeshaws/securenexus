@@ -14,7 +14,7 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
     ...result,
     repairedAt: new Date().toISOString(),
     apiVersion: 'repair-timing-v2',
-    timingRepairVersion: 3,
+    timingRepairVersion: 4,
   });
 }
 
