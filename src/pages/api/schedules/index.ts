@@ -5,16 +5,27 @@ import prisma from '@/lib/prisma';
 import { createScheduleSchema } from '@/lib/validation';
 import { computeNextRun, ensureSchedulerRunning } from '@/lib/scheduler';
 import { enrichSchedulesWithAccountId } from '@/lib/schedule-display';
-import { resolveDisplayNextRun, resolveLiveStartupAt } from '@/lib/scheduler-utils';
+import { resolveDisplayNextRun, repairAllScheduleTiming } from '@/lib/scheduler-utils';
 import {
   filterSchedulesForUser,
   getScheduleAccessForRequest,
 } from '@/lib/schedule-access';
 
+let legacyTimingRepairDone = false;
+
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   ensureSchedulerRunning();
-  const schedules = await prisma.schedule.findMany({ orderBy: { name: 'asc' } });
   const now = new Date();
+
+  // Fix existing schedules once per server boot (wrong startup day / stale nextRun).
+  if (!legacyTimingRepairDone) {
+    legacyTimingRepairDone = true;
+    await repairAllScheduleTiming(now).catch((err) =>
+      console.warn('[schedules] legacy timing repair failed:', err)
+    );
+  }
+
+  const schedules = await prisma.schedule.findMany({ orderBy: { name: 'asc' } });
   const enriched = await enrichSchedulesWithAccountId(schedules);
   const withResolvedTiming = enriched.map((schedule) => {
     const nextRun = resolveDisplayNextRun(schedule, now);

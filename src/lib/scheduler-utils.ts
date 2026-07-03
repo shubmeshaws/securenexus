@@ -31,6 +31,7 @@ import {
   todaysOvernightStartupInstant,
   combinedActiveDays,
 } from './schedule-combined';
+import { coerceIsoDay } from './schedule-window';
 import prisma from './prisma';
 import type { Schedule } from '@prisma/client';
 
@@ -640,37 +641,65 @@ export async function reloadSchedule(scheduleId: string) {
 export interface ScheduleTimingRepairResult {
   schedulesScanned: number;
   schedulesUpdated: number;
+  startupDaysCorrected: number;
+}
+
+/**
+ * Older combined schedules were saved with startupDayOfWeek=2 (Tue) instead of 1 (Mon)
+ * for Fri→Mon long stops — causes Startup At to show Tuesday.
+ */
+function needsLegacyCombinedStartupDayRepair(schedule: Schedule): boolean {
+  if (!isCombinedSchedule(schedule)) return false;
+  if (coerceIsoDay(schedule.shutdownDayOfWeek) !== 5) return false;
+  return coerceIsoDay(schedule.startupDayOfWeek) === 2;
 }
 
 /** Recompute and persist nextRun / liveStartupAt for all enabled schedules. */
 export async function repairAllScheduleTiming(now = new Date()): Promise<ScheduleTimingRepairResult> {
   const schedules = await prisma.schedule.findMany({ where: { enabled: true } });
   let schedulesUpdated = 0;
+  let startupDaysCorrected = 0;
 
   for (const schedule of schedules) {
-    const nextRun = resolveDisplayNextRun(schedule, now);
-    const inStop = schedule.liveActive && isScheduleInStoppedWindow(schedule, now);
-    const liveStartupAt = inStop ? nextRun : schedule.liveActive ? null : schedule.liveStartupAt;
+    let working = schedule;
+
+    if (needsLegacyCombinedStartupDayRepair(schedule)) {
+      working = await prisma.schedule.update({
+        where: { id: schedule.id },
+        data: { startupDayOfWeek: 1 },
+      });
+      startupDaysCorrected++;
+    }
+
+    const nextRun = resolveDisplayNextRun(working, now);
+    const inStop = working.liveActive && isScheduleInStoppedWindow(working, now);
 
     const data: { nextRun?: Date | null; liveStartupAt?: Date | null } = {};
-    if (nextRun && (!schedule.nextRun || schedule.nextRun.getTime() !== nextRun.getTime())) {
+    if (nextRun && (!working.nextRun || working.nextRun.getTime() !== nextRun.getTime())) {
       data.nextRun = nextRun;
     }
     if (inStop && nextRun) {
-      if (!schedule.liveStartupAt || schedule.liveStartupAt.getTime() !== nextRun.getTime()) {
+      if (!working.liveStartupAt || working.liveStartupAt.getTime() !== nextRun.getTime()) {
         data.liveStartupAt = nextRun;
       }
-    } else if (!schedule.liveActive && schedule.liveStartupAt) {
+    } else if (!working.liveActive && working.liveStartupAt) {
       data.liveStartupAt = null;
     }
 
     if (Object.keys(data).length === 0) continue;
 
-    await prisma.schedule.update({ where: { id: schedule.id }, data });
+    await prisma.schedule.update({ where: { id: working.id }, data });
     schedulesUpdated++;
   }
 
-  return { schedulesScanned: schedules.length, schedulesUpdated };
+  if (schedulesUpdated > 0 || startupDaysCorrected > 0) {
+    console.log(
+      `[PodScheduler] Timing repair: ${schedulesUpdated} row(s) updated, ` +
+        `${startupDaysCorrected} startup day(s) Fri→Mon corrected`
+    );
+  }
+
+  return { schedulesScanned: schedules.length, schedulesUpdated, startupDaysCorrected };
 }
 
 export async function reloadAllSchedules() {

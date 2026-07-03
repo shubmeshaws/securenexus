@@ -12,6 +12,10 @@ import {
   queryMatchesRefreshKeys,
 } from '@/lib/page-refresh';
 
+import { apiFetch } from '@/lib/api-client';
+
+const SCHEDULE_TIMING_REPAIR_PATHS = ['/schedules', '/active-schedules'];
+
 export function PageRefreshButton({ className }: { className?: string }) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
@@ -29,6 +33,14 @@ export function PageRefreshButton({ className }: { className?: string }) {
     if (!refreshKeys.length || spinning) return;
     setPending(true);
     try {
+      if (
+        pathname &&
+        SCHEDULE_TIMING_REPAIR_PATHS.some((path) => pathname.startsWith(path))
+      ) {
+        await apiFetch('/api/schedules/repair-timing', { method: 'POST' }).catch(
+          () => undefined
+        );
+      }
       await Promise.all(
         refreshKeys.map((queryKey) =>
           queryClient.refetchQueries({ queryKey: [...queryKey], type: 'active' })

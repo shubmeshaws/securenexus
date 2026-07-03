@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, ShieldCheck, CircleX } from '@/lib/icons';
+import { useQueryClient } from '@tanstack/react-query';
+import { Loader2, ShieldCheck, CircleX, Timer } from '@/lib/icons';
 import { AppIcon } from '@/components/ui/app-icon';
 import { Button } from '@/components/ui/button';
 import {
@@ -49,8 +50,15 @@ function formatProgress(job: SyncWindowReconcileJobState): string | null {
 }
 
 export function ScheduleSyncWindowRepair() {
+  const queryClient = useQueryClient();
   const [repairing, setRepairing] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [fixingTiming, setFixingTiming] = useState(false);
+  const [timingResult, setTimingResult] = useState<{
+    schedulesUpdated: number;
+    startupDaysCorrected: number;
+  } | null>(null);
+  const [timingError, setTimingError] = useState<string | null>(null);
   const [result, setResult] = useState<SyncWindowReconcileResult | null>(null);
   const [clearResult, setClearResult] = useState<SyncWindowClearResult | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
@@ -64,6 +72,26 @@ export function ScheduleSyncWindowRepair() {
       pollAbortRef.current = true;
     };
   }, []);
+
+  const runFixTiming = useCallback(async () => {
+    setFixingTiming(true);
+    setTimingError(null);
+    setTimingResult(null);
+    try {
+      const data = await apiFetch<{
+        schedulesUpdated: number;
+        startupDaysCorrected: number;
+      }>('/api/schedules/repair-timing', { ...NO_CACHE_FETCH, method: 'POST' });
+      setTimingResult(data);
+      await queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      await queryClient.invalidateQueries({ queryKey: ['schedules-live'] });
+      await queryClient.invalidateQueries({ queryKey: ['overview'] });
+    } catch (err) {
+      setTimingError(err instanceof Error ? err.message : 'Fix timing failed');
+    } finally {
+      setFixingTiming(false);
+    }
+  }, [queryClient]);
 
   const pollUntilDone = useCallback(async (startedAt: number) => {
     while (!pollAbortRef.current) {
@@ -140,7 +168,21 @@ export function ScheduleSyncWindowRepair() {
 
   return (
     <>
-      <Button size="sm" variant="outline" onClick={runRepair} disabled={repairing || clearing}>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={runFixTiming}
+        disabled={repairing || clearing || fixingTiming}
+        title="Fix stale Next Run / Startup At on existing schedules (e.g. Tuesday → Monday)"
+      >
+        {fixingTiming ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <AppIcon icon={Timer} size="sm" />
+        )}
+        Fix schedule timing
+      </Button>
+      <Button size="sm" variant="outline" onClick={runRepair} disabled={repairing || clearing || fixingTiming}>
         {repairing ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
@@ -148,7 +190,7 @@ export function ScheduleSyncWindowRepair() {
         )}
         {repairing && progressLabel ? progressLabel : 'Repair sync blocks'}
       </Button>
-      <Button size="sm" variant="outline" onClick={runClear} disabled={repairing || clearing}>
+      <Button size="sm" variant="outline" onClick={runClear} disabled={repairing || clearing || fixingTiming}>
         {clearing ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
@@ -259,6 +301,48 @@ export function ScheduleSyncWindowRepair() {
               onClick={() => {
                 setClearResult(null);
                 setClearError(null);
+              }}
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={timingResult !== null || timingError !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTimingResult(null);
+            setTimingError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Schedule timing repair</DialogTitle>
+            <DialogDescription>
+              {timingError
+                ? 'Could not repair schedule timing.'
+                : 'Updated Next Run and Startup At for existing schedules.'}
+            </DialogDescription>
+          </DialogHeader>
+          {timingError ? (
+            <p className="text-sm text-red-500">{timingError}</p>
+          ) : (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>Schedules updated: {timingResult?.schedulesUpdated ?? 0}</p>
+              <p>
+                Long-stop start day corrected (Tue → Mon):{' '}
+                {timingResult?.startupDaysCorrected ?? 0}
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                setTimingResult(null);
+                setTimingError(null);
               }}
             >
               Close

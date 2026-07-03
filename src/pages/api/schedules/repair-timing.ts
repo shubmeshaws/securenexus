@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAuth, requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requirePermission } from '@/lib/permission-auth';
 import { repairAllScheduleTiming } from '@/lib/scheduler-utils';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
@@ -15,4 +16,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   });
 }
 
-export default requireAuth(requireAdmin(handler));
+export default requireAuth(requirePermission('scheduleEdit')(handler));
