@@ -1,5 +1,5 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { addDays, setHours, setMinutes, getDay } from 'date-fns';
+import { addDays, getDay } from 'date-fns';
 import type { Schedule } from '@prisma/client';
 import {
   dayLabel,
@@ -9,6 +9,7 @@ import {
   nextShutdownAfter,
   shutdownInstantAtOrBefore,
   startupAfterShutdown,
+  instantOnScheduleDay,
   type WindowSchedule,
 } from './schedule-window';
 
@@ -29,12 +30,6 @@ export type CombinedSchedule = Pick<
 function parseHm(time: string): { h: number; m: number } {
   const [h, m] = time.split(':').map(Number);
   return { h, m };
-}
-
-function instantOnDay(anchor: Date, hour: number, minute: number, tz: string): Date {
-  const zoned = toZonedTime(anchor, tz);
-  const local = setMinutes(setHours(zoned, hour), minute);
-  return fromZonedTime(local, tz);
 }
 
 function asWindowSchedule(schedule: CombinedSchedule): WindowSchedule {
@@ -88,14 +83,14 @@ function overnightStartupOnDay(schedule: CombinedSchedule, anchor: Date): Date |
   const startupTime = schedule.overnightStartupTime;
   if (!startupTime) return null;
   const { h, m } = parseHm(startupTime);
-  return instantOnDay(anchor, h, m, schedule.timezone || 'UTC');
+  return instantOnScheduleDay(anchor, h, m, schedule.timezone || 'UTC');
 }
 
 function overnightShutdownOnDay(schedule: CombinedSchedule, anchor: Date): Date | null {
   const shutdownTime = schedule.overnightShutdownTime;
   if (!shutdownTime) return null;
   const { h, m } = parseHm(shutdownTime);
-  return instantOnDay(anchor, h, m, schedule.timezone || 'UTC');
+  return instantOnScheduleDay(anchor, h, m, schedule.timezone || 'UTC');
 }
 
 function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizonDays = 14): Date[] {
@@ -109,14 +104,16 @@ function enumerateCombinedEvents(schedule: CombinedSchedule, from: Date, horizon
     const candidate = addDays(zonedFrom, offset);
     const dow = isoDayOfWeek(candidate);
 
-    if (dow === schedule.shutdownDayOfWeek) {
+    const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
+    const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
+    if (shutdownDay != null && dow === shutdownDay) {
       const instant = overnightShutdownOnDay(
         { ...schedule, overnightShutdownTime: schedule.shutdownTime },
         candidate
       );
       if (instant) events.push(instant);
     }
-    if (dow === schedule.startupDayOfWeek) {
+    if (startupDay != null && dow === startupDay) {
       const instant = overnightStartupOnDay(
         { ...schedule, overnightStartupTime: schedule.startupTime },
         candidate

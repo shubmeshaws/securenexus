@@ -1,7 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import { isLiveScheduleVisible, resolveDisplayNextRun, repairAllScheduleTiming } from '@/lib/scheduler-utils';
+import { isLiveScheduleVisible, resolveDisplayNextRun, ensureTimingRepairApplied } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
 import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
@@ -11,9 +11,7 @@ import {
 } from '@/lib/schedule-access';
 
 /** Bump when live startup resolution logic changes — verify in Network tab after deploy. */
-const LIVE_API_VERSION = 'live-v15';
-
-let legacyTimingRepairDone = false;
+const LIVE_API_VERSION = 'live-v16';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
@@ -21,19 +19,15 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
 
+  const now = new Date();
+
+  // Repair before loading rows so in-memory schedules match DB (startupDay 2→1, nextRun refresh).
+  await ensureTimingRepairApplied(now);
+
   const schedules = await prisma.schedule.findMany({
     where: { enabled: true, liveActive: true },
     orderBy: { name: 'asc' },
   });
-
-  const now = new Date();
-
-  if (!legacyTimingRepairDone) {
-    legacyTimingRepairDone = true;
-    await repairAllScheduleTiming(now).catch((err) =>
-      console.warn('[schedules/live] legacy timing repair failed:', err)
-    );
-  }
 
   const access = await getScheduleAccessForRequest(req);
   const visibleSchedules =

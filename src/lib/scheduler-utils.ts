@@ -644,6 +644,11 @@ export interface ScheduleTimingRepairResult {
   startupDaysCorrected: number;
 }
 
+/** Bump after timing repair logic changes to re-run once per server boot. */
+export const TIMING_REPAIR_VERSION = 2;
+
+let timingRepairVersionApplied = 0;
+
 /**
  * Older combined schedules were saved with startupDayOfWeek=2 (Tue) instead of 1 (Mon)
  * for Fri→Mon long stops — causes Startup At to show Tuesday.
@@ -700,6 +705,15 @@ export async function repairAllScheduleTiming(now = new Date()): Promise<Schedul
   }
 
   return { schedulesScanned: schedules.length, schedulesUpdated, startupDaysCorrected };
+}
+
+/** Run timing repair once per server boot for each TIMING_REPAIR_VERSION. */
+export async function ensureTimingRepairApplied(now = new Date()): Promise<void> {
+  if (timingRepairVersionApplied >= TIMING_REPAIR_VERSION) return;
+  await repairAllScheduleTiming(now).catch((err) =>
+    console.warn('[PodScheduler] Timing repair failed:', err)
+  );
+  timingRepairVersionApplied = TIMING_REPAIR_VERSION;
 }
 
 export async function reloadAllSchedules() {

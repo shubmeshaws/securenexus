@@ -1,5 +1,5 @@
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
-import { addDays, setHours, setMinutes, getDay } from 'date-fns';
+import { addDays, setHours, setMinutes, setSeconds, setMilliseconds, getDay } from 'date-fns';
 import type { Schedule } from '@prisma/client';
 import { isWindowOnce, isWindowRepeating } from './schedule-recurrence';
 
@@ -36,11 +36,20 @@ function parseHm(time: string): { h: number; m: number } {
   return { h, m };
 }
 
-/** Instant on `anchor` calendar day at HH:mm in schedule timezone. */
-function instantOnDay(anchor: Date, hour: number, minute: number, tz: string): Date {
+/** Instant on `anchor` calendar day at HH:mm:00.000 in schedule timezone. */
+export function instantOnScheduleDay(
+  anchor: Date,
+  hour: number,
+  minute: number,
+  tz: string
+): Date {
   const zoned = toZonedTime(anchor, tz);
-  const local = setMinutes(setHours(zoned, hour), minute);
+  const local = setMilliseconds(setSeconds(setMinutes(setHours(zoned, hour), minute), 0), 0);
   return fromZonedTime(local, tz);
+}
+
+function instantOnDay(anchor: Date, hour: number, minute: number, tz: string): Date {
+  return instantOnScheduleDay(anchor, hour, minute, tz);
 }
 
 /** Shutdown instant on the given ISO weekday at or before `from` (same week cycle scan). */
