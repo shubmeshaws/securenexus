@@ -67,10 +67,16 @@ interface LiveScheduleItem {
 }
 
 interface LiveSchedulesResponse {
+  apiVersion?: string;
   schedules: LiveScheduleItem[];
   total: number;
   checkedAt: string;
 }
+
+const LIVE_FETCH_INIT: RequestInit = {
+  cache: 'no-store',
+  headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+};
 
 type LiveScheduleStatusKey = ScheduleStatusCountKey;
 
@@ -102,8 +108,9 @@ export function ActiveSchedulesContent() {
 
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['schedules-live'],
-    queryFn: () => apiFetch<LiveSchedulesResponse>('/api/schedules/live'),
+    queryFn: () => apiFetch<LiveSchedulesResponse>('/api/schedules/live', LIVE_FETCH_INIT),
     ...scheduleLiveQueryOptions,
+    staleTime: 0,
   });
 
   const needsFullSchedules = Boolean(searchQuery.trim()) || detailLiveSchedule !== null;
@@ -436,6 +443,7 @@ export function ActiveSchedulesContent() {
       {dataUpdatedAt > 0 && (
         <p className="text-center text-[10px] text-muted-foreground">
           Refreshes automatically · last checked {formatRelativeTime(new Date(dataUpdatedAt))}
+          {data?.apiVersion ? ` · API ${data.apiVersion}` : ' · API outdated (redeploy required)'}
         </p>
       )}
 

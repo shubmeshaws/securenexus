@@ -4,6 +4,7 @@ import { executeShutdown, executeStartup } from './scheduler-actions';
 import { AUTOMATIC_CRON_TRIGGER } from './alert-display';
 import {
   computeCurrentLiveStartupAt,
+  resolveDisplayNextRun,
   resolveLiveStartupAt,
   computeNextRun,
   shouldRunShutdown,
@@ -133,7 +134,9 @@ async function executeClaimedSchedule(
     await prisma.schedule.update({
       where: { id: schedule.id },
       data: {
-        nextRun: computeNextRun(schedule, now),
+        nextRun: runShutdown
+          ? (computeCurrentLiveStartupAt(schedule, now) ?? computeNextRun(schedule, now))
+          : computeNextRun(schedule, now),
         liveActive: runShutdown,
         liveStartupAt: runShutdown ? resolveLiveStartupAt(schedule, now) : null,
         ...(runShutdown

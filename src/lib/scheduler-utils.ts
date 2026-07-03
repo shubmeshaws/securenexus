@@ -26,6 +26,8 @@ import {
   shouldRunCombinedShutdown,
   shouldRunCombinedStartup,
   shouldRunMissedCombinedOvernightStartup,
+  shouldRunMissedCombinedLongStopStartup,
+  todaysLongStopStartupInstant,
   todaysOvernightStartupInstant,
   combinedActiveDays,
 } from './schedule-combined';
@@ -369,6 +371,18 @@ export function resolveLiveStartupAt(schedule: Schedule, now = new Date()): Date
   return schedule.liveStartupAt ?? computeCurrentLiveStartupAt(schedule, now);
 }
 
+/**
+ * Next-run instant for UI and persistence. While stopped inside a window, show the
+ * exit startup — not a stale pre-shutdown shutdown time still sitting in the DB.
+ */
+export function resolveDisplayNextRun(schedule: Schedule, now = new Date()): Date | null {
+  if (!schedule.enabled) return null;
+  if (schedule.liveActive && isScheduleInStoppedWindow(schedule, now)) {
+    return computeCurrentLiveStartupAt(schedule, now);
+  }
+  return computeNextRun(schedule, now);
+}
+
 export function isLiveScheduleVisible(schedule: Schedule, now = new Date()): boolean {
   return schedule.liveActive && isScheduleInStoppedWindow(schedule, now);
 }
@@ -498,6 +512,9 @@ export function nextScheduledShutdownAfter(schedule: Schedule, from: Date): Date
  * Self-heal: schedule still flagged stopped (liveActive) but currently outside its stop
  * window — should be running. Skips when a scheduled shutdown is imminent so reconcile
  * does not race the long-stop cron (e.g. combined Fri 23:30 stop after overnight flag).
+ *
+ * Do NOT gate on liveStartupAt — a stale future timestamp (e.g. Tue nightly after a
+ * missed Mon long-stop startup) would block recovery forever.
  */
 export function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean {
   if (!schedule.enabled || !schedule.liveActive) return false;
@@ -506,9 +523,6 @@ export function shouldReconcileToStarted(schedule: Schedule, now: Date): boolean
   }
   if (shouldRunShutdown(schedule, now)) return false;
   if (isScheduleInStoppedWindow(schedule, now)) return false;
-
-  const startupAt = resolveLiveStartupAt(schedule, now);
-  if (!startupAt || now < startupAt) return false;
 
   const nextShutdown = nextScheduledShutdownAfter(schedule, now);
   if (
@@ -529,6 +543,16 @@ export function shouldRunStartupCatchup(schedule: Schedule, now = new Date()): b
   // Combined overnight: once the 2–5 min night window ends, generic catchup looks at the
   // *next* startup (days away) and never retries today's missed 13:07 startup.
   if (isCombinedSchedule(schedule)) {
+    if (
+      shouldRunMissedCombinedLongStopStartup(
+        schedule,
+        now,
+        schedule.lastRun,
+        STARTUP_CATCHUP_WINDOW_MS
+      )
+    ) {
+      return true;
+    }
     if (
       shouldRunMissedCombinedOvernightStartup(
         schedule,
@@ -552,8 +576,12 @@ export function shouldRunStartupCatchup(schedule: Schedule, now = new Date()): b
     startupAt > now &&
     !isInCombinedStoppedPeriod(schedule, now)
   ) {
-    const missedToday = todaysOvernightStartupInstant(schedule, now);
-    if (missedToday) startupAt = missedToday;
+    const missedLongStop = todaysLongStopStartupInstant(schedule, now);
+    if (missedLongStop) startupAt = missedLongStop;
+    else {
+      const missedToday = todaysOvernightStartupInstant(schedule, now);
+      if (missedToday) startupAt = missedToday;
+    }
   }
 
   if (!startupAt || now < startupAt) return false;
@@ -602,20 +630,49 @@ export async function reloadSchedule(scheduleId: string) {
   const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
   if (!schedule) return;
 
-  const nextRun = computeNextRun(schedule);
+  const nextRun = resolveDisplayNextRun(schedule);
   await prisma.schedule.update({
     where: { id: scheduleId },
     data: { nextRun },
   });
 }
 
-export async function reloadAllSchedules() {
-  const schedules = await prisma.schedule.findMany();
+export interface ScheduleTimingRepairResult {
+  schedulesScanned: number;
+  schedulesUpdated: number;
+}
+
+/** Recompute and persist nextRun / liveStartupAt for all enabled schedules. */
+export async function repairAllScheduleTiming(now = new Date()): Promise<ScheduleTimingRepairResult> {
+  const schedules = await prisma.schedule.findMany({ where: { enabled: true } });
+  let schedulesUpdated = 0;
+
   for (const schedule of schedules) {
-    const nextRun = computeNextRun(schedule);
-    await prisma.schedule.update({
-      where: { id: schedule.id },
-      data: { nextRun },
-    });
+    const nextRun = resolveDisplayNextRun(schedule, now);
+    const inStop = schedule.liveActive && isScheduleInStoppedWindow(schedule, now);
+    const liveStartupAt = inStop ? nextRun : schedule.liveActive ? null : schedule.liveStartupAt;
+
+    const data: { nextRun?: Date | null; liveStartupAt?: Date | null } = {};
+    if (nextRun && (!schedule.nextRun || schedule.nextRun.getTime() !== nextRun.getTime())) {
+      data.nextRun = nextRun;
+    }
+    if (inStop && nextRun) {
+      if (!schedule.liveStartupAt || schedule.liveStartupAt.getTime() !== nextRun.getTime()) {
+        data.liveStartupAt = nextRun;
+      }
+    } else if (!schedule.liveActive && schedule.liveStartupAt) {
+      data.liveStartupAt = null;
+    }
+
+    if (Object.keys(data).length === 0) continue;
+
+    await prisma.schedule.update({ where: { id: schedule.id }, data });
+    schedulesUpdated++;
   }
+
+  return { schedulesScanned: schedules.length, schedulesUpdated };
+}
+
+export async function reloadAllSchedules() {
+  await repairAllScheduleTiming();
 }

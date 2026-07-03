@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma';
 import { createScheduleSchema } from '@/lib/validation';
 import { computeNextRun, ensureSchedulerRunning } from '@/lib/scheduler';
 import { enrichSchedulesWithAccountId } from '@/lib/schedule-display';
+import { resolveDisplayNextRun, resolveLiveStartupAt } from '@/lib/scheduler-utils';
 import {
   filterSchedulesForUser,
   getScheduleAccessForRequest,
@@ -13,12 +14,48 @@ import {
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   ensureSchedulerRunning();
   const schedules = await prisma.schedule.findMany({ orderBy: { name: 'asc' } });
+  const now = new Date();
   const enriched = await enrichSchedulesWithAccountId(schedules);
+  const withResolvedTiming = enriched.map((schedule) => {
+    const nextRun = resolveDisplayNextRun(schedule, now);
+    const liveStartupAt =
+      schedule.liveActive && nextRun ? nextRun : schedule.liveStartupAt;
+    return {
+      ...schedule,
+      nextRun,
+      liveStartupAt,
+    };
+  });
+
+  // Self-heal stale timing rows in the background (display already uses resolved values).
+  for (const schedule of withResolvedTiming) {
+    if (!schedule.nextRun) continue;
+    const storedNext = schedules.find((s) => s.id === schedule.id)?.nextRun;
+    const storedLive = schedules.find((s) => s.id === schedule.id)?.liveStartupAt;
+    const needsNext =
+      !storedNext || storedNext.getTime() !== schedule.nextRun.getTime();
+    const needsLive =
+      schedule.liveActive &&
+      schedule.liveStartupAt &&
+      (!storedLive || storedLive.getTime() !== schedule.liveStartupAt.getTime());
+    if (needsNext || needsLive) {
+      void prisma.schedule
+        .update({
+          where: { id: schedule.id },
+          data: {
+            ...(needsNext ? { nextRun: schedule.nextRun } : {}),
+            ...(needsLive ? { liveStartupAt: schedule.liveStartupAt } : {}),
+          },
+        })
+        .catch(() => undefined);
+    }
+  }
+
   const access = await getScheduleAccessForRequest(req);
   const filtered =
     access && req.user
-      ? filterSchedulesForUser(enriched, access, req.user.role)
-      : enriched;
+      ? filterSchedulesForUser(withResolvedTiming, access, req.user.role)
+      : withResolvedTiming;
   return res.status(200).json({ schedules: filtered });
 }
 

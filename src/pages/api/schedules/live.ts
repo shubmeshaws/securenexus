@@ -1,7 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import prisma from '@/lib/prisma';
-import { isLiveScheduleVisible, computeCurrentLiveStartupAt } from '@/lib/scheduler-utils';
+import { isLiveScheduleVisible, resolveDisplayNextRun } from '@/lib/scheduler-utils';
 import { formatTime12h, formatNextRunAt } from '@/lib/utils';
 import { isOnetimeSchedule, isWindowSchedule, isCombinedSchedule } from '@/lib/schedule-recurrence';
 import { dayLabel } from '@/lib/schedule-window';
@@ -11,7 +11,7 @@ import {
 } from '@/lib/schedule-access';
 
 /** Bump when live startup resolution logic changes — verify in Network tab after deploy. */
-const LIVE_API_VERSION = 'live-v11';
+const LIVE_API_VERSION = 'live-v14';
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
@@ -35,17 +35,19 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
     visibleSchedules
       .filter((schedule) => isLiveScheduleVisible(schedule, now))
       .map(async (schedule) => {
-        const startupAt = computeCurrentLiveStartupAt(schedule, now);
+        const displayNextRun = resolveDisplayNextRun(schedule, now);
 
         if (
-          startupAt &&
+          displayNextRun &&
           (!schedule.liveStartupAt ||
-            schedule.liveStartupAt.getTime() !== startupAt.getTime())
+            schedule.liveStartupAt.getTime() !== displayNextRun.getTime() ||
+            !schedule.nextRun ||
+            schedule.nextRun.getTime() !== displayNextRun.getTime())
         ) {
           await prisma.schedule
             .update({
               where: { id: schedule.id },
-              data: { liveStartupAt: startupAt, nextRun: startupAt },
+              data: { liveStartupAt: displayNextRun, nextRun: displayNextRun },
             })
             .catch((err) =>
               console.warn(
@@ -54,8 +56,6 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
               )
             );
         }
-
-        const startupIso = startupAt?.toISOString() ?? null;
 
         return {
           id: schedule.id,
@@ -84,14 +84,14 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
           timezone: schedule.timezone,
           daysOfWeek: schedule.daysOfWeek,
           lastRun: schedule.lastRun?.toISOString() ?? null,
-          nextRun: startupIso,
-          startupAt: startupIso,
-          message: isOnetimeSchedule(schedule) && startupAt
-            ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-            : isCombinedSchedule(schedule) && startupAt
-              ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
-              : isWindowSchedule(schedule) && startupAt
-                ? `Stopped until ${formatNextRunAt(startupAt, schedule.timezone)}`
+          nextRun: displayNextRun?.toISOString() ?? null,
+          startupAt: displayNextRun?.toISOString() ?? null,
+          message: isOnetimeSchedule(schedule) && displayNextRun
+            ? `Stopped until ${formatNextRunAt(displayNextRun, schedule.timezone)}`
+            : isCombinedSchedule(schedule) && displayNextRun
+              ? `Stopped until ${formatNextRunAt(displayNextRun, schedule.timezone)}`
+              : isWindowSchedule(schedule) && displayNextRun
+                ? `Stopped until ${formatNextRunAt(displayNextRun, schedule.timezone)}`
                 : isWindowSchedule(schedule) && schedule.startupDayOfWeek
                   ? `Stopped until ${dayLabel(schedule.startupDayOfWeek)} ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`
                   : `Stopped until ${formatTime12h(schedule.startupTime)} (${schedule.timezone})`,

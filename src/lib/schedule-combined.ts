@@ -234,7 +234,7 @@ export function shouldRunCombinedStartup(schedule: CombinedSchedule, now: Date):
 }
 
 function shouldRunWindowShutdownCombined(schedule: CombinedSchedule, now: Date): boolean {
-  const shutdownDay = schedule.shutdownDayOfWeek;
+  const shutdownDay = coerceIsoDay(schedule.shutdownDayOfWeek);
   if (!shutdownDay) return false;
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
@@ -244,7 +244,7 @@ function shouldRunWindowShutdownCombined(schedule: CombinedSchedule, now: Date):
 }
 
 function shouldRunWindowStartupCombined(schedule: CombinedSchedule, now: Date): boolean {
-  const startupDay = schedule.startupDayOfWeek;
+  const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
   if (!startupDay) return false;
   const tz = schedule.timezone || 'UTC';
   const zoned = toZonedTime(now, tz);
@@ -309,6 +309,54 @@ export function shouldRunMissedCombinedOvernightStartup(
   if (isInOvernightStoppedPeriod(schedule, now)) return false;
 
   const missedAt = todaysOvernightStartupInstant(schedule, now);
+  if (!missedAt) return false;
+  if (now.getTime() - missedAt.getTime() > catchupMs) return false;
+  if (lastRun && lastRun >= missedAt) return false;
+
+  return true;
+}
+
+/**
+ * Today's long-stop exit startup (e.g. Mon 07:30 after Fri→Mon stop), if that instant
+ * is strictly before `now` on the startup weekday.
+ */
+export function todaysLongStopStartupInstant(
+  schedule: CombinedSchedule,
+  now: Date
+): Date | null {
+  const startupDay = coerceIsoDay(schedule.startupDayOfWeek);
+  if (!startupDay || !schedule.startupTime) return null;
+
+  const tz = schedule.timezone || 'UTC';
+  const zoned = toZonedTime(now, tz);
+  if (isoDayOfWeek(zoned) !== startupDay) return null;
+
+  const startup = overnightStartupOnDay(
+    { ...schedule, overnightStartupTime: schedule.startupTime },
+    zoned
+  );
+  if (!startup || now <= startup) return null;
+
+  const window = asWindowSchedule(schedule);
+  const lastShutdown = shutdownInstantAtOrBefore(window, startup);
+  if (!lastShutdown) return null;
+  const expectedExit = startupAfterShutdown(window, lastShutdown);
+  if (!expectedExit || expectedExit.getTime() !== startup.getTime()) return null;
+
+  return startup;
+}
+
+/** Retry a missed long-stop startup (e.g. Mon 07:30 after Fri→Mon weekend stop). */
+export function shouldRunMissedCombinedLongStopStartup(
+  schedule: CombinedSchedule,
+  now: Date,
+  lastRun: Date | null,
+  catchupMs = 2 * 60 * 60 * 1000
+): boolean {
+  if (shouldRunWindowStartupCombined(schedule, now)) return false;
+  if (isInCombinedStoppedPeriod(schedule, now)) return false;
+
+  const missedAt = todaysLongStopStartupInstant(schedule, now);
   if (!missedAt) return false;
   if (now.getTime() - missedAt.getTime() > catchupMs) return false;
   if (lastRun && lastRun >= missedAt) return false;
