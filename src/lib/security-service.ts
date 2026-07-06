@@ -3,6 +3,12 @@ import { getSecurityModuleEnabled } from './settings';
 import { SECURITY_TOOLS, getSecurityToolById, resolveScanPairs, compatibleToolsForResource } from './security-tools';
 import { buildSecurityReportHtml, countFindingsBySeverity, countScaDependenciesBySeverity, sampleFindings } from './security-report-export';
 import { buildMergedSecurityReportHtml } from './security-report-merge';
+import {
+  aggregateDashboardFromReports,
+  type SecurityDashboardEnvironmentFinding,
+  type SecurityDashboardRepoFinding,
+  type SecurityDashboardUrlFinding,
+} from './security-dashboard-stats';
 import { buildSecurityReportCsv } from './security-report-csv';
 import { htmlToPdfBuffer } from './security-html-to-pdf';
 import { categoryReportLabel } from './security-report-html';
@@ -107,6 +113,8 @@ export interface SecurityDashboardStats {
     high: number;
     medium: number;
     low: number;
+    repositoriesScanned: number;
+    urlTargetsScanned: number;
   };
   bySeverity: { label: string; count: number; color: string }[];
   byTool: {
@@ -116,7 +124,15 @@ export interface SecurityDashboardStats {
     high: number;
     medium: number;
     low: number;
+    total: number;
   }[];
+  byRepository: SecurityDashboardRepoFinding[];
+  byUrlTarget: SecurityDashboardUrlFinding[];
+  byEnvironment: SecurityDashboardEnvironmentFinding[];
+  highlights: {
+    mostVulnerableRepository: SecurityDashboardRepoFinding | null;
+    mostVulnerableUrl: SecurityDashboardUrlFinding | null;
+  };
   recentScans: SecurityReportView[];
 }
 
@@ -1002,46 +1018,49 @@ export async function runSecurityScans(
 export async function getSecurityDashboardStats(): Promise<SecurityDashboardStats> {
   await assertSecurityModuleEnabled();
 
-  const [resources, toolSettings, reports] = await Promise.all([
+  const [resources, toolSettings, reports, combinedHtmlRows] = await Promise.all([
     prisma.securityResource.findMany(),
     listSecurityToolSettings(),
     prisma.securityReport.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
-        resource: { select: { name: true } },
+        resource: {
+          select: {
+            id: true,
+            type: true,
+            name: true,
+            repoUrl: true,
+            defaultBranch: true,
+            targetUrl: true,
+          },
+        },
         scanJob: { select: { toolIds: true } },
       },
-      take: 200,
+      take: 500,
+    }),
+    prisma.securityReport.findMany({
+      where: { title: { contains: 'Combined security scan', mode: 'insensitive' } },
+      select: { id: true, htmlContent: true },
+      take: 100,
     }),
   ]);
 
-  let high = 0;
-  let medium = 0;
-  let low = 0;
-  const toolAgg = new Map<
-    string,
-    { scans: number; high: number; medium: number; low: number }
-  >();
+  const combinedHtmlById = new Map(combinedHtmlRows.map((row) => [row.id, row.htmlContent]));
+  const reportsWithHtml = reports.map((row) => ({
+    ...row,
+    htmlContent: combinedHtmlById.get(row.id),
+  }));
 
-  for (const row of reports) {
-    high += row.highCount;
-    medium += row.mediumCount;
-    low += row.lowCount;
-    const existing = toolAgg.get(row.toolId) ?? { scans: 0, high: 0, medium: 0, low: 0 };
-    existing.scans += 1;
-    existing.high += row.highCount;
-    existing.medium += row.mediumCount;
-    existing.low += row.lowCount;
-    toolAgg.set(row.toolId, existing);
-  }
+  const aggregated = aggregateDashboardFromReports(reportsWithHtml);
 
-  const byTool = Array.from(toolAgg.entries())
+  const byTool = Array.from(aggregated.byTool.entries())
     .map(([toolId, stats]) => ({
       toolId,
       toolName: getSecurityToolById(toolId)?.name ?? toolId,
       ...stats,
+      total: stats.high + stats.medium + stats.low,
     }))
-    .sort((a, b) => b.scans - a.scans);
+    .sort((a, b) => b.total - a.total);
 
   const recentScans = reports.slice(0, 8).map((row) => toSecurityReportView(row));
 
@@ -1051,16 +1070,25 @@ export async function getSecurityDashboardStats(): Promise<SecurityDashboardStat
       resources: resources.length,
       enabledResources: resources.filter((row) => row.enabled).length,
       enabledTools: toolSettings.filter((row) => row.enabled).length,
-      high,
-      medium,
-      low,
+      high: aggregated.high,
+      medium: aggregated.medium,
+      low: aggregated.low,
+      repositoriesScanned: aggregated.byRepository.length,
+      urlTargetsScanned: aggregated.byUrlTarget.length,
     },
     bySeverity: [
-      { label: 'High', count: high, color: '#dc2626' },
-      { label: 'Medium', count: medium, color: '#d97706' },
-      { label: 'Low', count: low, color: '#2563eb' },
+      { label: 'High', count: aggregated.high, color: '#dc2626' },
+      { label: 'Medium', count: aggregated.medium, color: '#d97706' },
+      { label: 'Low', count: aggregated.low, color: '#2563eb' },
     ],
     byTool,
+    byRepository: aggregated.byRepository.slice(0, 10),
+    byUrlTarget: aggregated.byUrlTarget.slice(0, 10),
+    byEnvironment: aggregated.byEnvironment,
+    highlights: {
+      mostVulnerableRepository: aggregated.mostVulnerableRepository,
+      mostVulnerableUrl: aggregated.mostVulnerableUrl,
+    },
     recentScans,
   };
 }
