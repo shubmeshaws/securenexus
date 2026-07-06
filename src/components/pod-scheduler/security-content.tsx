@@ -45,6 +45,8 @@ import { SecurityDashboardPanel } from '@/components/pod-scheduler/security-dash
 import { SecurityScanPanel } from '@/components/pod-scheduler/security-scan-panel';
 import { SecurityAutomationPanel } from '@/components/pod-scheduler/security-automation-panel';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
+import { SecurityReportActions } from '@/components/pod-scheduler/security-report-actions';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type {
   SecurityReportView,
   SecurityResourceView,
@@ -604,7 +606,8 @@ export function SecurityContent() {
           <PanelHeader title="Reports" icon={FileUp} accent="sky" />
           <div className="border-b border-border px-5 py-4">
             <p className="mb-3 text-[11px] text-muted-foreground">
-              Generate assessment reports for enabled tools and registered resources. Download as HTML or PDF.
+              Generate assessment reports for enabled tools and registered resources. Preview, download HTML,
+              export CSV, or save as PDF.
             </p>
             <div className="flex flex-wrap items-end gap-3">
               <div className="min-w-[180px] flex-1 space-y-1.5">
@@ -661,8 +664,9 @@ export function SecurityContent() {
               No reports yet. Enable tools, add a resource, then generate a report.
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="table-modern w-full min-w-[760px] text-sm">
+            <TooltipProvider delayDuration={200}>
+              <div className="overflow-x-auto">
+                <table className="table-modern w-full min-w-[860px] text-sm">
                 <thead className="bg-card/95">
                   <tr className="border-b border-border text-[9px] uppercase tracking-wider text-muted-foreground">
                     <th className="px-5 py-3 text-left font-medium">Report</th>
@@ -676,60 +680,27 @@ export function SecurityContent() {
                   {reports.map((row) => (
                     <tr key={row.id} className="border-b border-border">
                       <td className="px-5 py-3 font-medium text-foreground">{row.title}</td>
-                      <td className="px-5 py-3 text-muted-foreground">{row.toolName}</td>
+                      <td className="px-5 py-3 text-muted-foreground">
+                        <ReportToolsCell toolNames={row.toolNames} />
+                      </td>
                       <td className="px-5 py-3 text-muted-foreground">{row.resourceName ?? '—'}</td>
                       <td className="px-5 py-3 font-mono text-xs text-muted-foreground">
                         {new Date(row.createdAt).toLocaleString()}
                       </td>
                       <td className="px-5 py-3">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 text-[11px]"
-                            onClick={() => setPreviewReportId(row.id)}
-                          >
-                            Preview
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 gap-1 text-[11px]"
-                            asChild
-                          >
-                            <a href={`/api/security/reports/${row.id}/download?format=html`}>
-                              <FileUp className="h-3 w-3" />
-                              HTML
-                            </a>
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 gap-1 text-[11px]"
-                            asChild
-                          >
-                            <a href={`/api/security/reports/${row.id}/download?format=pdf`}>
-                              <FileUp className="h-3 w-3" />
-                              PDF
-                            </a>
-                          </Button>
-                          <SecurityIconButton
-                            icon={Trash2}
-                            label="Delete report"
-                            tone="danger"
-                            disabled={deleteReport.isPending}
-                            onClick={() => deleteReport.mutate(row.id)}
-                          />
-                        </div>
+                        <SecurityReportActions
+                          reportId={row.id}
+                          onPreview={() => setPreviewReportId(row.id)}
+                          onDelete={() => deleteReport.mutate(row.id)}
+                          deleting={deleteReport.isPending}
+                        />
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </TooltipProvider>
           )}
         </GlassPanel>
       )}
@@ -963,6 +934,39 @@ export function SecurityContent() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function ReportToolsCell({ toolNames }: { toolNames: string[] }) {
+  if (!toolNames.length) return <span>—</span>;
+
+  if (toolNames.length === 1) {
+    return <span>{toolNames[0]}</span>;
+  }
+
+  const label =
+    toolNames.length === 2
+      ? `${toolNames[0]}, ${toolNames[1]}`
+      : `${toolNames[0]} +${toolNames.length - 1} more`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-help border-b border-dotted border-muted-foreground/40">
+          {label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs">
+        <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Tools used
+        </p>
+        <ul className="space-y-0.5 text-xs">
+          {toolNames.map((tool) => (
+            <li key={tool}>{tool}</li>
+          ))}
+        </ul>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

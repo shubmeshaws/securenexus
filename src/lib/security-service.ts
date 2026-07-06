@@ -1,8 +1,10 @@
 import prisma from './prisma';
 import { getSecurityModuleEnabled } from './settings';
 import { SECURITY_TOOLS, getSecurityToolById, resolveScanPairs, compatibleToolsForResource } from './security-tools';
-import { buildSecurityReportHtml, countFindingsBySeverity, countScaDependenciesBySeverity, sampleFindings, securityReportToPdfBuffer } from './security-report-export';
+import { buildSecurityReportHtml, countFindingsBySeverity, countScaDependenciesBySeverity, sampleFindings } from './security-report-export';
 import { buildMergedSecurityReportHtml } from './security-report-merge';
+import { buildSecurityReportCsv } from './security-report-csv';
+import { htmlToPdfBuffer } from './security-html-to-pdf';
 import { categoryReportLabel } from './security-report-html';
 import type { SecurityReportMode } from './security-scan-types';
 import { runSemgrepScan } from './security/semgrep-runner';
@@ -79,6 +81,7 @@ export interface SecurityReportView {
   resourceName: string | null;
   toolId: string;
   toolName: string;
+  toolNames: string[];
   title: string;
   status: string;
   summary: string | null;
@@ -485,19 +488,79 @@ export async function installSecurityToolRuntime(
   };
 }
 
-export async function listSecurityReports(): Promise<SecurityReportView[]> {
-  await assertSecurityModuleEnabled();
-  const rows = await prisma.securityReport.findMany({
-    orderBy: { createdAt: 'desc' },
-    include: { resource: { select: { name: true } } },
-    take: 200,
+function parseIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+function isCombinedSecurityReport(title: string): boolean {
+  return title.toLowerCase().includes('combined security scan');
+}
+
+function parseMergedToolNamesFromSummary(summary: string | null): string[] {
+  if (!summary?.startsWith('Merged report covering ')) return [];
+  const body = summary.slice('Merged report covering '.length).replace(/\.$/, '');
+  const names = body.split(', ').map((part) => {
+    const splitIndex = part.lastIndexOf(' on ');
+    return splitIndex > 0 ? part.slice(0, splitIndex) : part;
   });
-  return rows.map((row) => ({
+  return Array.from(new Set(names.filter(Boolean)));
+}
+
+function resolveReportToolNames(input: {
+  title: string;
+  toolId: string;
+  summary: string | null;
+  scanJobToolIds?: unknown;
+}): string[] {
+  if (isCombinedSecurityReport(input.title)) {
+    const fromJob = Array.from(
+      new Set(
+        parseIdList(input.scanJobToolIds).map((id) => getSecurityToolById(id)?.name ?? id)
+      )
+    ).filter(Boolean);
+    if (fromJob.length) return fromJob;
+
+    const fromSummary = parseMergedToolNamesFromSummary(input.summary);
+    if (fromSummary.length) return fromSummary;
+
+    return ['Combined scan'];
+  }
+
+  return [getSecurityToolById(input.toolId)?.name ?? input.toolId];
+}
+
+function toSecurityReportView(
+  row: {
+    id: string;
+    resourceId: string | null;
+    toolId: string;
+    title: string;
+    status: string;
+    summary: string | null;
+    highCount: number;
+    mediumCount: number;
+    lowCount: number;
+    createdAt: Date;
+    resource?: { name: string } | null;
+    scanJob?: { toolIds: unknown } | null;
+  },
+  toolNameOverride?: string
+): SecurityReportView {
+  const toolNames = resolveReportToolNames({
+    title: row.title,
+    toolId: row.toolId,
+    summary: row.summary,
+    scanJobToolIds: row.scanJob?.toolIds,
+  });
+
+  return {
     id: row.id,
     resourceId: row.resourceId,
     resourceName: row.resource?.name ?? null,
     toolId: row.toolId,
-    toolName: getSecurityToolById(row.toolId)?.name ?? row.toolId,
+    toolName: toolNameOverride ?? toolNames[0] ?? row.toolId,
+    toolNames,
     title: row.title,
     status: row.status,
     summary: row.summary,
@@ -505,7 +568,20 @@ export async function listSecurityReports(): Promise<SecurityReportView[]> {
     mediumCount: row.mediumCount,
     lowCount: row.lowCount,
     createdAt: row.createdAt.toISOString(),
-  }));
+  };
+}
+
+export async function listSecurityReports(): Promise<SecurityReportView[]> {
+  await assertSecurityModuleEnabled();
+  const rows = await prisma.securityReport.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: {
+      resource: { select: { name: true } },
+      scanJob: { select: { toolIds: true } },
+    },
+    take: 200,
+  });
+  return rows.map((row) => toSecurityReportView(row));
 }
 
 async function executeSecurityScanPair(input: {
@@ -630,23 +706,10 @@ async function saveSecurityScanReport(
       mediumCount: result.mediumCount,
       lowCount: result.lowCount,
     },
-    include: { resource: { select: { name: true } } },
+    include: { resource: { select: { name: true } }, scanJob: { select: { toolIds: true } } },
   });
 
-  return {
-    id: row.id,
-    resourceId: row.resourceId,
-    resourceName: row.resource?.name ?? null,
-    toolId: row.toolId,
-    toolName: result.toolName,
-    title: row.title,
-    status: row.status,
-    summary: row.summary,
-    highCount: row.highCount,
-    mediumCount: row.mediumCount,
-    lowCount: row.lowCount,
-    createdAt: row.createdAt.toISOString(),
-  };
+  return toSecurityReportView(row, result.toolName);
 }
 
 async function saveMergedSecurityScanReport(
@@ -692,23 +755,10 @@ async function saveMergedSecurityScanReport(
       mediumCount,
       lowCount,
     },
-    include: { resource: { select: { name: true } } },
+    include: { resource: { select: { name: true } }, scanJob: { select: { toolIds: true } } },
   });
 
-  return {
-    id: row.id,
-    resourceId: row.resourceId,
-    resourceName: row.resource?.name ?? null,
-    toolId: row.toolId,
-    toolName: 'Combined scan',
-    title: row.title,
-    status: row.status,
-    summary: row.summary,
-    highCount: row.highCount,
-    mediumCount: row.mediumCount,
-    lowCount: row.lowCount,
-    createdAt: row.createdAt.toISOString(),
-  };
+  return toSecurityReportView(row);
 }
 
 export async function generateSecurityReport(input: {
@@ -889,7 +939,10 @@ export async function getSecurityDashboardStats(): Promise<SecurityDashboardStat
     listSecurityToolSettings(),
     prisma.securityReport.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { resource: { select: { name: true } } },
+      include: {
+        resource: { select: { name: true } },
+        scanJob: { select: { toolIds: true } },
+      },
       take: 200,
     }),
   ]);
@@ -922,20 +975,7 @@ export async function getSecurityDashboardStats(): Promise<SecurityDashboardStat
     }))
     .sort((a, b) => b.scans - a.scans);
 
-  const recentScans = reports.slice(0, 8).map((row) => ({
-    id: row.id,
-    resourceId: row.resourceId,
-    resourceName: row.resource?.name ?? null,
-    toolId: row.toolId,
-    toolName: getSecurityToolById(row.toolId)?.name ?? row.toolId,
-    title: row.title,
-    status: row.status,
-    summary: row.summary,
-    highCount: row.highCount,
-    mediumCount: row.mediumCount,
-    lowCount: row.lowCount,
-    createdAt: row.createdAt.toISOString(),
-  }));
+  const recentScans = reports.slice(0, 8).map((row) => toSecurityReportView(row));
 
   return {
     totals: {
@@ -966,25 +1006,35 @@ export async function getSecurityReportHtml(id: string): Promise<{ title: string
 
 export async function getSecurityReportPdfBuffer(id: string): Promise<{ title: string; buffer: Buffer }> {
   await assertSecurityModuleEnabled();
+  const row = await prisma.securityReport.findUnique({ where: { id } });
+  if (!row) throw new Error('Report not found');
+  const buffer = await htmlToPdfBuffer(row.htmlContent);
+  return { title: row.title, buffer };
+}
+
+export async function getSecurityReportCsv(id: string): Promise<{ title: string; csv: string }> {
+  await assertSecurityModuleEnabled();
   const row = await prisma.securityReport.findUnique({
     where: { id },
-    include: { resource: true },
-  });
-  if (!row) throw new Error('Report not found');
-  const tool = getSecurityToolById(row.toolId);
-  if (!tool) throw new Error('Unknown tool on report');
-
-  const resourceView = row.resource ? toResourceView(row.resource) : null;
-  const buffer = await securityReportToPdfBuffer({
-    resource: resourceView,
-    tool,
-    title: row.title,
-    summary: row.summary ?? '',
-    severityCounts: {
-      high: row.highCount,
-      medium: row.mediumCount,
-      low: row.lowCount,
+    include: {
+      resource: { select: { name: true } },
+      scanJob: { select: { toolIds: true } },
     },
   });
-  return { title: row.title, buffer };
+  if (!row) throw new Error('Report not found');
+
+  const view = toSecurityReportView(row);
+  const csv = buildSecurityReportCsv({
+    title: view.title,
+    toolNames: view.toolNames,
+    resourceName: view.resourceName,
+    summary: view.summary,
+    htmlContent: row.htmlContent,
+    highCount: view.highCount,
+    mediumCount: view.mediumCount,
+    lowCount: view.lowCount,
+    createdAt: view.createdAt,
+  });
+
+  return { title: row.title, csv };
 }

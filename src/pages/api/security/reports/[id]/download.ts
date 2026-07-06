@@ -1,6 +1,6 @@
 import type { NextApiResponse } from 'next';
 import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
-import { getSecurityReportHtml, getSecurityReportPdfBuffer } from '@/lib/security-service';
+import { getSecurityReportHtml, getSecurityReportPdfBuffer, getSecurityReportCsv } from '@/lib/security-service';
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   const id = typeof req.query.id === 'string' ? req.query.id : '';
@@ -14,6 +14,14 @@ async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       return res.status(200).send(buffer);
+    }
+
+    if (format === 'csv') {
+      const { title, csv } = await getSecurityReportCsv(id);
+      const filename = `${title.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase()}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.status(200).send(csv);
     }
 
     const { title, html } = await getSecurityReportHtml(id);
