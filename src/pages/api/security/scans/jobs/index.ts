@@ -11,6 +11,7 @@ import { z } from 'zod';
 const runSchema = z.object({
   resourceIds: z.array(z.string().min(1)).min(1),
   toolIds: z.array(z.string().min(1)).min(1),
+  reportMode: z.enum(['separate', 'merged']).optional(),
 });
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {
@@ -44,6 +45,7 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
     const job = await createSecurityScanJob({
       resourceIds: parsed.data.resourceIds,
       toolIds: parsed.data.toolIds,
+      reportMode: parsed.data.reportMode,
       createdBy: req.user?.id ?? null,
     });
     startSecurityScanJobAsync(job.id);

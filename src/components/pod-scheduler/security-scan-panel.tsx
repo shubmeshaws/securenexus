@@ -19,7 +19,7 @@ import {
   type SecurityToolCategory,
 } from '@/lib/security-tools';
 import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
-import type { SecurityScanJobView } from '@/lib/security-scan-types';
+import type { SecurityReportMode, SecurityScanJobView } from '@/lib/security-scan-types';
 import {
   SCAN_JOB_POLL_MS,
   deleteSecurityScanJobClient,
@@ -292,6 +292,11 @@ function RecentScanJobCard({
         )}
 
         <div className="shrink-0">{jobStatusBadge(job.status)}</div>
+        {job.reportMode === 'merged' && job.pairTotal > 1 ? (
+          <Badge variant="outline" className="shrink-0 text-[9px]">
+            Merged
+          </Badge>
+        ) : null}
 
         <div className="flex shrink-0 items-center gap-1">
           <SecurityIconButton
@@ -337,6 +342,7 @@ export function SecurityScanPanel({
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<SecurityToolCategory[]>([]);
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
+  const [reportMode, setReportMode] = useState<SecurityReportMode>('separate');
   const resumeChecked = useRef(false);
 
   const enabledResources = useMemo(
@@ -439,6 +445,7 @@ export function SecurityScanPanel({
       startSecurityScanJob({
         resourceIds: selectedTargetIds,
         toolIds: selectedToolIds,
+        reportMode: scanPairCount > 1 ? reportMode : 'separate',
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['security-scan-jobs'] });
@@ -546,6 +553,42 @@ export function SecurityScanPanel({
 
           {canScan ? (
             <div className="space-y-3 border-t border-border pt-4">
+              {scanPairCount > 1 ? (
+                <div className="space-y-2">
+                  <Label className="text-[11px]">Report output</Label>
+                  <div className="inline-flex rounded-lg border border-border bg-card/60 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setReportMode('separate')}
+                      className={cn(
+                        'rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors',
+                        reportMode === 'separate'
+                          ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      Separate reports ({scanPairCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReportMode('merged')}
+                      className={cn(
+                        'rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors',
+                        reportMode === 'merged'
+                          ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      One merged report
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    {reportMode === 'merged'
+                      ? 'All scan results will be combined into a single HTML/PDF report.'
+                      : 'Each tool and repository combination will produce its own report.'}
+                  </p>
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   size="sm"

@@ -2,6 +2,9 @@ import prisma from './prisma';
 import { getSecurityModuleEnabled } from './settings';
 import { SECURITY_TOOLS, getSecurityToolById, resolveScanPairs, compatibleToolsForResource } from './security-tools';
 import { buildSecurityReportHtml, countFindingsBySeverity, countScaDependenciesBySeverity, sampleFindings, securityReportToPdfBuffer } from './security-report-export';
+import { buildMergedSecurityReportHtml } from './security-report-merge';
+import { categoryReportLabel } from './security-report-html';
+import type { SecurityReportMode } from './security-scan-types';
 import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
@@ -24,6 +27,21 @@ import {
 
 export type { ScanProgressCallback, ScanProgressUpdate } from './security-scan-progress';
 export type { SecurityResourceCloneStatus } from './security/security-repo-prep';
+export type { SecurityReportMode } from './security-scan-types';
+
+interface SecurityScanPairResult {
+  resourceId: string;
+  toolId: string;
+  toolName: string;
+  resourceName: string;
+  categoryLabel: string;
+  title: string;
+  summary: string;
+  htmlContent: string;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+}
 
 export type SecurityResourceType = 'repository' | 'target_url';
 
@@ -490,15 +508,13 @@ export async function listSecurityReports(): Promise<SecurityReportView[]> {
   }));
 }
 
-export async function generateSecurityReport(input: {
+async function executeSecurityScanPair(input: {
   resourceId: string;
   toolId: string;
-  scanJobId?: string;
   pairIndex?: number;
   pairTotal?: number;
   onProgress?: ScanProgressCallback;
-}): Promise<SecurityReportView> {
-  await assertSecurityModuleEnabled();
+}): Promise<SecurityScanPairResult> {
   const pairIndex = input.pairIndex ?? 0;
   const pairTotal = input.pairTotal ?? 1;
   const stageProgress = (stagePercent: number, message: string) => {
@@ -582,12 +598,92 @@ export async function generateSecurityReport(input: {
     lowCount = counts.low;
   }
 
-  stageProgress(96, 'Saving report…');
+  return {
+    resourceId: resource.id,
+    toolId: tool.id,
+    toolName: tool.name,
+    resourceName: resourceView.name,
+    categoryLabel: categoryReportLabel(tool.category),
+    title,
+    summary,
+    htmlContent,
+    highCount,
+    mediumCount,
+    lowCount,
+  };
+}
+
+async function saveSecurityScanReport(
+  result: SecurityScanPairResult,
+  scanJobId?: string
+): Promise<SecurityReportView> {
   const row = await prisma.securityReport.create({
     data: {
-      resourceId: resource.id,
-      toolId: tool.id,
-      scanJobId: input.scanJobId ?? null,
+      resourceId: result.resourceId,
+      toolId: result.toolId,
+      scanJobId: scanJobId ?? null,
+      title: result.title,
+      status: 'completed',
+      summary: result.summary,
+      htmlContent: result.htmlContent,
+      highCount: result.highCount,
+      mediumCount: result.mediumCount,
+      lowCount: result.lowCount,
+    },
+    include: { resource: { select: { name: true } } },
+  });
+
+  return {
+    id: row.id,
+    resourceId: row.resourceId,
+    resourceName: row.resource?.name ?? null,
+    toolId: row.toolId,
+    toolName: result.toolName,
+    title: row.title,
+    status: row.status,
+    summary: row.summary,
+    highCount: row.highCount,
+    mediumCount: row.mediumCount,
+    lowCount: row.lowCount,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+async function saveMergedSecurityScanReport(
+  results: SecurityScanPairResult[],
+  scanJobId?: string
+): Promise<SecurityReportView> {
+  const htmlContent = buildMergedSecurityReportHtml(
+    results.map((row) => {
+      const tool = getSecurityToolById(row.toolId);
+      return {
+        title: row.title,
+        toolName: row.toolName,
+        resourceName: row.resourceName,
+        category: tool?.category ?? 'sast',
+        categoryLabel: row.categoryLabel,
+        summary: row.summary,
+        htmlContent: row.htmlContent,
+        highCount: row.highCount,
+        mediumCount: row.mediumCount,
+        lowCount: row.lowCount,
+      };
+    })
+  );
+
+  const highCount = results.reduce((sum, row) => sum + row.highCount, 0);
+  const mediumCount = results.reduce((sum, row) => sum + row.mediumCount, 0);
+  const lowCount = results.reduce((sum, row) => sum + row.lowCount, 0);
+  const title = `Combined security scan — ${results.length} assessments`;
+  const summary = `Merged report covering ${results
+    .map((row) => `${row.toolName} on ${row.resourceName}`)
+    .join(', ')}.`;
+
+  const row = await prisma.securityReport.create({
+    data: {
+      resourceId: results[0]?.resourceId ?? null,
+      toolId: results[0]?.toolId ?? 'semgrep',
+      scanJobId: scanJobId ?? null,
       title,
       status: 'completed',
       summary,
@@ -604,7 +700,7 @@ export async function generateSecurityReport(input: {
     resourceId: row.resourceId,
     resourceName: row.resource?.name ?? null,
     toolId: row.toolId,
-    toolName: tool.name,
+    toolName: 'Combined scan',
     title: row.title,
     status: row.status,
     summary: row.summary,
@@ -613,6 +709,27 @@ export async function generateSecurityReport(input: {
     lowCount: row.lowCount,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+export async function generateSecurityReport(input: {
+  resourceId: string;
+  toolId: string;
+  scanJobId?: string;
+  pairIndex?: number;
+  pairTotal?: number;
+  onProgress?: ScanProgressCallback;
+}): Promise<SecurityReportView> {
+  await assertSecurityModuleEnabled();
+  const result = await executeSecurityScanPair(input);
+  emitScanProgress(
+    input.onProgress,
+    input.pairIndex ?? 0,
+    input.pairTotal ?? 1,
+    96,
+    'Saving report…',
+    { resourceId: input.resourceId, toolId: input.toolId }
+  );
+  return saveSecurityScanReport(result, input.scanJobId);
 }
 
 function finalizeScanProgress(
@@ -645,12 +762,13 @@ export async function runSecurityScans(
     toolIds: string[];
   },
   onProgress?: ScanProgressCallback,
-  options?: { scanJobId?: string }
+  options?: { scanJobId?: string; reportMode?: SecurityReportMode }
 ): Promise<SecurityReportView[]> {
   await assertSecurityModuleEnabled();
   if (!input.resourceIds.length) throw new Error('Select at least one target');
   if (!input.toolIds.length) throw new Error('Select at least one tool');
 
+  const reportMode = options?.reportMode ?? 'separate';
   const resources = await prisma.securityResource.findMany({
     where: { id: { in: input.resourceIds } },
   });
@@ -690,7 +808,7 @@ export async function runSecurityScans(
     });
   }
 
-  const reports: SecurityReportView[] = [];
+  const scanResults: SecurityScanPairResult[] = [];
   for (let index = 0; index < pairs.length; index++) {
     const pair = pairs[index];
     const tool = getSecurityToolById(pair.toolId);
@@ -706,10 +824,9 @@ export async function runSecurityScans(
       pair
     );
 
-    reports.push(
-      await generateSecurityReport({
+    scanResults.push(
+      await executeSecurityScanPair({
         ...pair,
-        scanJobId: options?.scanJobId,
         pairIndex: index,
         pairTotal: pairs.length,
         onProgress,
@@ -725,11 +842,38 @@ export async function runSecurityScans(
     );
   }
 
+  let reports: SecurityReportView[];
+  if (reportMode === 'merged' && scanResults.length > 1) {
+    if (onProgress) {
+      onProgress({
+        type: 'progress',
+        progress: 98,
+        message: 'Merging reports into one document…',
+        pairIndex: pairs.length,
+        pairTotal: pairs.length,
+      });
+    }
+    reports = [await saveMergedSecurityScanReport(scanResults, options?.scanJobId)];
+  } else {
+    if (onProgress) {
+      onProgress({
+        type: 'progress',
+        progress: 96,
+        message: 'Saving reports…',
+        pairIndex: pairs.length,
+        pairTotal: pairs.length,
+      });
+    }
+    reports = await Promise.all(
+      scanResults.map((result) => saveSecurityScanReport(result, options?.scanJobId))
+    );
+  }
+
   if (onProgress) {
     onProgress({
       type: 'progress',
       progress: 100,
-      message: 'All scans completed',
+      message: reportMode === 'merged' && scanResults.length > 1 ? 'Merged report completed' : 'All scans completed',
       pairIndex: pairs.length,
       pairTotal: pairs.length,
     });

@@ -265,6 +265,7 @@ model SecurityScanJob {
   error       String?
   reportCount Int      @default(0)
   pairTotal   Int      @default(0)
+  reportMode  String   @default("separate") // separate | merged
   createdBy   String?
   startedAt   DateTime?
   completedAt DateTime?

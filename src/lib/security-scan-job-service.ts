@@ -5,7 +5,7 @@ import { runSecurityScans } from './security-service';
 import { getSecurityToolById, resolveScanPairs } from './security-tools';
 import type { ScanProgressCallback } from './security-scan-progress';
 
-import type { SecurityScanJobStatus, SecurityScanJobView } from './security-scan-types';
+import type { SecurityScanJobStatus, SecurityScanJobView, SecurityReportMode } from './security-scan-types';
 
 export type { SecurityScanJobStatus, SecurityScanJobView } from './security-scan-types';
 
@@ -48,6 +48,7 @@ async function toScanJobView(row: {
   error: string | null;
   reportCount: number;
   pairTotal: number;
+  reportMode?: string;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -67,6 +68,7 @@ async function toScanJobView(row: {
     error: row.error,
     reportCount: row.reportCount,
     pairTotal: row.pairTotal,
+    reportMode: (row.reportMode === 'merged' ? 'merged' : 'separate') as SecurityReportMode,
     createdAt: row.createdAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,
     completedAt: row.completedAt?.toISOString() ?? null,
@@ -91,6 +93,7 @@ async function persistJobProgress(jobId: string, progress: number, message: stri
 export async function createSecurityScanJob(input: {
   resourceIds: string[];
   toolIds: string[];
+  reportMode?: SecurityReportMode;
   createdBy?: string | null;
 }): Promise<SecurityScanJobView> {
   await assertSecurityModuleEnabled();
@@ -124,6 +127,7 @@ export async function createSecurityScanJob(input: {
       progress: 0,
       message: 'Queued…',
       pairTotal: pairs.length,
+      reportMode: input.reportMode ?? 'separate',
       createdBy: input.createdBy ?? null,
     },
   });
@@ -199,7 +203,7 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
     const reports = await runSecurityScans(
       { resourceIds, toolIds },
       onProgress,
-      { scanJobId: jobId }
+      { scanJobId: jobId, reportMode: (job.reportMode === 'merged' ? 'merged' : 'separate') }
     );
 
     await scanJobs().update({
@@ -245,6 +249,7 @@ export async function rerunSecurityScanJob(jobId: string): Promise<SecurityScanJ
   const job = await createSecurityScanJob({
     resourceIds: parseIdList(existing.resourceIds),
     toolIds: parseIdList(existing.toolIds),
+    reportMode: existing.reportMode === 'merged' ? 'merged' : 'separate',
     createdBy: existing.createdBy,
   });
   startSecurityScanJobAsync(job.id);

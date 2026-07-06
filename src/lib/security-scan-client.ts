@@ -1,6 +1,6 @@
 import { getApiBaseUrl } from '@/lib/client-settings';
 import { getAuthToken } from '@/lib/api-client';
-import type { SecurityScanJobView } from '@/lib/security-scan-types';
+import type { SecurityReportMode, SecurityScanJobView } from '@/lib/security-scan-types';
 
 export const ACTIVE_SECURITY_SCAN_JOB_KEY = 'sn_active_security_scan_job_id';
 export const SCAN_JOB_POLL_MS = 1000;
@@ -71,6 +71,7 @@ export async function fetchSecurityScanJob(jobId: string): Promise<SecurityScanJ
 export async function startSecurityScanJob(input: {
   resourceIds: string[];
   toolIds: string[];
+  reportMode?: SecurityReportMode;
 }): Promise<SecurityScanJobView> {
   const res = await authFetch('/api/security/scans/jobs', {
     method: 'POST',
