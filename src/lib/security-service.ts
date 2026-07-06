@@ -17,6 +17,7 @@ import {
   type ServerOsType,
 } from './security/tool-runtime';
 import { getInstallCommandsByOs } from './security/tool-install-specs';
+import { scheduleReportPdfRuntimeInstall } from './security/report-pdf-runtime';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
 import {
@@ -383,13 +384,20 @@ async function ensureToolSettingsSeeded(): Promise<void> {
   }
 }
 
+async function scheduleReportPdfRuntimeIfNeeded(): Promise<void> {
+  const enabledCount = await prisma.securityToolSetting.count({ where: { enabled: true } });
+  if (enabledCount > 0) {
+    scheduleReportPdfRuntimeInstall();
+  }
+}
+
 export async function listSecurityToolSettings(): Promise<SecurityToolSettingView[]> {
   await assertSecurityModuleEnabled();
   await ensureToolSettingsSeeded();
   const rows = await prisma.securityToolSetting.findMany();
   const byId = new Map(rows.map((row) => [row.toolId, row]));
 
-  return Promise.all(
+  const tools = await Promise.all(
     SECURITY_TOOLS.map(async (tool) => {
       const row = byId.get(tool.id);
       const runtime = await getToolRuntimeStatus(
@@ -411,6 +419,12 @@ export async function listSecurityToolSettings(): Promise<SecurityToolSettingVie
       };
     })
   );
+
+  if (tools.some((tool) => tool.enabled)) {
+    scheduleReportPdfRuntimeInstall();
+  }
+
+  return tools;
 }
 
 export async function setSecurityToolEnabled(toolId: string, enabled: boolean): Promise<void> {
@@ -431,6 +445,10 @@ export async function setSecurityToolEnabled(toolId: string, enabled: boolean): 
     create: { toolId, enabled },
     update: { enabled },
   });
+
+  if (enabled) {
+    await scheduleReportPdfRuntimeIfNeeded();
+  }
 }
 
 export async function installSecurityToolRuntime(
@@ -476,6 +494,10 @@ export async function installSecurityToolRuntime(
 
   const tools = await listSecurityToolSettings();
   const updated = tools.find((row) => row.toolId === toolId);
+
+  if (options?.enableAfter ?? true) {
+    await scheduleReportPdfRuntimeIfNeeded();
+  }
 
   return {
     toolId,
