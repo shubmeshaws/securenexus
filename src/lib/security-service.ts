@@ -17,7 +17,7 @@ import {
   type ServerOsType,
 } from './security/tool-runtime';
 import { getInstallCommandsByOs } from './security/tool-install-specs';
-import { scheduleReportPdfRuntimeInstall } from './security/report-pdf-runtime';
+import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
 import {
@@ -388,6 +388,12 @@ async function scheduleReportPdfRuntimeIfNeeded(): Promise<void> {
   const enabledCount = await prisma.securityToolSetting.count({ where: { enabled: true } });
   if (enabledCount > 0) {
     scheduleReportPdfRuntimeInstall();
+    void ensureReportPdfRuntimeInstalled().catch((err) => {
+      console.error(
+        '[report-pdf-runtime] background install after tool enable failed:',
+        err instanceof Error ? err.message : err
+      );
+    });
   }
 }
 

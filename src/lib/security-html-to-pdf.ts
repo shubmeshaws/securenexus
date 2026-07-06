@@ -5,20 +5,29 @@ import { join } from 'path';
 import { promisify } from 'util';
 import {
   ensureReportPdfRuntimeInstalled,
+  installReportPdfRuntime,
   isReportPdfExportReady,
   isWkhtmltopdfAvailable,
+  resetReportPdfRuntimeCache,
   resolveChromeExecutable,
+  resolveWkhtmltopdfBin,
+  wkhtmltopdfEnv,
 } from './security/report-pdf-runtime';
+import os from 'os';
 
 const execFileAsync = promisify(execFile);
 
 let browserPromise: Promise<import('puppeteer').Browser> | null = null;
 
+function resetBrowser(): void {
+  browserPromise = null;
+}
+
 async function getBrowser(): Promise<import('puppeteer').Browser> {
+  const executablePath = resolveChromeExecutable();
   if (!browserPromise) {
-    browserPromise = import('puppeteer').then(async ({ default: puppeteer }) => {
-      const executablePath = resolveChromeExecutable();
-      return puppeteer.launch({
+    browserPromise = import('puppeteer').then(({ default: puppeteer }) =>
+      puppeteer.launch({
         headless: true,
         executablePath,
         args: [
@@ -27,8 +36,8 @@ async function getBrowser(): Promise<import('puppeteer').Browser> {
           '--disable-dev-shm-usage',
           '--disable-gpu',
         ],
-      });
-    });
+      })
+    );
   }
   return browserPromise;
 }
@@ -51,33 +60,48 @@ async function htmlToPdfWithPuppeteer(html: string): Promise<Buffer> {
 }
 
 async function htmlToPdfWithWkhtmltopdf(html: string): Promise<Buffer> {
+  const bin = await resolveWkhtmltopdfBin();
+  if (!bin) throw new Error('wkhtmltopdf is not available.');
+
   const dir = await mkdtemp(join(tmpdir(), 'securenexus-report-'));
   const htmlPath = join(dir, 'report.html');
   const pdfPath = join(dir, 'report.pdf');
 
   try {
     await writeFile(htmlPath, html, 'utf8');
-    await execFileAsync('wkhtmltopdf', [
-      '--quiet',
-      '--enable-local-file-access',
-      '--print-media-type',
-      '--background',
-      '--page-size',
-      'A4',
-      htmlPath,
-      pdfPath,
-    ]);
+    await execFileAsync(
+      bin,
+      [
+        '--quiet',
+        '--enable-local-file-access',
+        '--print-media-type',
+        '--background',
+        '--page-size',
+        'A4',
+        htmlPath,
+        pdfPath,
+      ],
+      { env: wkhtmltopdfEnv(), timeout: 120000 }
+    );
     return await readFile(pdfPath);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-export async function htmlToPdfBuffer(html: string): Promise<Buffer> {
-  if (!(await isReportPdfExportReady())) {
-    await ensureReportPdfRuntimeInstalled();
-  }
+function shouldRetryInstall(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('failed to launch') ||
+    normalized.includes('shared libraries') ||
+    normalized.includes('libatk') ||
+    normalized.includes('wkhtmltopdf') ||
+    normalized.includes('chromium') ||
+    normalized.includes('not available')
+  );
+}
 
+async function renderPdf(html: string): Promise<Buffer> {
   const errors: string[] = [];
 
   if (await isWkhtmltopdfAvailable()) {
@@ -88,13 +112,33 @@ export async function htmlToPdfBuffer(html: string): Promise<Buffer> {
     }
   }
 
-  try {
-    return await htmlToPdfWithPuppeteer(html);
-  } catch (err) {
-    errors.push(err instanceof Error ? err.message : 'Puppeteer failed');
+  if (resolveChromeExecutable() || os.platform() === 'darwin' || os.platform() === 'win32') {
+    try {
+      return await htmlToPdfWithPuppeteer(html);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : 'Chromium PDF failed');
+      resetBrowser();
+    }
   }
 
-  throw new Error(
-    `PDF export failed. Enable at least one security tool to auto-install wkhtmltopdf, or install it manually.\n\n${errors.join('\n')}`
-  );
+  throw new Error(errors.join('\n') || 'No PDF renderer is available on this server.');
+}
+
+export async function htmlToPdfBuffer(html: string): Promise<Buffer> {
+  await ensureReportPdfRuntimeInstalled();
+
+  try {
+    return await renderPdf(html);
+  } catch (firstError) {
+    const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+    if (!shouldRetryInstall(firstMessage)) {
+      throw new Error(`PDF export failed.\n\n${firstMessage}`);
+    }
+
+    resetReportPdfRuntimeCache();
+    resetBrowser();
+    await installReportPdfRuntime();
+
+    return renderPdf(html);
+  }
 }
