@@ -640,6 +640,56 @@ export async function lookupEc2InstanceTypes(
   return result;
 }
 
+/** Look up Name tag and instance type for specific EC2 instances. */
+export async function lookupEc2InstanceDetails(
+  queries: Array<{ credentialId: string; instanceId: string; region: string }>
+): Promise<Map<string, { name: string; instanceType: string }>> {
+  const result = new Map<string, { name: string; instanceType: string }>();
+  if (!queries.length) return result;
+
+  const batches = new Map<
+    string,
+    { credentialId: string; region: string; instanceIds: Set<string> }
+  >();
+
+  for (const q of queries) {
+    if (!q.credentialId || !q.instanceId || !q.region) continue;
+    const key = `${q.credentialId}::${normalizeRegion(q.region)}`;
+    const batch = batches.get(key) ?? {
+      credentialId: q.credentialId,
+      region: normalizeRegion(q.region),
+      instanceIds: new Set<string>(),
+    };
+    batch.instanceIds.add(q.instanceId);
+    batches.set(key, batch);
+  }
+
+  await Promise.all(
+    Array.from(batches.values()).map(async ({ credentialId, region, instanceIds }) => {
+      try {
+        const { credentials } = await resolveEffectiveCredentials(credentialId);
+        const client = clientsFor(credentials).ec2(region);
+        const resp = await client.send(
+          new DescribeInstancesCommand({ InstanceIds: Array.from(instanceIds) })
+        );
+        for (const reservation of resp.Reservations ?? []) {
+          for (const instance of reservation.Instances ?? []) {
+            if (!instance.InstanceId) continue;
+            result.set(instance.InstanceId, {
+              name: instanceName(instance),
+              instanceType: instance.InstanceType ?? 'unknown',
+            });
+          }
+        }
+      } catch {
+        // Name/type stay unknown when AWS lookup fails.
+      }
+    })
+  );
+
+  return result;
+}
+
 export async function stopEc2Instance(
   credentialId: string,
   instanceId: string,

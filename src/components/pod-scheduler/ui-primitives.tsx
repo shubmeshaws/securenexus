@@ -232,7 +232,7 @@ export function ScrollTable({
     <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
       <div
         className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-thin"
-        style={{ minHeight: `${bodyHeight}px` }}
+        style={{ maxHeight: `${bodyHeight}px` }}
       >
         {children}
       </div>

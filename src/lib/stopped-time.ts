@@ -331,7 +331,13 @@ export function computeStandaloneStoppedStats(
   const displayNames = new Map<string, string>();
   for (const log of ec2Logs) {
     const key = ec2ResourceKey(log);
-    if (key) displayNames.set(key, log.appName || key);
+    if (!key) continue;
+    const candidate = log.appName?.trim();
+    if (!candidate) continue;
+    const existing = displayNames.get(key);
+    if (!existing || existing === key) {
+      displayNames.set(key, candidate);
+    }
   }
 
   return Array.from(instanceIds)
@@ -342,9 +348,14 @@ export function computeStandaloneStoppedStats(
         ? sumIntervalMsInRange(intervals, range.start, range.end, now)
         : sumIntervalMs(intervals, now);
       const meta = instanceMeta.get(instanceId);
+      const fallbackName = displayNames.get(instanceId);
+      const instanceName =
+        (meta?.name && meta.name !== instanceId ? meta.name : null) ??
+        (fallbackName && fallbackName !== instanceId ? fallbackName : null) ??
+        instanceId;
       return {
         instanceId,
-        instanceName: meta?.name ?? displayNames.get(instanceId) ?? instanceId,
+        instanceName,
         instanceType: meta?.instanceType ?? 'unknown',
         stoppedMs,
         stoppedHours: msToHours(stoppedMs),

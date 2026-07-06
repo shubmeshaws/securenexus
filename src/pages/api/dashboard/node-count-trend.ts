@@ -2,10 +2,12 @@ import type { NextApiResponse } from 'next';
 import { requireAuth, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
 import { getNodeCountTrendData } from '@/lib/node-count-trend-service';
 import type { NodeCountTrendQuery } from '@/lib/node-count-trend-data';
+import { parseDashboardDateQuery } from '@/lib/dashboard-date-range';
 
 function parseQuery(req: AuthenticatedRequest): NodeCountTrendQuery {
   const cluster = typeof req.query.cluster === 'string' ? req.query.cluster : undefined;
-  return { cluster };
+  const dateQuery = parseDashboardDateQuery(req.query);
+  return { cluster, ...dateQuery };
 }
 
 async function getHandler(req: AuthenticatedRequest, res: NextApiResponse) {

@@ -23,12 +23,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api-client';
 import {
   NODE_COUNT_TREND_PLACEHOLDER,
-  TODAY_SERIES_STYLE,
-  YESTERDAY_SERIES_STYLE,
+  SERIES_STYLE,
   formatNodeCount,
   type NodeCountTrendResponse,
   type NodePodSeriesId,
 } from '@/lib/node-count-trend-data';
+import {
+  appendDashboardDateQuery,
+  getDashboardPeriodLabel,
+  isDashboardDateRangeReady,
+  type DashboardDateRange,
+} from '@/lib/dashboard-date-range';
 import {
   DashboardFilterBar,
   DashboardFilterSelect,
@@ -74,7 +79,6 @@ function NodeCountTrendSkeleton() {
         <Skeleton className="h-3 w-56" />
       </div>
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
-        <Skeleton className="h-5 w-40" />
         <Skeleton className="w-full flex-1 rounded-xl" style={{ minHeight: CHART_HEIGHT_PX }} />
         <div className="grid grid-cols-2 gap-6 px-8">
           <Skeleton className="mx-auto h-12 w-24" />
@@ -87,26 +91,29 @@ function NodeCountTrendSkeleton() {
 
 export default function NodeCountTrend({
   className,
+  dateRange,
 }: {
   className?: string;
-  dateRange?: unknown;
+  dateRange: DashboardDateRange;
 }) {
   const { theme } = useTheme();
   const [chartMode, setChartMode] = useState<ChartMode>('line');
   const [seriesMode, setSeriesMode] = useState<SeriesMode>('nodes');
   const [cluster, setCluster] = useState('');
 
-  const queryUrl = useMemo(() => {
-    const params = new URLSearchParams();
-    if (cluster) params.set('cluster', cluster);
-    const qs = params.toString();
-    return qs ? `/api/dashboard/node-count-trend?${qs}` : '/api/dashboard/node-count-trend';
-  }, [cluster]);
+  const rangeReady = isDashboardDateRangeReady(dateRange);
+  const queryUrl = appendDashboardDateQuery('/api/dashboard/node-count-trend', dateRange);
+  const urlWithCluster = useMemo(() => {
+    if (!cluster) return queryUrl;
+    const sep = queryUrl.includes('?') ? '&' : '?';
+    return `${queryUrl}${sep}cluster=${encodeURIComponent(cluster)}`;
+  }, [queryUrl, cluster]);
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
-    queryKey: ['node-count-trend', cluster],
-    queryFn: () => apiFetch<NodeCountTrendResponse>(queryUrl),
+    queryKey: ['node-count-trend', dateRange, cluster],
+    queryFn: () => apiFetch<NodeCountTrendResponse>(urlWithCluster),
     refetchInterval: 120_000,
+    enabled: rangeReady,
     placeholderData: (previousData) => previousData ?? NODE_COUNT_TREND_PLACEHOLDER,
   });
 
@@ -129,92 +136,53 @@ export default function NodeCountTrend({
     }
   }, [cluster, availableClusters]);
 
-  const comparison = chartData.comparison[seriesMode];
-  const hasData =
-    chartData.hasSamples &&
-    (comparison.today.data.some((value) => value != null) ||
-      comparison.yesterday.data.some((value) => value != null));
+  const seriesValues = chartData.series[seriesMode];
+  const seriesSummary = chartData.summary[seriesMode];
+  const hasData = chartData.hasSamples && seriesValues.some((value) => value != null);
 
   const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
+  const periodLabel = rangeReady ? getDashboardPeriodLabel(dateRange) : 'Select period';
 
   const pointFill = theme === 'dark' ? '#0f172a' : '#ffffff';
 
   const lineDatasets = useMemo(
     () => [
       {
-        label: 'Yesterday',
-        data: comparison.yesterday.data,
-        borderColor: YESTERDAY_SERIES_STYLE.color,
+        label: seriesLabel,
+        data: seriesValues,
+        borderColor: SERIES_STYLE.color,
         backgroundColor: (context: ScriptableContext<'line'>) => {
           const chart = context.chart;
           const { ctx, chartArea } = chart;
-          if (!chartArea) return YESTERDAY_SERIES_STYLE.fillTop;
-          return createAreaGradient(
-            ctx,
-            chartArea,
-            YESTERDAY_SERIES_STYLE.fillTop,
-            YESTERDAY_SERIES_STYLE.fillBottom
-          );
+          if (!chartArea) return SERIES_STYLE.fillTop;
+          return createAreaGradient(ctx, chartArea, SERIES_STYLE.fillTop, SERIES_STYLE.fillBottom);
         },
-        tension: 0.42,
+        tension: 0.35,
         borderWidth: 2.5,
-        pointRadius: 3,
+        pointRadius: chartData.days <= 14 ? 3 : 2,
         pointHoverRadius: 5,
         pointBackgroundColor: pointFill,
-        pointBorderColor: YESTERDAY_SERIES_STYLE.color,
-        pointBorderWidth: 2,
-        spanGaps: true,
-        fill: true,
-      },
-      {
-        label: 'Today',
-        data: comparison.today.data,
-        borderColor: TODAY_SERIES_STYLE.color,
-        backgroundColor: (context: ScriptableContext<'line'>) => {
-          const chart = context.chart;
-          const { ctx, chartArea } = chart;
-          if (!chartArea) return TODAY_SERIES_STYLE.fillTop;
-          return createAreaGradient(
-            ctx,
-            chartArea,
-            TODAY_SERIES_STYLE.fillTop,
-            TODAY_SERIES_STYLE.fillBottom
-          );
-        },
-        tension: 0.42,
-        borderWidth: 2.5,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        pointBackgroundColor: pointFill,
-        pointBorderColor: TODAY_SERIES_STYLE.color,
+        pointBorderColor: SERIES_STYLE.color,
         pointBorderWidth: 2,
         spanGaps: true,
         fill: true,
       },
     ],
-    [comparison.today.data, comparison.yesterday.data, pointFill]
+    [seriesValues, seriesLabel, pointFill, chartData.days]
   );
 
   const barDatasets = useMemo(
     () => [
       {
-        label: 'Yesterday',
-        data: comparison.yesterday.data,
-        backgroundColor: YESTERDAY_SERIES_STYLE.barBg,
-        borderColor: YESTERDAY_SERIES_STYLE.color,
-        borderWidth: 1,
-        borderRadius: 3,
-      },
-      {
-        label: 'Today',
-        data: comparison.today.data,
-        backgroundColor: TODAY_SERIES_STYLE.barBg,
-        borderColor: TODAY_SERIES_STYLE.color,
+        label: seriesLabel,
+        data: seriesValues,
+        backgroundColor: SERIES_STYLE.barBg,
+        borderColor: SERIES_STYLE.color,
         borderWidth: 1,
         borderRadius: 3,
       },
     ],
-    [comparison.today.data, comparison.yesterday.data]
+    [seriesValues, seriesLabel]
   );
 
   const isDark = theme === 'dark';
@@ -252,7 +220,7 @@ export default function NodeCountTrend({
           ticks: {
             color: tickColor,
             font: { size: 10 },
-            maxTicksLimit: chartData.labels.length > 24 ? 12 : 8,
+            maxTicksLimit: chartData.labels.length > 14 ? 10 : 8,
             maxRotation: 0,
           },
         },
@@ -270,10 +238,10 @@ export default function NodeCountTrend({
     [chartMode, chartData.labels.length, gridColor, tickColor]
   );
 
-  const yesterdayDisplay =
-    comparison.yesterday.latest != null ? formatNodeCount(comparison.yesterday.latest) : '—';
-  const todayDisplay =
-    comparison.today.latest != null ? formatNodeCount(comparison.today.latest) : '—';
+  const latestDisplay =
+    seriesSummary.latest != null ? formatNodeCount(seriesSummary.latest) : '—';
+  const averageDisplay =
+    seriesSummary.average != null ? formatNodeCount(Math.round(seriesSummary.average)) : '—';
 
   if (isLoading && !data) {
     return <NodeCountTrendSkeleton />;
@@ -281,11 +249,7 @@ export default function NodeCountTrend({
 
   return (
     <GlassPanel className={cn('flex h-full flex-col', className)}>
-      <PanelHeader
-        title="Node & pod count trend"
-        icon={Boxes}
-        accent="violet"
-      />
+      <PanelHeader title="Node & pod count trend" icon={Boxes} accent="violet" />
       <DashboardChartToolbar>
         <DashboardFilterBar className="flex-nowrap justify-end">
           {availableClusters.length > 0 ? (
@@ -324,14 +288,18 @@ export default function NodeCountTrend({
         </DashboardFilterBar>
       </DashboardChartToolbar>
       <PanelSubtitle className="min-h-10 shrink-0">
-        Hourly {seriesLabel.toLowerCase()} · Today vs yesterday (IST)
+        Daily {seriesLabel.toLowerCase()} · {periodLabel} (IST, max 30 days)
         {isFetching ? ' · updating…' : ''}
       </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-2">
         <div className="mb-3 min-h-5" aria-hidden="true" />
         <div className="relative w-full shrink-0" style={{ height: CHART_HEIGHT_PX }}>
-          {!availableClusters.length ? (
+          {!rangeReady ? (
+            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+              Select a from and to date to load trend data.
+            </div>
+          ) : !availableClusters.length ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               Add EKS clusters under Clusters to start tracking node and pod counts.
             </div>
@@ -345,7 +313,7 @@ export default function NodeCountTrend({
             </div>
           ) : !hasData ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              No {seriesMode} samples for today or yesterday yet.
+              No {seriesMode} samples for the selected period yet.
             </div>
           ) : chartMode === 'line' ? (
             <Line
@@ -363,14 +331,14 @@ export default function NodeCountTrend({
         {hasData && (
           <DashboardChartComparisonFooter columns={2}>
             <DashboardComparisonStat
-              color={YESTERDAY_SERIES_STYLE.color}
-              label="Yesterday"
-              value={yesterdayDisplay}
+              color={SERIES_STYLE.color}
+              label="Latest"
+              value={latestDisplay}
             />
             <DashboardComparisonStat
-              color={TODAY_SERIES_STYLE.color}
-              label="Today"
-              value={todayDisplay}
+              color={SERIES_STYLE.color}
+              label="Period avg"
+              value={averageDisplay}
             />
           </DashboardChartComparisonFooter>
         )}

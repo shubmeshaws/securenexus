@@ -1,6 +1,6 @@
 import prisma from './prisma';
 import { subDays } from 'date-fns';
-import { lookupEc2InstanceTypes } from './aws-credential-store';
+import { lookupEc2InstanceDetails } from './aws-credential-store';
 import {
   type DashboardDateQuery,
   resolveDashboardRangeBounds,
@@ -24,8 +24,9 @@ async function buildEc2InstanceMeta(
 
   for (const schedule of schedules) {
     if (schedule.platformType !== 'non_eks' || !schedule.ec2InstanceId) continue;
+    const label = schedule.appName?.trim() || schedule.name?.trim() || schedule.ec2InstanceId;
     map.set(schedule.ec2InstanceId, {
-      name: schedule.appName,
+      name: label,
       instanceType: 'unknown',
     });
     if (schedule.awsCredentialId && schedule.ec2Region) {
@@ -37,11 +38,14 @@ async function buildEc2InstanceMeta(
     }
   }
 
-  const types = await lookupEc2InstanceTypes(lookupQueries);
+  const details = await lookupEc2InstanceDetails(lookupQueries);
   for (const [instanceId, meta] of Array.from(map.entries())) {
-    const instanceType = types.get(instanceId);
-    if (instanceType) {
-      map.set(instanceId, { ...meta, instanceType });
+    const aws = details.get(instanceId);
+    if (aws) {
+      map.set(instanceId, {
+        name: aws.name !== instanceId ? aws.name : meta.name,
+        instanceType: aws.instanceType,
+      });
     }
   }
 

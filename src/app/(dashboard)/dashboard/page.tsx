@@ -423,7 +423,9 @@ export default function PodSchedulerOverviewPage() {
                     <tbody>
                       {standaloneStopped.map((row) => (
                         <tr key={row.instanceId} className="border-b border-border">
-                          <td className="px-5 py-3.5 font-medium text-foreground">{row.instanceName}</td>
+                          <td className="px-5 py-3.5 font-medium text-foreground">
+                            {row.instanceName?.trim() || row.instanceId}
+                          </td>
                           <td className="px-5 py-3.5 font-mono text-xs text-muted-foreground">{row.instanceType}</td>
                           <td className="px-5 py-3.5 align-middle">
                             <StoppedDurationBar
