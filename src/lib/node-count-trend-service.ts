@@ -116,17 +116,11 @@ function buildDaySeries(
   };
 }
 
-function daySeriesLabel(
-  calendarDate: string,
-  todayDate: string,
-  dayCount: number
-): string {
+function daySeriesLabel(calendarDate: string, todayDate: string): string {
   const yesterdayDate = format(addDays(parseISO(todayDate), -1), 'yyyy-MM-dd');
   if (calendarDate === todayDate) return 'Today';
   if (calendarDate === yesterdayDate) return 'Yesterday';
-  const day = parseISO(calendarDate);
-  if (dayCount <= 7) return formatInTimeZone(day, IST_TIMEZONE, 'EEE');
-  return formatInTimeZone(day, IST_TIMEZONE, 'd MMM');
+  return formatInTimeZone(parseISO(calendarDate), IST_TIMEZONE, 'd MMM');
 }
 
 function buildHourlyByDay(
@@ -137,7 +131,7 @@ function buildHourlyByDay(
   return calendarDates.map((date) =>
     buildDaySeries(
       date,
-      daySeriesLabel(date, todayDate, calendarDates.length),
+      daySeriesLabel(date, todayDate),
       samplesByDate.get(date) ?? []
     )
   );

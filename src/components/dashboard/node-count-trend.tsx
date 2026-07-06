@@ -53,7 +53,7 @@ type ChartMode = 'line' | 'bar';
 type SeriesMode = NodePodSeriesId;
 
 const CHART_HEIGHT_PX = 260;
-const DAY_SELECTION_THRESHOLD = 7;
+const COMPACT_LEGEND_DAY_THRESHOLD = 7;
 
 function createAreaGradient(
   ctx: CanvasRenderingContext2D,
@@ -162,9 +162,9 @@ function DayTrendLegend({
   onToggleDay: (date: string) => void;
   onClearSelection: () => void;
 }) {
-  const selectionEnabled = dayCount >= DAY_SELECTION_THRESHOLD;
+  const selectionEnabled = dayCount >= 1;
   const hasSelection = selectedDates.size > 0;
-  const compact = dayCount > DAY_SELECTION_THRESHOLD;
+  const compact = dayCount > COMPACT_LEGEND_DAY_THRESHOLD;
 
   return (
     <div className="mt-3 shrink-0 border-t border-border/50 pt-3">
@@ -312,7 +312,7 @@ export default function NodeCountTrend({
   const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
   const pointFill = theme === 'dark' ? '#0f172a' : '#ffffff';
   const dayCount = daySeries.length;
-  const selectionEnabled = dayCount >= DAY_SELECTION_THRESHOLD;
+  const selectionEnabled = dayCount >= 1;
 
   const lineDatasets = useMemo(
     () =>
