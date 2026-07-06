@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FileUp,
+  Download,
   Globe2,
   Loader2,
   PlusCircle,
+  RefreshCcw,
   ShieldCheck,
   Trash2,
 } from '@/lib/icons';
@@ -242,6 +244,31 @@ export function SecurityContent() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
   });
 
+  const cloneResource = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ resource: SecurityResourceView; message: string }>(
+        `/api/security/resources/${id}/clone`,
+        { method: 'POST' }
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
+  });
+
+  const pullResource = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ resource: SecurityResourceView; message: string }>(
+        `/api/security/resources/${id}/pull`,
+        { method: 'POST' }
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
+  });
+
+  const repoActionPendingId =
+    cloneResource.isPending && cloneResource.variables
+      ? cloneResource.variables
+      : pullResource.isPending && pullResource.variables
+        ? pullResource.variables
+        : null;
+
   const toggleTool = useMutation({
     mutationFn: ({ toolId, enabled }: { toolId: string; enabled: boolean }) =>
       apiFetch('/api/security/tools', {
@@ -336,8 +363,9 @@ export function SecurityContent() {
             }
           />
           <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
-            Register repositories for SAST, SCA, IaC, and secrets scanning. Add URL targets for
-            DAST and other scan types against live applications.
+            Register repositories for SAST, SCA, IaC, and secrets scanning. Clone a repository here
+            before running scans. Add URL targets for DAST and other scan types against live
+            applications.
           </p>
           {resourcesLoading ? (
             <div className="flex justify-center p-10">
@@ -349,13 +377,14 @@ export function SecurityContent() {
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="table-modern w-full min-w-[720px] text-sm">
+              <table className="table-modern w-full min-w-[860px] text-sm">
                 <thead className="bg-card/95">
                   <tr className="border-b border-border text-[9px] uppercase tracking-wider text-muted-foreground">
                     <th className="px-5 py-3 text-left font-medium">Name</th>
                     <th className="px-5 py-3 text-left font-medium">Type</th>
                     <th className="px-5 py-3 text-left font-medium">Target</th>
                     <th className="px-5 py-3 text-left font-medium">Branch</th>
+                    <th className="px-5 py-3 text-left font-medium">Clone</th>
                     <th className="px-5 py-3 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -374,16 +403,71 @@ export function SecurityContent() {
                       <td className="px-5 py-3 font-mono text-xs text-muted-foreground">
                         {row.defaultBranch ?? '—'}
                       </td>
+                      <td className="px-5 py-3 text-xs text-muted-foreground">
+                        {row.type === 'repository' ? (
+                          row.clone?.cloned ? (
+                            <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-600">
+                              Cloned
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px]">
+                              Not cloned
+                            </Badge>
+                          )
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td className="px-5 py-3 text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
-                          onClick={() => deleteResource.mutate(row.id)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          {row.type === 'repository' ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 gap-1 px-2 text-[10px]"
+                                disabled={Boolean(repoActionPendingId)}
+                                onClick={() => cloneResource.mutate(row.id)}
+                                title={row.clone?.cloned ? 'Re-clone repository' : 'Clone repository'}
+                              >
+                                {repoActionPendingId === row.id && cloneResource.isPending ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Download className="h-3.5 w-3.5" />
+                                )}
+                                Clone
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 gap-1 px-2 text-[10px]"
+                                disabled={!row.clone?.cloned || Boolean(repoActionPendingId)}
+                                onClick={() => pullResource.mutate(row.id)}
+                                title="Pull latest changes"
+                              >
+                                {repoActionPendingId === row.id && pullResource.isPending ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <RefreshCcw className="h-3.5 w-3.5" />
+                                )}
+                                Pull
+                              </Button>
+                            </>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
+                            disabled={deleteResource.isPending}
+                            onClick={() => deleteResource.mutate(row.id)}
+                            title="Delete resource and remove cloned files"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

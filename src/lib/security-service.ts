@@ -13,8 +13,16 @@ import {
 } from './security/tool-runtime';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
+import {
+  cloneSecurityResourceRepo,
+  getSecurityResourceCloneStatus,
+  pullSecurityResourceRepo,
+  removeSecurityResourceClone,
+  type SecurityResourceCloneStatus,
+} from './security/security-repo-prep';
 
 export type { ScanProgressCallback, ScanProgressUpdate } from './security-scan-progress';
+export type { SecurityResourceCloneStatus } from './security/security-repo-prep';
 
 export type SecurityResourceType = 'repository' | 'target_url';
 
@@ -30,6 +38,7 @@ export interface SecurityResourceView {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+  clone?: SecurityResourceCloneStatus;
 }
 
 export interface SecurityToolSettingView {
@@ -123,12 +132,20 @@ function parseRepoUrl(repoUrl: string): { name: string } {
   return { name: slug };
 }
 
+async function enrichResourceView(row: Parameters<typeof toResourceView>[0]): Promise<SecurityResourceView> {
+  const view = toResourceView(row);
+  if (view.type === 'repository') {
+    view.clone = await getSecurityResourceCloneStatus(view.id);
+  }
+  return view;
+}
+
 export async function listSecurityResources(): Promise<SecurityResourceView[]> {
   await assertSecurityModuleEnabled();
   const rows = await prisma.securityResource.findMany({
     orderBy: { createdAt: 'desc' },
   });
-  return rows.map(toResourceView);
+  return Promise.all(rows.map((row) => enrichResourceView(row)));
 }
 
 export async function createSecurityResource(input: {
@@ -158,7 +175,7 @@ export async function createSecurityResource(input: {
         createdBy: input.createdBy ?? null,
       },
     });
-    return toResourceView(row);
+    return enrichResourceView(row);
   }
 
   const targetUrl = input.targetUrl?.trim();
@@ -179,7 +196,26 @@ export async function createSecurityResource(input: {
       createdBy: input.createdBy ?? null,
     },
   });
-  return toResourceView(row);
+  return enrichResourceView(row);
+}
+
+export async function getSecurityResource(id: string): Promise<SecurityResourceView> {
+  await assertSecurityModuleEnabled();
+  const row = await prisma.securityResource.findUnique({ where: { id } });
+  if (!row) throw new Error('Resource not found');
+  return enrichResourceView(row);
+}
+
+export async function cloneSecurityResource(id: string): Promise<SecurityResourceView> {
+  const resource = await getSecurityResource(id);
+  await cloneSecurityResourceRepo(resource);
+  return getSecurityResource(id);
+}
+
+export async function pullSecurityResource(id: string): Promise<SecurityResourceView> {
+  const resource = await getSecurityResource(id);
+  await pullSecurityResourceRepo(resource);
+  return getSecurityResource(id);
 }
 
 export async function updateSecurityResource(
@@ -208,11 +244,12 @@ export async function updateSecurityResource(
       enabled: input.enabled,
     },
   });
-  return toResourceView(row);
+  return enrichResourceView(row);
 }
 
 export async function deleteSecurityResource(id: string): Promise<void> {
   await assertSecurityModuleEnabled();
+  await removeSecurityResourceClone(id);
   await prisma.securityResource.delete({ where: { id } });
 }
 
