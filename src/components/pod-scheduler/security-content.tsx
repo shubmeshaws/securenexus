@@ -850,9 +850,6 @@ export function SecurityContent() {
                       ))}
                     </div>
                   </div>
-                  {installDialog.setting.installCommandsByOs ? (
-                    <InstallCommandsPanel commandsByOs={installDialog.setting.installCommandsByOs} />
-                  ) : null}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -878,7 +875,12 @@ export function SecurityContent() {
                     commands below run on the server — shown for reference.
                   </p>
                   {installCommandsForSelection.length > 0 ? (
-                    <InstallCommandsBlock commands={installCommandsForSelection} />
+                    <InstallCommandsBlock
+                      commands={installCommandsForSelection}
+                      osLabel={
+                        SERVER_OS_OPTIONS.find((row) => row.id === selectedInstallOs)?.label
+                      }
+                    />
                   ) : null}
                   {installDialog.setting.runtimeAvailable ? (
                     <p className="text-emerald-600">
@@ -964,48 +966,21 @@ export function SecurityContent() {
   );
 }
 
-function InstallCommandsBlock({ commands }: { commands: string[] }) {
+function InstallCommandsBlock({
+  commands,
+  osLabel,
+}: {
+  commands: string[];
+  osLabel?: string;
+}) {
   return (
     <div className="rounded-lg border border-border bg-muted/30 p-3">
-      <p className="mb-2 text-[10px] font-medium text-foreground">Install commands</p>
+      <p className="mb-2 text-[10px] font-medium text-foreground">
+        {osLabel ? `Install commands (${osLabel})` : 'Install commands'}
+      </p>
       <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
         {commands.join('\n')}
       </pre>
-    </div>
-  );
-}
-
-function InstallCommandsPanel({
-  commandsByOs,
-  compact = false,
-}: {
-  commandsByOs: Record<ServerOsType, string[]>;
-  compact?: boolean;
-}) {
-  return (
-    <div className={cn('space-y-2', compact ? 'mt-2' : '')}>
-      {!compact ? (
-        <p className="text-[10px] font-medium text-foreground">Install commands by OS</p>
-      ) : (
-        <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
-          Install commands
-        </p>
-      )}
-      {SERVER_OS_OPTIONS.map((os) => {
-        const commands = commandsByOs[os.id] ?? [];
-        if (!commands.length) return null;
-        return (
-          <div
-            key={os.id}
-            className="rounded-lg border border-border/70 bg-muted/20 p-2.5"
-          >
-            <p className="mb-1.5 text-[10px] font-medium text-muted-foreground">{os.label}</p>
-            <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
-              {commands.join('\n')}
-            </pre>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -1080,9 +1055,6 @@ function ToolCard({
             <Globe2 className="h-2.5 w-2.5" />
           </a>
         </div>
-        {setting?.runtimeRequired && !setting.runtimeReady && setting.installCommandsByOs ? (
-          <InstallCommandsPanel commandsByOs={setting.installCommandsByOs} compact />
-        ) : null}
       </div>
     </div>
   );
