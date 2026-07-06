@@ -23,10 +23,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api-client';
 import {
   NODE_COUNT_TREND_PLACEHOLDER,
-  NODES_SERIES_STYLE,
-  PODS_SERIES_STYLE,
+  dayTrendLineStyle,
+  dayTrendShouldFill,
   formatNodeCount,
+  type DayTrendSeries,
   type NodeCountTrendResponse,
+  type NodePodSeriesId,
 } from '@/lib/node-count-trend-data';
 import {
   appendDashboardDateQuery,
@@ -49,6 +51,7 @@ import { cn } from '@/lib/utils';
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip);
 
 type ChartMode = 'line' | 'bar';
+type SeriesMode = NodePodSeriesId;
 
 const CHART_HEIGHT_PX = 260;
 
@@ -78,16 +81,59 @@ function NodeCountTrendSkeleton() {
         <Skeleton className="h-3 w-56" />
       </div>
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
+        <Skeleton className="h-5 w-40" />
         <Skeleton className="w-full flex-1 rounded-xl" style={{ minHeight: CHART_HEIGHT_PX }} />
-        <div className="grid grid-cols-4 gap-4 px-4">
-          <Skeleton className="mx-auto h-12 w-20" />
-          <Skeleton className="mx-auto h-12 w-20" />
-          <Skeleton className="mx-auto h-12 w-20" />
-          <Skeleton className="mx-auto h-12 w-20" />
+        <div className="grid grid-cols-2 gap-6 px-8">
+          <Skeleton className="mx-auto h-12 w-24" />
+          <Skeleton className="mx-auto h-12 w-24" />
         </div>
       </div>
     </GlassPanel>
   );
+}
+
+function buildLineDataset(
+  day: DayTrendSeries,
+  index: number,
+  total: number,
+  pointFill: string
+) {
+  const style = dayTrendLineStyle(index, total);
+  const fill = dayTrendShouldFill(index, total);
+
+  return {
+    label: day.label,
+    data: day.data,
+    borderColor: style.color,
+    backgroundColor: (context: ScriptableContext<'line'>) => {
+      if (!fill) return 'transparent';
+      const chart = context.chart;
+      const { ctx, chartArea } = chart;
+      if (!chartArea) return style.fillTop;
+      return createAreaGradient(ctx, chartArea, style.fillTop, style.fillBottom);
+    },
+    tension: 0.42,
+    borderWidth: index >= total - 2 ? 2.5 : 2,
+    pointRadius: index >= total - 2 ? 3 : total > 14 ? 0 : 2,
+    pointHoverRadius: 5,
+    pointBackgroundColor: pointFill,
+    pointBorderColor: style.color,
+    pointBorderWidth: 2,
+    spanGaps: true,
+    fill,
+  };
+}
+
+function buildBarDataset(day: DayTrendSeries, index: number, total: number) {
+  const style = dayTrendLineStyle(index, total);
+  return {
+    label: day.label,
+    data: day.data,
+    backgroundColor: style.barBg,
+    borderColor: style.color,
+    borderWidth: 1,
+    borderRadius: 2,
+  };
 }
 
 export default function NodeCountTrend({
@@ -99,9 +145,11 @@ export default function NodeCountTrend({
 }) {
   const { theme } = useTheme();
   const [chartMode, setChartMode] = useState<ChartMode>('line');
+  const [seriesMode, setSeriesMode] = useState<SeriesMode>('nodes');
   const [cluster, setCluster] = useState('');
 
   const rangeReady = isDashboardDateRangeReady(dateRange);
+  const periodLabel = rangeReady ? getDashboardPeriodLabel(dateRange) : 'Select period';
   const queryUrl = appendDashboardDateQuery('/api/dashboard/node-count-trend', dateRange);
   const urlWithCluster = useMemo(() => {
     if (!cluster) return queryUrl;
@@ -136,85 +184,22 @@ export default function NodeCountTrend({
     }
   }, [cluster, availableClusters]);
 
-  const nodeValues = chartData.series.nodes;
-  const podValues = chartData.series.pods;
-  const hasNodeData = nodeValues.some((value) => value != null);
-  const hasPodData = podValues.some((value) => value != null);
-  const hasData = chartData.hasSamples && (hasNodeData || hasPodData);
+  const daySeries = chartData.hourlyByDay[seriesMode];
+  const hasData =
+    chartData.hasSamples && daySeries.some((day) => day.data.some((value) => value != null));
 
-  const periodLabel = rangeReady ? getDashboardPeriodLabel(dateRange) : 'Select period';
+  const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
   const pointFill = theme === 'dark' ? '#0f172a' : '#ffffff';
+  const dayCount = daySeries.length;
 
   const lineDatasets = useMemo(
-    () => [
-      {
-        label: 'Nodes',
-        data: nodeValues,
-        yAxisID: 'yNodes',
-        borderColor: NODES_SERIES_STYLE.color,
-        backgroundColor: (context: ScriptableContext<'line'>) => {
-          const chart = context.chart;
-          const { ctx, chartArea } = chart;
-          if (!chartArea) return NODES_SERIES_STYLE.fillTop;
-          return createAreaGradient(
-            ctx,
-            chartArea,
-            NODES_SERIES_STYLE.fillTop,
-            NODES_SERIES_STYLE.fillBottom
-          );
-        },
-        tension: 0.35,
-        borderWidth: 2.5,
-        pointRadius: chartData.days <= 14 ? 3 : 2,
-        pointHoverRadius: 5,
-        pointBackgroundColor: pointFill,
-        pointBorderColor: NODES_SERIES_STYLE.color,
-        pointBorderWidth: 2,
-        spanGaps: true,
-        fill: true,
-      },
-      {
-        label: 'Pods',
-        data: podValues,
-        yAxisID: 'yPods',
-        borderColor: PODS_SERIES_STYLE.color,
-        backgroundColor: 'transparent',
-        tension: 0.35,
-        borderWidth: 2.5,
-        pointRadius: chartData.days <= 14 ? 3 : 2,
-        pointHoverRadius: 5,
-        pointBackgroundColor: pointFill,
-        pointBorderColor: PODS_SERIES_STYLE.color,
-        pointBorderWidth: 2,
-        spanGaps: true,
-        fill: false,
-      },
-    ],
-    [nodeValues, podValues, pointFill, chartData.days]
+    () => daySeries.map((day, index) => buildLineDataset(day, index, dayCount, pointFill)),
+    [daySeries, dayCount, pointFill]
   );
 
   const barDatasets = useMemo(
-    () => [
-      {
-        label: 'Nodes',
-        data: nodeValues,
-        yAxisID: 'yNodes',
-        backgroundColor: NODES_SERIES_STYLE.barBg,
-        borderColor: NODES_SERIES_STYLE.color,
-        borderWidth: 1,
-        borderRadius: 3,
-      },
-      {
-        label: 'Pods',
-        data: podValues,
-        yAxisID: 'yPods',
-        backgroundColor: PODS_SERIES_STYLE.barBg,
-        borderColor: PODS_SERIES_STYLE.color,
-        borderWidth: 1,
-        borderRadius: 3,
-      },
-    ],
-    [nodeValues, podValues]
+    () => daySeries.map((day, index) => buildBarDataset(day, index, dayCount)),
+    [daySeries, dayCount]
   );
 
   const isDark = theme === 'dark';
@@ -252,27 +237,14 @@ export default function NodeCountTrend({
           ticks: {
             color: tickColor,
             font: { size: 10 },
-            maxTicksLimit: chartData.labels.length > 14 ? 10 : 8,
-            maxRotation: chartData.days > 7 ? 45 : 0,
+            maxTicksLimit: chartData.labels.length > 24 ? 12 : 8,
+            maxRotation: 0,
           },
         },
-        yNodes: {
-          type: 'linear' as const,
-          position: 'left' as const,
+        y: {
           grid: { color: gridColor },
           ticks: {
-            color: NODES_SERIES_STYLE.color,
-            font: { size: 10 },
-            callback: (value: string | number) => formatNodeCount(Number(value)),
-          },
-          beginAtZero: true,
-        },
-        yPods: {
-          type: 'linear' as const,
-          position: 'right' as const,
-          grid: { drawOnChartArea: false },
-          ticks: {
-            color: PODS_SERIES_STYLE.color,
+            color: tickColor,
             font: { size: 10 },
             callback: (value: string | number) => formatNodeCount(Number(value)),
           },
@@ -281,16 +253,13 @@ export default function NodeCountTrend({
       },
       datasets: {
         bar: {
-          barPercentage: 0.65,
-          categoryPercentage: 0.75,
+          barPercentage: dayCount > 7 ? 0.85 : 0.65,
+          categoryPercentage: dayCount > 7 ? 0.9 : 0.75,
         },
       },
     }),
-    [chartMode, chartData.labels.length, chartData.days, gridColor, tickColor]
+    [chartMode, chartData.labels.length, gridColor, tickColor, dayCount]
   );
-
-  const formatSummary = (value: number | null) =>
-    value != null ? formatNodeCount(value) : '—';
 
   if (isLoading && !data) {
     return <NodeCountTrendSkeleton />;
@@ -317,6 +286,15 @@ export default function NodeCountTrend({
             </DashboardFilterSelect>
           ) : null}
           <DashboardToggleGroup
+            value={seriesMode}
+            onChange={setSeriesMode}
+            capitalize
+            options={[
+              { id: 'nodes' as const, label: 'nodes' },
+              { id: 'pods' as const, label: 'pods' },
+            ]}
+          />
+          <DashboardToggleGroup
             value={chartMode}
             onChange={setChartMode}
             capitalize
@@ -328,28 +306,12 @@ export default function NodeCountTrend({
         </DashboardFilterBar>
       </DashboardChartToolbar>
       <PanelSubtitle className="min-h-10 shrink-0">
-        Daily node & pod counts · {periodLabel} (IST, max 30 days)
+        Hourly {seriesLabel.toLowerCase()} · {periodLabel} (IST)
         {isFetching ? ' · updating…' : ''}
       </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-2">
-        <div className="mb-3 flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: NODES_SERIES_STYLE.legend }}
-            />
-            <span>Nodes (left axis)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: PODS_SERIES_STYLE.legend }}
-            />
-            <span>Pods (right axis)</span>
-          </div>
-        </div>
-
+        <div className="mb-3 min-h-5" aria-hidden="true" />
         <div className="relative w-full shrink-0" style={{ height: CHART_HEIGHT_PX }}>
           {!rangeReady ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -369,7 +331,7 @@ export default function NodeCountTrend({
             </div>
           ) : !hasData ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              No samples for the selected period yet.
+              No {seriesMode} samples for the selected period yet.
             </div>
           ) : chartMode === 'line' ? (
             <Line
@@ -385,35 +347,19 @@ export default function NodeCountTrend({
         </div>
 
         {hasData && (
-          <DashboardChartComparisonFooter columns={4}>
-            <DashboardComparisonStat
-              color={NODES_SERIES_STYLE.legend}
-              label="Nodes (latest)"
-              value={formatSummary(chartData.summary.nodes.latest)}
-            />
-            <DashboardComparisonStat
-              color={NODES_SERIES_STYLE.legend}
-              label="Nodes (avg)"
-              value={formatSummary(
-                chartData.summary.nodes.average != null
-                  ? Math.round(chartData.summary.nodes.average)
-                  : null
-              )}
-            />
-            <DashboardComparisonStat
-              color={PODS_SERIES_STYLE.legend}
-              label="Pods (latest)"
-              value={formatSummary(chartData.summary.pods.latest)}
-            />
-            <DashboardComparisonStat
-              color={PODS_SERIES_STYLE.legend}
-              label="Pods (avg)"
-              value={formatSummary(
-                chartData.summary.pods.average != null
-                  ? Math.round(chartData.summary.pods.average)
-                  : null
-              )}
-            />
+          <DashboardChartComparisonFooter columns={Math.min(dayCount, 7) as 2 | 3 | 4 | 5 | 6 | 7}>
+            {daySeries.map((day, index) => {
+              const style = dayTrendLineStyle(index, dayCount);
+              const value = day.latest != null ? formatNodeCount(day.latest) : '—';
+              return (
+                <DashboardComparisonStat
+                  key={day.date}
+                  color={style.color}
+                  label={day.label}
+                  value={value}
+                />
+              );
+            })}
           </DashboardChartComparisonFooter>
         )}
       </div>

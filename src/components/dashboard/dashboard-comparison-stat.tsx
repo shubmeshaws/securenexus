@@ -33,19 +33,23 @@ export function DashboardChartComparisonFooter({
   columns = 2,
 }: {
   children: React.ReactNode;
-  columns?: 2 | 3 | 4;
+  columns?: 2 | 3 | 4 | 5 | 6 | 7;
 }) {
+  const gridClass =
+    columns === 2
+      ? 'grid-cols-2'
+      : columns === 3
+        ? 'grid-cols-3'
+        : columns === 4
+          ? 'grid-cols-2 sm:grid-cols-4'
+          : columns === 5
+            ? 'grid-cols-2 sm:grid-cols-5'
+            : columns === 6
+              ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-6'
+              : 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-7';
+
   return (
-    <div
-      className={cn(
-        'mt-4 grid gap-6 border-t border-border/50 pt-5',
-        columns === 2
-          ? 'grid-cols-2'
-          : columns === 3
-            ? 'grid-cols-3'
-            : 'grid-cols-2 sm:grid-cols-4'
-      )}
-    >
+    <div className={cn('mt-4 grid gap-4 border-t border-border/50 pt-5 sm:gap-6', gridClass)}>
       {children}
     </div>
   );

@@ -2,21 +2,22 @@ import type { DashboardDateQuery } from './dashboard-date-range';
 
 export type NodePodSeriesId = 'nodes' | 'pods';
 
-export interface NodeCountTrendSeriesSummary {
+export interface DayTrendSeries {
+  date: string;
+  label: string;
+  data: (number | null)[];
   latest: number | null;
-  average: number | null;
 }
 
 export interface NodeCountTrendResponse {
+  /** Hourly x-axis labels (12:00 AM … 11:00 PM) */
   labels: string[];
-  dates: string[];
   days: number;
   periodLabel: string;
   cluster: string;
   availableClusters: string[];
   hasSamples: boolean;
-  series: Record<NodePodSeriesId, (number | null)[]>;
-  summary: Record<NodePodSeriesId, NodeCountTrendSeriesSummary>;
+  hourlyByDay: Record<NodePodSeriesId, DayTrendSeries[]>;
 }
 
 export interface NodeCountTrendQuery extends DashboardDateQuery {
@@ -27,19 +28,14 @@ export const MAX_NODE_COUNT_TREND_DAYS = 30;
 
 export const EMPTY_NODE_COUNT_TREND: NodeCountTrendResponse = {
   labels: [],
-  dates: [],
   days: 0,
   periodLabel: '',
   cluster: '',
   availableClusters: [],
   hasSamples: false,
-  series: {
+  hourlyByDay: {
     nodes: [],
     pods: [],
-  },
-  summary: {
-    nodes: { latest: null, average: null },
-    pods: { latest: null, average: null },
   },
 };
 
@@ -47,12 +43,6 @@ export const NODE_COUNT_TREND_PLACEHOLDER = EMPTY_NODE_COUNT_TREND;
 
 export function formatNodeCount(value: number): string {
   return String(Math.round(value));
-}
-
-export function averageNonNull(values: (number | null)[]): number | null {
-  const nums = values.filter((v): v is number => v != null);
-  if (!nums.length) return null;
-  return nums.reduce((sum, v) => sum + v, 0) / nums.length;
 }
 
 export function latestNonNullValue(data: (number | null)[]): number | null {
@@ -63,25 +53,71 @@ export function latestNonNullValue(data: (number | null)[]): number | null {
   return null;
 }
 
-export const NODES_SERIES_STYLE = {
+export const YESTERDAY_SERIES_STYLE = {
   color: '#6366F1',
-  fillTop: 'rgba(99, 102, 241, 0.22)',
+  fillTop: 'rgba(99, 102, 241, 0.32)',
   fillBottom: 'rgba(99, 102, 241, 0.02)',
   barBg: 'rgba(99, 102, 241, 0.75)',
-  legend: '#6366F1',
 } as const;
 
-export const PODS_SERIES_STYLE = {
+export const TODAY_SERIES_STYLE = {
   color: '#22C55E',
-  fillTop: 'rgba(34, 197, 94, 0.22)',
+  fillTop: 'rgba(34, 197, 94, 0.32)',
   fillBottom: 'rgba(34, 197, 94, 0.02)',
   barBg: 'rgba(34, 197, 94, 0.75)',
-  legend: '#22C55E',
 } as const;
 
-/** @deprecated use NODES_SERIES_STYLE */
-export const SERIES_STYLE = NODES_SERIES_STYLE;
+/** Muted palette for days older than yesterday */
+export const OLDER_DAY_LINE_COLORS = [
+  '#94a3b8',
+  '#a78bfa',
+  '#f472b6',
+  '#fb923c',
+  '#38bdf8',
+  '#e879f9',
+  '#4ade80',
+  '#facc15',
+  '#f87171',
+  '#2dd4bf',
+  '#c084fc',
+  '#60a5fa',
+  '#fbbf24',
+  '#34d399',
+  '#f97316',
+  '#818cf8',
+  '#fb7185',
+  '#22d3ee',
+  '#a3e635',
+  '#e11d48',
+  '#0ea5e9',
+  '#d946ef',
+  '#84cc16',
+  '#06b6d4',
+  '#8b5cf6',
+  '#ec4899',
+  '#14b8a6',
+  '#eab308',
+] as const;
+
+export function dayTrendLineStyle(index: number, total: number) {
+  if (index === total - 1) return TODAY_SERIES_STYLE;
+  if (index === total - 2) return YESTERDAY_SERIES_STYLE;
+  const color = OLDER_DAY_LINE_COLORS[index % OLDER_DAY_LINE_COLORS.length];
+  return {
+    color,
+    fillTop: `${color}33`,
+    fillBottom: `${color}05`,
+    barBg: `${color}BF`,
+  };
+}
+
+export function dayTrendShouldFill(index: number, total: number): boolean {
+  return index >= total - 2;
+}
+
 /** @deprecated */
-export const YESTERDAY_SERIES_STYLE = NODES_SERIES_STYLE;
+export const NODES_SERIES_STYLE = YESTERDAY_SERIES_STYLE;
 /** @deprecated */
-export const TODAY_SERIES_STYLE = PODS_SERIES_STYLE;
+export const PODS_SERIES_STYLE = TODAY_SERIES_STYLE;
+/** @deprecated */
+export const SERIES_STYLE = YESTERDAY_SERIES_STYLE;

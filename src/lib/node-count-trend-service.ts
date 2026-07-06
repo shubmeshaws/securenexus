@@ -1,21 +1,21 @@
 import { addDays, format, max as maxDate, parseISO } from 'date-fns';
-import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { formatInTimeZone } from 'date-fns-tz';
+import { resolveCostTrendBuckets } from './cost-savings-trend-data';
 import {
+  type DayTrendSeries,
   type NodeCountTrendQuery,
   type NodeCountTrendResponse,
   type NodePodSeriesId,
   MAX_NODE_COUNT_TREND_DAYS,
-  averageNonNull,
   latestNonNullValue,
 } from './node-count-trend-data';
 import {
   parseDashboardDateQuery,
-  resolveDashboardRangeBounds,
   type DashboardDateQuery,
 } from './dashboard-date-range';
 import { listRegisteredClusterNames } from './node-count-sampler';
 import { getNodeSampleCaptureStartAt } from './node-sample-retention';
-import { IST_TIMEZONE } from './utils';
+import { formatTime12h, IST_TIMEZONE } from './utils';
 import prisma from './prisma';
 
 const CACHE_TTL_MS = 60_000;
@@ -58,15 +58,8 @@ function istDateAndHour(sampledAt: Date): { date: string; hour: number } {
   };
 }
 
-function listDatesInclusive(startDate: string, endDate: string): string[] {
-  const dates: string[] = [];
-  let cursor = parseISO(startDate);
-  const end = parseISO(endDate);
-  while (cursor <= end) {
-    dates.push(format(cursor, 'yyyy-MM-dd'));
-    cursor = addDays(cursor, 1);
-  }
-  return dates;
+function todayCalendarDate(now: Date = new Date()): string {
+  return formatInTimeZone(now, IST_TIMEZONE, 'yyyy-MM-dd');
 }
 
 function bucketCountsByIstHour(
@@ -93,47 +86,80 @@ function bucketCountsByIstHour(
   return counts;
 }
 
-function latestCountForDay(samples: HourlySample[], calendarDate: string): number | null {
-  const byHour = bucketCountsByIstHour(samples, calendarDate, COMPARISON_HOURS);
-  for (let hour = 23; hour >= 0; hour--) {
-    if (byHour.has(hour)) return byHour.get(hour)!;
-  }
-  return null;
+function hourChartLabel(hour: number): string {
+  return formatTime12h(`${String(hour).padStart(2, '0')}:00`);
 }
 
-function dayChartLabel(calendarDate: string, dayCount: number): string {
+function groupSamplesByDate(samples: HourlySample[]): Map<string, HourlySample[]> {
+  const grouped = new Map<string, HourlySample[]>();
+  for (const sample of samples) {
+    const { date } = istDateAndHour(sample.sampledAt);
+    const list = grouped.get(date) ?? [];
+    list.push(sample);
+    grouped.set(date, list);
+  }
+  return grouped;
+}
+
+function buildDaySeries(
+  calendarDate: string,
+  label: string,
+  samples: HourlySample[]
+): DayTrendSeries {
+  const byHour = bucketCountsByIstHour(samples, calendarDate, COMPARISON_HOURS);
+  const data = COMPARISON_HOURS.map((hour) => (byHour.has(hour) ? byHour.get(hour)! : null));
+  return {
+    date: calendarDate,
+    label,
+    data,
+    latest: latestNonNullValue(data),
+  };
+}
+
+function daySeriesLabel(
+  calendarDate: string,
+  todayDate: string,
+  dayCount: number
+): string {
+  const yesterdayDate = format(addDays(parseISO(todayDate), -1), 'yyyy-MM-dd');
+  if (calendarDate === todayDate) return 'Today';
+  if (calendarDate === yesterdayDate) return 'Yesterday';
   const day = parseISO(calendarDate);
-  return dayCount <= 7
-    ? formatInTimeZone(day, IST_TIMEZONE, 'EEE')
-    : formatInTimeZone(day, IST_TIMEZONE, 'd MMM');
+  if (dayCount <= 7) return formatInTimeZone(day, IST_TIMEZONE, 'EEE');
+  return formatInTimeZone(day, IST_TIMEZONE, 'd MMM');
+}
+
+function buildHourlyByDay(
+  calendarDates: string[],
+  samplesByDate: Map<string, HourlySample[]>,
+  todayDate: string
+): DayTrendSeries[] {
+  return calendarDates.map((date) =>
+    buildDaySeries(
+      date,
+      daySeriesLabel(date, todayDate, calendarDates.length),
+      samplesByDate.get(date) ?? []
+    )
+  );
 }
 
 function emptyResponse(cluster: string, availableClusters: string[]): NodeCountTrendResponse {
   return {
     labels: [],
-    dates: [],
     days: 0,
     periodLabel: '',
     cluster,
     availableClusters,
     hasSamples: false,
-    series: { nodes: [], pods: [] },
-    summary: {
-      nodes: { latest: null, average: null },
-      pods: { latest: null, average: null },
+    hourlyByDay: {
+      nodes: [],
+      pods: [],
     },
   };
 }
 
 function cacheKey(query: NodeCountTrendQuery): string {
   return JSON.stringify(query);
-}
-
-function buildSeriesSummary(data: (number | null)[]) {
-  return {
-    latest: latestNonNullValue(data),
-    average: averageNonNull(data),
-  };
 }
 
 export async function getNodeCountTrendData(
@@ -156,12 +182,18 @@ export async function getNodeCountTrendData(
     return emptyResponse('', availableClusters);
   }
 
-  const { rangeStart, rangeEnd, days } = resolveDashboardRangeBounds(capped);
-  const startDate = formatInTimeZone(rangeStart, IST_TIMEZONE, 'yyyy-MM-dd');
-  const endDate = formatInTimeZone(rangeEnd, IST_TIMEZONE, 'yyyy-MM-dd');
-  const calendarDates = listDatesInclusive(startDate, endDate);
+  const buckets = resolveCostTrendBuckets(capped, IST_TIMEZONE);
+  if (!buckets.length) {
+    return emptyResponse(selectedCluster, availableClusters);
+  }
+
+  const calendarDates = buckets.map((bucket) => bucket.date);
+  const rangeStart = buckets[0].start;
+  const rangeEnd = buckets[buckets.length - 1].end;
+  const days = buckets.length;
   const captureStartAt = await getNodeSampleCaptureStartAt();
   const sampleWindowStart = maxDate([rangeStart, captureStartAt ?? rangeStart]);
+  const todayDate = todayCalendarDate();
 
   const [nodeRows, podRows] = await Promise.all([
     prisma.clusterNodeHourlySample.findMany({
@@ -191,35 +223,31 @@ export async function getNodeCountTrendData(
     sampledAt: row.sampledAt,
   }));
 
-  const series: Record<NodePodSeriesId, (number | null)[]> = {
-    nodes: calendarDates.map((date) => latestCountForDay(nodeSamples, date)),
-    pods: calendarDates.map((date) => latestCountForDay(podSamples, date)),
+  const nodeSamplesByDate = groupSamplesByDate(nodeSamples);
+  const podSamplesByDate = groupSamplesByDate(podSamples);
+
+  const hourlyByDay: Record<NodePodSeriesId, DayTrendSeries[]> = {
+    nodes: buildHourlyByDay(calendarDates, nodeSamplesByDate, todayDate),
+    pods: buildHourlyByDay(calendarDates, podSamplesByDate, todayDate),
   };
 
   const hasSamples =
     nodeSamples.length > 0 ||
     podSamples.length > 0 ||
-    series.nodes.some((v) => v != null) ||
-    series.pods.some((v) => v != null);
+    hourlyByDay.nodes.some((day) => day.data.some((value) => value != null)) ||
+    hourlyByDay.pods.some((day) => day.data.some((value) => value != null));
 
   const periodLabel =
-    capped.from && capped.to
-      ? `${capped.from} → ${capped.to}`
-      : `Last ${days} days`;
+    capped.from && capped.to ? `${capped.from} → ${capped.to}` : `Last ${days} days`;
 
   const data: NodeCountTrendResponse = {
-    labels: calendarDates.map((date) => dayChartLabel(date, calendarDates.length)),
-    dates: calendarDates,
-    days: calendarDates.length,
+    labels: COMPARISON_HOURS.map((hour) => hourChartLabel(hour)),
+    days,
     periodLabel,
     cluster: selectedCluster,
     availableClusters,
     hasSamples,
-    series,
-    summary: {
-      nodes: buildSeriesSummary(series.nodes),
-      pods: buildSeriesSummary(series.pods),
-    },
+    hourlyByDay,
   };
 
   trendCache = { key, at: Date.now(), data };
