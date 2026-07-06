@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
+import { sanitizePostgresText } from '@/lib/utils';
 import {
   countFindingsBySeverity,
 } from '@/lib/security-report-export';
@@ -168,7 +169,7 @@ export async function runZapScan(input: {
         : `OWASP ZAP completed for ${input.resource.name} — ${findingCount} finding${findingCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
 
     return {
-      htmlContent: zapHtmlContent,
+      htmlContent: sanitizePostgresText(zapHtmlContent),
       highCount: counts.high,
       mediumCount: counts.medium,
       lowCount: counts.low,

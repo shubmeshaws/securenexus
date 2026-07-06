@@ -12,6 +12,7 @@ import {
 import { buildSecurityReportCsv } from './security-report-csv';
 import { htmlToPdfBuffer } from './security-html-to-pdf';
 import { categoryReportLabel } from './security-report-html';
+import { sanitizePostgresText } from './utils';
 import type { SecurityReportMode } from './security-scan-types';
 import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
@@ -797,7 +798,7 @@ async function saveSecurityScanReport(
       title: result.title,
       status: 'completed',
       summary: result.summary,
-      htmlContent: result.htmlContent,
+      htmlContent: sanitizePostgresText(result.htmlContent),
       highCount: result.highCount,
       mediumCount: result.mediumCount,
       lowCount: result.lowCount,
@@ -846,7 +847,7 @@ async function saveMergedSecurityScanReport(
       title,
       status: 'completed',
       summary,
-      htmlContent,
+      htmlContent: sanitizePostgresText(htmlContent),
       highCount,
       mediumCount,
       lowCount,

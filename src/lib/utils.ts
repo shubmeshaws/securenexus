@@ -4,6 +4,11 @@ import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 export const IST_TIMEZONE = 'Asia/Kolkata';
 
+/** PostgreSQL UTF-8 text columns reject null bytes (0x00). ZAP and other tools may emit them. */
+export function sanitizePostgresText(value: string): string {
+  return value.replace(/\u0000/g, '');
+}
+
 /** YYYY-MM-DD for `<input type="date">` in IST (matches displayed timestamps). */
 export function formatDateInputIST(date: Date = new Date()): string {
   return formatInTimeZone(date, IST_TIMEZONE, 'yyyy-MM-dd');
