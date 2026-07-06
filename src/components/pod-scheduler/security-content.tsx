@@ -832,22 +832,27 @@ export function SecurityContent() {
           {installDialog ? (
             <div className="space-y-4 text-[11px] text-muted-foreground">
               {!selectedInstallOs ? (
-                <div className="space-y-2">
-                  <p className="font-medium text-foreground">1. Select server OS</p>
-                  <div className="grid gap-2">
-                    {SERVER_OS_OPTIONS.map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        disabled={installTool.isPending}
-                        onClick={() => setSelectedInstallOs(option.id)}
-                        className="rounded-lg border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/5"
-                      >
-                        <span className="block text-sm font-medium text-foreground">{option.label}</span>
-                        <span className="block text-[10px] text-muted-foreground">{option.description}</span>
-                      </button>
-                    ))}
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <p className="font-medium text-foreground">1. Select server OS</p>
+                    <div className="grid gap-2">
+                      {SERVER_OS_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          disabled={installTool.isPending}
+                          onClick={() => setSelectedInstallOs(option.id)}
+                          className="rounded-lg border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/5"
+                        >
+                          <span className="block text-sm font-medium text-foreground">{option.label}</span>
+                          <span className="block text-[10px] text-muted-foreground">{option.description}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
+                  {installDialog.setting.installCommandsByOs ? (
+                    <InstallCommandsPanel commandsByOs={installDialog.setting.installCommandsByOs} />
+                  ) : null}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -869,17 +874,12 @@ export function SecurityContent() {
                   </div>
                   <p>
                     SecureNexus installs {installDialog.tool.name} automatically when you click{' '}
-                    <span className="font-medium text-foreground">Install &amp; enable</span>. You do
-                    not need to run any commands manually.
+                    <span className="font-medium text-foreground">Install &amp; enable</span>. The
+                    commands below run on the server — shown for reference.
                   </p>
-                  <div className="rounded-lg border border-border bg-muted/30 p-3 text-[10px] text-foreground">
-                    <p className="mb-2 font-medium">What happens automatically:</p>
-                    <ul className="list-inside list-disc space-y-1 text-muted-foreground">
-                      {installCommandsForSelection.map((command) => (
-                        <li key={command}>{command}</li>
-                      ))}
-                    </ul>
-                  </div>
+                  {installCommandsForSelection.length > 0 ? (
+                    <InstallCommandsBlock commands={installCommandsForSelection} />
+                  ) : null}
                   {installDialog.setting.runtimeAvailable ? (
                     <p className="text-emerald-600">
                       This tool appears to be available already. Click install to verify and enable
@@ -964,6 +964,52 @@ export function SecurityContent() {
   );
 }
 
+function InstallCommandsBlock({ commands }: { commands: string[] }) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-3">
+      <p className="mb-2 text-[10px] font-medium text-foreground">Install commands</p>
+      <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
+        {commands.join('\n')}
+      </pre>
+    </div>
+  );
+}
+
+function InstallCommandsPanel({
+  commandsByOs,
+  compact = false,
+}: {
+  commandsByOs: Record<ServerOsType, string[]>;
+  compact?: boolean;
+}) {
+  return (
+    <div className={cn('space-y-2', compact ? 'mt-2' : '')}>
+      {!compact ? (
+        <p className="text-[10px] font-medium text-foreground">Install commands by OS</p>
+      ) : (
+        <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+          Install commands
+        </p>
+      )}
+      {SERVER_OS_OPTIONS.map((os) => {
+        const commands = commandsByOs[os.id] ?? [];
+        if (!commands.length) return null;
+        return (
+          <div
+            key={os.id}
+            className="rounded-lg border border-border/70 bg-muted/20 p-2.5"
+          >
+            <p className="mb-1.5 text-[10px] font-medium text-muted-foreground">{os.label}</p>
+            <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
+              {commands.join('\n')}
+            </pre>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ToolCard({
   tool,
   setting,
@@ -1034,6 +1080,9 @@ function ToolCard({
             <Globe2 className="h-2.5 w-2.5" />
           </a>
         </div>
+        {setting?.runtimeRequired && !setting.runtimeReady && setting.installCommandsByOs ? (
+          <InstallCommandsPanel commandsByOs={setting.installCommandsByOs} compact />
+        ) : null}
       </div>
     </div>
   );

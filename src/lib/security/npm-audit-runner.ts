@@ -2,19 +2,21 @@ import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
-import {
-  buildScaReportHtml,
-  countFindingsBySeverity,
-  type ScaDependencyRow,
-} from '@/lib/security-report-export';
 import { formatRepositoryCloneError } from '@/lib/git-error-utils';
-import { getSecurityToolById } from '@/lib/security-tools';
+import { toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { findNpmProjectRoot, prepareRepositoryPath } from './security-repo-prep';
 
 const execFileAsync = promisify(execFile);
 const NPM_AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
 const NPM_LOCKFILE_TIMEOUT_MS = 5 * 60 * 1000;
+const PYTHON_EXECUTABLE = 'python3';
+const NPM_SCA_SCRIPT_PATH = path.join(
+  process.cwd(),
+  'scripts',
+  'security',
+  'generate_npm_sca_report.py'
+);
 
 export interface NpmAuditScanResult {
   htmlContent: string;
@@ -26,37 +28,25 @@ export interface NpmAuditScanResult {
   npmVersion: string;
 }
 
-interface NpmAuditViaAdvisory {
-  source?: number;
-  name?: string;
-  title?: string;
-  url?: string;
-  severity?: string;
+interface ScaFindingRow {
+  severity: string;
 }
 
-interface NpmAuditVulnerability {
-  name?: string;
-  severity?: string;
-  via?: Array<string | NpmAuditViaAdvisory>;
-  range?: string;
-  fixAvailable?: false | { name?: string; version?: string; isSemVerMajor?: boolean };
-}
-
-interface NpmAuditReport {
-  vulnerabilities?: Record<string, NpmAuditVulnerability>;
-  metadata?: {
-    vulnerabilities?: {
-      total?: number;
-      high?: number;
-      moderate?: number;
-      low?: number;
-      critical?: number;
-    };
-  };
-  error?: {
-    code?: string;
-    summary?: string;
-  };
+function countSeverities(rows: ScaFindingRow[]): {
+  high: number;
+  medium: number;
+  low: number;
+} {
+  let high = 0;
+  let medium = 0;
+  let low = 0;
+  for (const row of rows) {
+    const sev = row.severity.toLowerCase();
+    if (sev === 'high' || sev === 'critical') high += 1;
+    else if (sev === 'medium' || sev === 'moderate') medium += 1;
+    else low += 1;
+  }
+  return { high, medium, low };
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -70,7 +60,10 @@ async function pathExists(p: string): Promise<boolean> {
 
 async function getNpmVersion(): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('npm', ['--version'], { timeout: 5000 });
+    const { stdout } = await execFileAsync('npm', ['--version'], {
+      timeout: 5000,
+      env: toolPathEnv(),
+    });
     return stdout.trim() || 'unknown';
   } catch {
     return 'unknown';
@@ -88,7 +81,7 @@ async function ensureLockfile(projectRoot: string): Promise<void> {
     cwd: projectRoot,
     maxBuffer: 20 * 1024 * 1024,
     timeout: NPM_LOCKFILE_TIMEOUT_MS,
-    env: process.env,
+    env: toolPathEnv(),
   });
 }
 
@@ -98,7 +91,7 @@ async function runNpmAuditJson(projectRoot: string): Promise<string> {
       cwd: projectRoot,
       maxBuffer: 50 * 1024 * 1024,
       timeout: NPM_AUDIT_TIMEOUT_MS,
-      env: process.env,
+      env: toolPathEnv(),
     });
     return stdout;
   } catch (err: unknown) {
@@ -110,123 +103,17 @@ async function runNpmAuditJson(projectRoot: string): Promise<string> {
   }
 }
 
-function mapScaSeverity(severity: string): ScaDependencyRow['severity'] {
-  const sev = severity.toLowerCase();
-  if (sev === 'critical' || sev === 'high') return 'High';
-  if (sev === 'moderate' || sev === 'medium') return 'Moderate';
-  return 'Low';
-}
-
-function severityRank(severity: ScaDependencyRow['severity']): number {
-  if (severity === 'High') return 0;
-  if (severity === 'Moderate') return 1;
-  return 2;
-}
-
-function extractAdvisory(via: NpmAuditVulnerability['via']): NpmAuditViaAdvisory | null {
-  if (!via?.length) return null;
-  for (const entry of via) {
-    if (typeof entry === 'object' && entry !== null) {
-      return entry;
-    }
-  }
-  return null;
-}
-
-function extractCveId(advisory: NpmAuditViaAdvisory | null, via: NpmAuditVulnerability['via']): string {
-  if (advisory?.url) {
-    const ghsa = advisory.url.match(/GHSA-[a-z0-9-]+/i);
-    if (ghsa) return ghsa[0].toUpperCase();
-    const cve = advisory.url.match(/CVE-\d{4}-\d+/i);
-    if (cve) return cve[0].toUpperCase();
-  }
-  if (advisory?.source) return `npm-advisory-${advisory.source}`;
-  const chain = via?.find((entry) => typeof entry === 'string');
-  return typeof chain === 'string' ? chain : '—';
-}
-
-function extractViaChain(via: NpmAuditVulnerability['via']): string {
-  const chains = via?.filter((entry): entry is string => typeof entry === 'string') ?? [];
-  return chains.join(' → ');
-}
-
-function buildVulnerabilityTitle(
-  vuln: NpmAuditVulnerability,
-  advisory: NpmAuditViaAdvisory | null
-): string {
-  if (advisory?.title?.trim()) return advisory.title.trim();
-  const chain = extractViaChain(vuln.via);
-  if (chain) return `Transitive vulnerability via ${chain}`;
-  return 'Known vulnerability in dependency tree';
-}
-
-function extractCurrentVersion(range?: string): string {
-  if (!range?.trim()) return '—';
-  const trimmed = range.trim();
-  if (trimmed.startsWith('<') || trimmed.startsWith('>') || trimmed.startsWith('=')) {
-    return trimmed.length > 28 ? `${trimmed.slice(0, 28)}…` : trimmed;
-  }
-  const rangeMatch = trimmed.match(/^(.+?)\s*-\s*(.+)$/);
-  if (rangeMatch) return rangeMatch[2].trim();
-  return trimmed.length > 28 ? `${trimmed.slice(0, 28)}…` : trimmed;
-}
-
-function buildFixAction(
-  fixAvailable: NpmAuditVulnerability['fixAvailable']
-): { fixVersion: string; action: string } {
-  if (fixAvailable && typeof fixAvailable === 'object' && fixAvailable.version) {
-    const suffix = fixAvailable.isSemVerMajor ? ' (may include breaking changes)' : '+';
-    return {
-      fixVersion: fixAvailable.version,
-      action: `Upgrade to ${fixAvailable.version}${suffix}`,
-    };
-  }
-  return {
-    fixVersion: 'None',
-    action: 'Review advisory — no automatic fix available',
-  };
-}
-
-export function parseNpmAuditReport(raw: unknown): ScaDependencyRow[] {
-  const report = raw as NpmAuditReport;
-  const vulnerabilities = report.vulnerabilities ?? {};
-  const rows: ScaDependencyRow[] = [];
-
-  for (const [key, vuln] of Object.entries(vulnerabilities)) {
-    const advisory = extractAdvisory(vuln.via);
-    const severity = mapScaSeverity(advisory?.severity ?? vuln.severity ?? 'low');
-    const { fixVersion, action } = buildFixAction(vuln.fixAvailable);
-    const title = buildVulnerabilityTitle(vuln, advisory);
-
-    rows.push({
-      id: '',
-      package: vuln.name ?? key,
-      currentVersion: extractCurrentVersion(vuln.range),
-      fixVersion,
-      severity,
-      cve: extractCveId(advisory, vuln.via),
-      vulnerability: title,
-      action,
-    });
-  }
-
-  rows.sort((a, b) => {
-    const bySeverity = severityRank(a.severity) - severityRank(b.severity);
-    if (bySeverity !== 0) return bySeverity;
-    return a.package.localeCompare(b.package);
-  });
-
-  return rows.map((row, index) => ({
-    ...row,
-    id: `D-${String(index + 1).padStart(3, '0')}`,
-  }));
+function formatExecError(err: unknown): string {
+  const execErr = err as Error & { stderr?: string; stdout?: string };
+  const detail = [execErr.stderr, execErr.stdout, execErr.message].filter(Boolean).join('\n').trim();
+  return detail || 'npm SCA report generation failed';
 }
 
 function sanitizeNpmAuditError(message: string): string {
   return message
     .replace(/https?:\/\/[^@\s/]+:[^@\s]+@/gi, 'https://***@')
     .replace(/ATATT[A-Za-z0-9+/=%_-]+/g, '***')
-    .slice(0, 300);
+    .slice(0, 800);
 }
 
 export async function runNpmAuditScan(input: {
@@ -237,11 +124,18 @@ export async function runNpmAuditScan(input: {
   let cleanup: (() => Promise<void>) | null = null;
 
   try {
+    await fs.access(NPM_SCA_SCRIPT_PATH);
+  } catch {
+    throw new Error('npm SCA report generator is missing from this installation.');
+  }
+
+  try {
     progress?.(8, 'Preparing repository…');
     const prepared = await prepareRepositoryPath(input.resource);
     cleanup = prepared.cleanup;
+    const { repoPath, outputDir } = prepared;
 
-    const projectRoot = await findNpmProjectRoot(prepared.repoPath);
+    const projectRoot = await findNpmProjectRoot(repoPath);
     if (!projectRoot) {
       throw new Error(
         `No package.json found in ${input.resource.name}. npm audit requires a Node.js project at the repository root.`
@@ -250,35 +144,63 @@ export async function runNpmAuditScan(input: {
 
     progress?.(22, 'Resolving dependency lockfile…');
     await ensureLockfile(projectRoot);
+
     progress?.(38, 'Running npm audit…');
     const auditRaw = await runNpmAuditJson(projectRoot);
-    const parsed = JSON.parse(auditRaw) as NpmAuditReport;
+    const parsed = JSON.parse(auditRaw) as { error?: { summary?: string } };
 
     if (parsed.error?.summary) {
       throw new Error(parsed.error.summary);
     }
 
-    const dependencies = parseNpmAuditReport(parsed);
-    const counts = countFindingsBySeverity(dependencies);
     const npmVersion = await getNpmVersion();
-    const tool = getSecurityToolById('npm-audit');
-    if (!tool) throw new Error('npm audit tool definition is missing');
+    const auditJsonPath = path.join(outputDir, 'npm-audit-report.json');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(auditJsonPath, auditRaw, 'utf-8');
 
-    progress?.(82, 'Building SCA report…');
-    const title = `${tool.name} scan — ${input.resource.name}`;
-    const dependencyCount = dependencies.length;
+    progress?.(72, 'Generating SCA summary report…');
+    try {
+      await execFileAsync(
+        PYTHON_EXECUTABLE,
+        [
+          NPM_SCA_SCRIPT_PATH,
+          auditJsonPath,
+          projectRoot,
+          outputDir,
+          input.resource.name,
+          'npm audit',
+          input.resource.repoUrl ?? '',
+          npmVersion,
+        ],
+        {
+          maxBuffer: 20 * 1024 * 1024,
+          timeout: NPM_AUDIT_TIMEOUT_MS,
+          env: toolPathEnv(),
+        }
+      );
+    } catch (err) {
+      throw new Error(formatExecError(err));
+    }
+
+    const htmlPath = path.join(outputDir, 'npm_sca_summary.html');
+    const jsonPath = path.join(outputDir, 'npm_sca_summary.json');
+
+    const [htmlContent, jsonRaw] = await Promise.all([
+      fs.readFile(htmlPath, 'utf-8'),
+      fs.readFile(jsonPath, 'utf-8'),
+    ]);
+
+    const reportJson = JSON.parse(jsonRaw) as {
+      findings?: ScaFindingRow[];
+      raw?: { npmVersion?: string };
+    };
+    const rows = reportJson.findings ?? [];
+    const counts = countSeverities(rows);
+    const dependencyCount = rows.length;
     const summary =
       dependencyCount === 0
         ? `npm audit completed for ${input.resource.name} — no vulnerable dependencies detected.`
         : `npm audit completed for ${input.resource.name} — ${dependencyCount} vulnerable package${dependencyCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} moderate, ${counts.low} low).`;
-
-    const htmlContent = buildScaReportHtml({
-      resource: input.resource,
-      tool,
-      title,
-      summary,
-      scaDependencies: dependencies,
-    });
 
     return {
       htmlContent,
@@ -287,7 +209,7 @@ export async function runNpmAuditScan(input: {
       lowCount: counts.low,
       dependencyCount,
       summary,
-      npmVersion,
+      npmVersion: reportJson.raw?.npmVersion ?? npmVersion,
     };
   } catch (err) {
     if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) {
@@ -306,6 +228,10 @@ export async function runNpmAuditScan(input: {
       );
     }
 
+    if (/ENOENT.*python|not found.*python/i.test(message)) {
+      throw new Error('Python 3 is required to generate npm SCA reports.');
+    }
+
     if (/git clone|unable to access|403|401/i.test(message)) {
       throw new Error(sanitized);
     }
@@ -318,7 +244,9 @@ export async function runNpmAuditScan(input: {
 
 export async function isNpmAuditAvailable(): Promise<boolean> {
   try {
-    await execFileAsync('npm', ['--version'], { timeout: 5000 });
+    await execFileAsync('npm', ['--version'], { timeout: 5000, env: toolPathEnv() });
+    await execFileAsync(PYTHON_EXECUTABLE, ['--version'], { timeout: 5000 });
+    await fs.access(NPM_SCA_SCRIPT_PATH);
     return true;
   } catch {
     return false;

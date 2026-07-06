@@ -11,6 +11,7 @@ import {
   isRuntimeSecurityTool,
   type ServerOsType,
 } from './security/tool-runtime';
+import { getInstallCommandsByOs } from './security/tool-install-specs';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
 import {
@@ -51,6 +52,7 @@ export interface SecurityToolSettingView {
   installedOs: ServerOsType | null;
   runtimeVersion: string | null;
   installCommands: string[];
+  installCommandsByOs: Record<ServerOsType, string[]> | null;
 }
 
 export interface SecurityReportView {
@@ -384,6 +386,7 @@ export async function listSecurityToolSettings(): Promise<SecurityToolSettingVie
         installedOs: runtime.installedOs,
         runtimeVersion: runtime.version,
         installCommands: runtime.installCommands,
+        installCommandsByOs: getInstallCommandsByOs(tool.id),
       };
     })
   );
