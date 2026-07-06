@@ -839,100 +839,104 @@ export function SecurityContent() {
       </Dialog>
 
       <Dialog open={Boolean(installDialog)} onOpenChange={(open) => !open && !installTool.isPending && setInstallDialog(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {installDialog?.reinstall ? 'Reinstall' : 'Install'} {installDialog?.tool.name}?
-            </DialogTitle>
-            <DialogDescription>
-              {installDialog?.reinstall
-                ? `${installDialog.tool.name} was installed before but is not available on this server now. Select the server OS and reinstall.`
-                : `${installDialog?.tool.name} requires a one-time install on the SecureNexus server. Select the server operating system first.`}
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="flex max-h-[min(88vh,720px)] w-[calc(100vw-2rem)] max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:w-full">
+          <div className="shrink-0 border-b border-border px-6 pb-4 pt-6 pr-12">
+            <DialogHeader>
+              <DialogTitle>
+                {installDialog?.reinstall ? 'Reinstall' : 'Install'} {installDialog?.tool.name}?
+              </DialogTitle>
+              <DialogDescription>
+                {installDialog?.reinstall
+                  ? `${installDialog.tool.name} was installed before but is not available on this server now. Select the server OS and reinstall.`
+                  : `${installDialog?.tool.name ?? 'This tool'} requires a one-time install on the SecureNexus server. Select the server operating system first.`}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
           {installDialog ? (
-            <div className="space-y-4 text-[11px] text-muted-foreground">
-              {!selectedInstallOs ? (
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <p className="font-medium text-foreground">1. Select server OS</p>
-                    <div className="grid gap-2">
-                      {SERVER_OS_OPTIONS.map((option) => (
-                        <button
-                          key={option.id}
-                          type="button"
-                          disabled={installTool.isPending}
-                          onClick={() => setSelectedInstallOs(option.id)}
-                          className="rounded-lg border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/5"
-                        >
-                          <span className="block text-sm font-medium text-foreground">{option.label}</span>
-                          <span className="block text-[10px] text-muted-foreground">{option.description}</span>
-                        </button>
-                      ))}
+            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+              <div className="space-y-4 text-[11px] text-muted-foreground">
+                {!selectedInstallOs ? (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <p className="font-medium text-foreground">1. Select server OS</p>
+                      <div className="grid gap-2">
+                        {SERVER_OS_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            disabled={installTool.isPending}
+                            onClick={() => setSelectedInstallOs(option.id)}
+                            className="rounded-lg border border-border bg-muted/50 px-3 py-2.5 text-left transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/5"
+                          >
+                            <span className="block text-sm font-medium text-foreground">{option.label}</span>
+                            <span className="block text-[10px] text-muted-foreground">{option.description}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium text-foreground">
-                      2. Install on{' '}
-                      {SERVER_OS_OPTIONS.find((row) => row.id === selectedInstallOs)?.label}
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium text-foreground">
+                        2. Install on{' '}
+                        {SERVER_OS_OPTIONS.find((row) => row.id === selectedInstallOs)?.label}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 text-[10px]"
+                        disabled={installTool.isPending}
+                        onClick={() => setSelectedInstallOs(null)}
+                      >
+                        Change OS
+                      </Button>
+                    </div>
+                    <p>
+                      SecureNexus installs {installDialog.tool.name} automatically when you click{' '}
+                      <span className="font-medium text-foreground">Install &amp; enable</span>. The
+                      commands below run on the server — shown for reference.
                     </p>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-[10px]"
-                      disabled={installTool.isPending}
-                      onClick={() => setSelectedInstallOs(null)}
-                    >
-                      Change OS
-                    </Button>
+                    {installCommandsForSelection.length > 0 ? (
+                      <InstallCommandsBlock
+                        commands={installCommandsForSelection}
+                        osLabel={
+                          SERVER_OS_OPTIONS.find((row) => row.id === selectedInstallOs)?.label
+                        }
+                      />
+                    ) : null}
+                    {installDialog.setting.runtimeAvailable ? (
+                      <p className="text-emerald-600">
+                        This tool appears to be available already. Click install to verify and enable
+                        it.
+                      </p>
+                    ) : null}
+                    {installTool.isPending && installPhase ? (
+                      <p className="text-foreground">{installPhase}</p>
+                    ) : null}
+                    {installTool.isError ? (
+                      <p className="text-red-600">
+                        {installTool.error instanceof Error
+                          ? installTool.error.message
+                          : 'Installation failed'}
+                      </p>
+                    ) : null}
+                    {installTool.isSuccess ? (
+                      <p className="text-emerald-600">{installTool.data.message}</p>
+                    ) : null}
+                    {installTool.isPending ? (
+                      <p className="text-muted-foreground">
+                        This can take several minutes the first time. The dialog will stay open until
+                        installation completes.
+                      </p>
+                    ) : null}
                   </div>
-                  <p>
-                    SecureNexus installs {installDialog.tool.name} automatically when you click{' '}
-                    <span className="font-medium text-foreground">Install &amp; enable</span>. The
-                    commands below run on the server — shown for reference.
-                  </p>
-                  {installCommandsForSelection.length > 0 ? (
-                    <InstallCommandsBlock
-                      commands={installCommandsForSelection}
-                      osLabel={
-                        SERVER_OS_OPTIONS.find((row) => row.id === selectedInstallOs)?.label
-                      }
-                    />
-                  ) : null}
-                  {installDialog.setting.runtimeAvailable ? (
-                    <p className="text-emerald-600">
-                      This tool appears to be available already. Click install to verify and enable
-                      it.
-                    </p>
-                  ) : null}
-                  {installTool.isPending && installPhase ? (
-                    <p className="text-foreground">{installPhase}</p>
-                  ) : null}
-                  {installTool.isError ? (
-                    <p className="text-red-600">
-                      {installTool.error instanceof Error
-                        ? installTool.error.message
-                        : 'Installation failed'}
-                    </p>
-                  ) : null}
-                  {installTool.isSuccess ? (
-                    <p className="text-emerald-600">{installTool.data.message}</p>
-                  ) : null}
-                  {installTool.isPending ? (
-                    <p className="text-muted-foreground">
-                      This can take several minutes the first time. The dialog will stay open until
-                      installation completes.
-                    </p>
-                  ) : null}
-                </div>
-              )}
+                )}
+              </div>
             </div>
           ) : null}
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border bg-background px-6 py-4">
             <Button
               type="button"
               variant="outline"
@@ -1028,11 +1032,11 @@ function InstallCommandsBlock({
   osLabel?: string;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-muted/30 p-3">
+    <div className="rounded-lg border border-border bg-muted p-3">
       <p className="mb-2 text-[10px] font-medium text-foreground">
         {osLabel ? `Install commands (${osLabel})` : 'Install commands'}
       </p>
-      <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
+      <pre className="max-h-52 overflow-y-auto overflow-x-auto break-all whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground">
         {commands.join('\n')}
       </pre>
     </div>

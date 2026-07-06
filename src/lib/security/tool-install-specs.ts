@@ -66,7 +66,7 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
       'sudo wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz',
       'sudo tar -xvzf ZAP_2.16.1_Linux.tar.gz',
       'sudo mv ZAP_2.16.1 zap',
-      'Scans run: ./zap.sh -cmd -quickurl <url> -quickout <report> -quickprogress',
+      'Scans run: cd /opt/zap && ./zap.sh -cmd -quickurl <url> -quickout report.html -quickprogress',
     ],
     linux: [
       'sudo yum install -y java-11-openjdk || sudo dnf install -y java-11-openjdk',
