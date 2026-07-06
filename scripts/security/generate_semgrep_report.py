@@ -3,7 +3,9 @@
 
 import csv
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -120,9 +122,36 @@ def location_string(finding: dict, target: Path) -> str:
     return f"{path}:{line}"
 
 
+def extended_tool_path() -> str:
+    root = Path.cwd()
+    parts = [
+        root / ".securenexus" / "bin",
+        root / ".securenexus" / "venv-semgrep" / "bin",
+        Path.home() / ".local" / "bin",
+        os.environ.get("PATH", ""),
+    ]
+    return ":".join(str(part) for part in parts if str(part))
+
+
+def resolve_semgrep_command() -> str:
+    explicit = os.environ.get("SEMGREP_BIN", "").strip()
+    if explicit and Path(explicit).exists():
+        return explicit
+
+    env = {**os.environ, "PATH": extended_tool_path()}
+    found = shutil.which("semgrep", path=env["PATH"])
+    if found:
+        return found
+
+    raise RuntimeError(
+        "Semgrep CLI not found on PATH. Install Semgrep from Security → Tools on this server."
+    )
+
+
 def run_semgrep(target: Path) -> dict:
+    semgrep = resolve_semgrep_command()
     cmd = [
-        "semgrep",
+        semgrep,
         "scan",
         "--config=auto",
         "--config=p/security-audit",
@@ -132,10 +161,19 @@ def run_semgrep(target: Path) -> dict:
         "--quiet",
         str(target),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    env = {**os.environ, "PATH": extended_tool_path()}
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     if result.returncode not in (0, 1):
-        raise RuntimeError(result.stderr or "Semgrep scan failed")
-    return json.loads(result.stdout)
+        detail = (result.stderr or result.stdout or "Semgrep scan failed").strip()
+        raise RuntimeError(detail)
+    if not result.stdout.strip():
+        detail = (result.stderr or "Semgrep returned no JSON output").strip()
+        raise RuntimeError(detail)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as err:
+        detail = (result.stderr or result.stdout or str(err)).strip()
+        raise RuntimeError(f"Semgrep returned invalid JSON: {detail}") from err
 
 
 def build_sast_rows(findings: list[dict], target: Path, repo_name: str) -> list[dict]:
@@ -688,6 +726,10 @@ def main() -> int:
     display_name = sys.argv[3] if len(sys.argv) > 3 else target.name
     tool_name = sys.argv[4] if len(sys.argv) > 4 else "Semgrep CE"
     target_url = sys.argv[5] if len(sys.argv) > 5 else ""
+
+    if not target.exists():
+        raise SystemExit(f"Repository path does not exist: {target}")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     data = run_semgrep(target)
     findings = data.get("results", [])

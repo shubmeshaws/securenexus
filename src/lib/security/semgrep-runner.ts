@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
 import { formatRepositoryCloneError } from '@/lib/git-error-utils';
-import { toolPathEnv } from '@/lib/security/tool-path-env';
+import { resolveSemgrepBin, semgrepScanEnv, toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { prepareRepositoryPath } from './security-repo-prep';
 
@@ -67,23 +67,31 @@ export async function runSemgrepScan(input: {
     cleanup = prepared.cleanup;
     const { repoPath, outputDir } = prepared;
 
+    progress?.(18, 'Locating Semgrep CLI…');
+    await resolveSemgrepBin();
+
     progress?.(22, 'Running Semgrep analysis…');
-    await execFileAsync(
-      PYTHON_EXECUTABLE,
-      [
-        SEMGREP_SCRIPT_PATH,
-        repoPath,
-        outputDir,
-        input.resource.name,
-        'Semgrep CE',
-        input.resource.repoUrl ?? '',
-      ],
-      {
-        maxBuffer: 50 * 1024 * 1024,
-        timeout: SEMGREP_TIMEOUT_MS,
-        env: process.env,
-      }
-    );
+    const scanEnv = await semgrepScanEnv();
+    try {
+      await execFileAsync(
+        PYTHON_EXECUTABLE,
+        [
+          SEMGREP_SCRIPT_PATH,
+          repoPath,
+          outputDir,
+          input.resource.name,
+          'Semgrep CE',
+          input.resource.repoUrl ?? '',
+        ],
+        {
+          maxBuffer: 50 * 1024 * 1024,
+          timeout: SEMGREP_TIMEOUT_MS,
+          env: scanEnv,
+        }
+      );
+    } catch (err) {
+      throw new Error(formatExecError(err));
+    }
 
     progress?.(78, 'Processing Semgrep results…');
     const htmlPath = path.join(outputDir, 'semgrep_sast_summary.html');
@@ -148,11 +156,25 @@ export async function runSemgrepScan(input: {
   }
 }
 
+function formatExecError(err: unknown): string {
+  const execErr = err as Error & { stderr?: string; stdout?: string; killed?: boolean; signal?: string };
+  if (execErr.killed || execErr.signal === 'SIGTERM') {
+    return `Semgrep scan timed out after ${SEMGREP_TIMEOUT_MS / 60_000} minutes.`;
+  }
+
+  const detail = [execErr.stderr, execErr.stdout, execErr.message]
+    .filter((part) => typeof part === 'string' && part.trim())
+    .join('\n')
+    .trim();
+
+  return detail || 'Semgrep scan failed';
+}
+
 function sanitizeSemgrepError(message: string): string {
   return message
     .replace(/https?:\/\/[^@\s/]+:[^@\s]+@/gi, 'https://***@')
     .replace(/ATATT[A-Za-z0-9+/=%_-]+/g, '***')
-    .slice(0, 300);
+    .slice(0, 800);
 }
 
 export async function isSemgrepAvailable(): Promise<boolean> {
