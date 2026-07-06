@@ -277,6 +277,34 @@ model SecurityScanJob {
   @@index([createdAt])
 }
 
+model SecurityAutomation {
+  id                String    @id @default(cuid())
+  name              String
+  enabled           Boolean   @default(true)
+  scheduleTime      String
+  scheduleDays      Json
+  timezone          String    @default("UTC")
+  resourceIds       Json
+  scanCategories    Json
+  toolIds           Json
+  s3Enabled         Boolean   @default(false)
+  s3Bucket          String?
+  s3Region          String?
+  s3Prefix          String?
+  s3AccessKeyId     String?
+  s3SecretAccessKey String?
+  teamsEnabled      Boolean   @default(false)
+  teamsWebhookUrl   String?
+  lastRunAt         DateTime?
+  nextRunAt         DateTime?
+  createdBy         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([enabled])
+  @@index([nextRunAt])
+}
+
 model EnvironmentMetrics {
   id             String   @id @default("global")
   state          String   @default("running") // running | stopped

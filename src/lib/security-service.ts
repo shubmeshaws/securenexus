@@ -343,6 +343,13 @@ export async function deleteSecurityResource(id: string): Promise<void> {
   await prisma.securityResource.delete({ where: { id } });
 }
 
+export async function deleteSecurityReport(id: string): Promise<void> {
+  await assertSecurityModuleEnabled();
+  const row = await prisma.securityReport.findUnique({ where: { id } });
+  if (!row) throw new Error('Report not found');
+  await prisma.securityReport.delete({ where: { id } });
+}
+
 async function ensureToolSettingsSeeded(): Promise<void> {
   for (const tool of SECURITY_TOOLS) {
     await prisma.securityToolSetting.upsert({

@@ -66,6 +66,11 @@ import {
   TrendingDown,
   Radio,
   SendHorizonal,
+  RotateCw,
+  GitBranch,
+  ArrowDownToLine,
+  CloudUpload,
+  Bot,
 } from 'lucide-react';
 
 /** Thin modern stroke — visible in light and dark mode */
@@ -138,6 +143,11 @@ export {
   TrendingDown,
   Radio,
   SendHorizonal,
+  RotateCw,
+  GitBranch,
+  ArrowDownToLine,
+  CloudUpload,
+  Bot,
 };
 
 /** Semantic aliases used across the app */

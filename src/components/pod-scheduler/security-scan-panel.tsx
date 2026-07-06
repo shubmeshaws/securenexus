@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Loader2, RefreshCcw, ScanSearch, Trash2 } from '@/lib/icons';
+import { ChevronDown, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
+import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -205,32 +206,6 @@ function ScanMultiSelect<T extends string>({
   );
 }
 
-function ScanProgressBar({
-  progress,
-  message,
-}: {
-  progress: number;
-  message: string;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 p-4">
-      <div className="mb-2 flex items-center justify-between gap-3 text-[11px]">
-        <span className="truncate text-foreground">{message || 'Scanning…'}</span>
-        <span className="shrink-0 font-mono tabular-nums text-emerald-600">{progress}%</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-emerald-500 transition-[width] duration-500 ease-out"
-          style={{ width: `${Math.max(1, Math.min(100, progress))}%` }}
-        />
-      </div>
-      <p className="mt-2 text-[10px] text-muted-foreground">
-        Scans continue in the background — refresh the page and progress will resume.
-      </p>
-    </div>
-  );
-}
-
 function jobStatusBadge(status: SecurityScanJobView['status']) {
   if (status === 'completed') {
     return <Badge variant="success" className="py-0 text-[9px]">Completed</Badge>;
@@ -301,7 +276,7 @@ function RecentScanJobCard({
         </div>
 
         {active ? (
-          <div className="hidden w-20 shrink-0 items-center gap-1.5 sm:flex">
+          <div className="flex w-24 shrink-0 items-center gap-1.5">
             <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full rounded-full bg-sky-500 transition-[width] duration-500 ease-out"
@@ -318,28 +293,23 @@ function RecentScanJobCard({
 
         <div className="shrink-0">{jobStatusBadge(job.status)}</div>
 
-        <div className="flex shrink-0">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 w-6 px-0"
+        <div className="flex shrink-0 items-center gap-1">
+          <SecurityIconButton
+            icon={RotateCw}
+            label="Scan again"
+            tone="sky"
             disabled={isScanning || rerunPending}
+            loading={rerunPending}
             onClick={onRerun}
-            aria-label="Scan again"
-            title="Scan again"
-          >
-            <RefreshCcw className="h-3 w-3" />
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 w-6 px-0 text-red-600 hover:bg-red-500/10 hover:text-red-600"
+          />
+          <SecurityIconButton
+            icon={Trash2}
+            label="Delete scan"
+            tone="danger"
             disabled={active || deletePending}
+            loading={deletePending}
             onClick={onDelete}
-            aria-label="Delete scan"
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
+          />
         </div>
       </div>
     </article>
@@ -510,8 +480,8 @@ export function SecurityScanPanel({
     <GlassPanel className="flex flex-col overflow-visible">
       <PanelHeader title="Scan" icon={ScanSearch} accent="emerald" />
       <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
-        Select targets and tools, then run a scan. Progress is saved server-side — refresh the page
-        during a scan and the progress bar will resume automatically.
+        Select targets and tools, then run a scan. Progress appears in Recent scans below — refresh
+        the page during a scan and it will resume automatically.
       </p>
 
       {!enabledResources.length ? (
@@ -594,15 +564,9 @@ export function SecurityScanPanel({
                   {scanPairCount} scan{scanPairCount === 1 ? '' : 's'} across{' '}
                   {selectedTargetIds.length} target{selectedTargetIds.length === 1 ? '' : 's'} and{' '}
                   {selectedToolIds.length} tool{selectedToolIds.length === 1 ? '' : 's'}
+                  {isScanning && activeJob ? ` · ${activeJob.message ?? 'Running…'}` : ''}
                 </p>
               </div>
-
-              {isScanning && activeJob ? (
-                <ScanProgressBar
-                  progress={activeJob.progress}
-                  message={activeJob.message ?? 'Scanning…'}
-                />
-              ) : null}
             </div>
           ) : null}
 

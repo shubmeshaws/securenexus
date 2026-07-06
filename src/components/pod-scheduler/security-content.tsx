@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FileUp,
-  Download,
   Globe2,
   Loader2,
   PlusCircle,
-  RefreshCcw,
   ShieldCheck,
   Trash2,
+  GitBranch,
+  ArrowDownToLine,
 } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
@@ -43,6 +43,8 @@ import {
 } from '@/lib/security-tools';
 import { SecurityDashboardPanel } from '@/components/pod-scheduler/security-dashboard';
 import { SecurityScanPanel } from '@/components/pod-scheduler/security-scan-panel';
+import { SecurityAutomationPanel } from '@/components/pod-scheduler/security-automation-panel';
+import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import type {
   SecurityReportView,
   SecurityResourceView,
@@ -56,7 +58,7 @@ import {
 import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
 import type { SecurityResourceSyncJobState } from '@/lib/security-service';
 
-type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports';
+type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports' | 'automation';
 
 const TOOL_INSTALL_POLL_MS = 2000;
 const TOOL_INSTALL_TIMEOUT_MS = 25 * 60 * 1000;
@@ -364,10 +366,20 @@ export function SecurityContent() {
     enabled: Boolean(previewReportId),
   });
 
+  const deleteReport = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/security/reports/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-reports'] });
+      queryClient.invalidateQueries({ queryKey: ['security-dashboard'] });
+    },
+  });
+
   const sections: { id: SecuritySection; label: string }[] = [
     { id: 'resources', label: 'Add resources' },
     { id: 'tools', label: 'Tools' },
     { id: 'scan', label: 'Scan' },
+    { id: 'automation', label: 'Automation' },
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'reports', label: 'Reports' },
   ];
@@ -491,54 +503,34 @@ export function SecurityContent() {
                         )}
                       </td>
                       <td className="px-5 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1.5">
                           {row.type === 'repository' ? (
                             <>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 gap-1 px-2 text-[10px]"
+                              <SecurityIconButton
+                                icon={GitBranch}
+                                label={row.clone?.cloned ? 'Re-clone repository' : 'Clone repository'}
+                                tone="violet"
                                 disabled={Boolean(repoActionPendingId)}
+                                loading={repoActionPendingId === row.id && repoActionKind === 'clone'}
                                 onClick={() => cloneResource.mutate(row.id)}
-                                title={row.clone?.cloned ? 'Re-clone repository' : 'Clone repository'}
-                              >
-                                {repoActionPendingId === row.id && repoActionKind === 'clone' ? (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                  <Download className="h-3.5 w-3.5" />
-                                )}
-                                Clone
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 gap-1 px-2 text-[10px]"
+                              />
+                              <SecurityIconButton
+                                icon={ArrowDownToLine}
+                                label="Pull latest changes"
+                                tone="sky"
                                 disabled={!row.clone?.cloned || Boolean(repoActionPendingId)}
+                                loading={repoActionPendingId === row.id && repoActionKind === 'pull'}
                                 onClick={() => pullResource.mutate(row.id)}
-                                title="Pull latest changes"
-                              >
-                                {repoActionPendingId === row.id && repoActionKind === 'pull' ? (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                  <RefreshCcw className="h-3.5 w-3.5" />
-                                )}
-                                Pull
-                              </Button>
+                              />
                             </>
                           ) : null}
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
+                          <SecurityIconButton
+                            icon={Trash2}
+                            label="Delete resource and remove cloned files"
+                            tone="danger"
                             disabled={deleteResource.isPending}
                             onClick={() => deleteResource.mutate(row.id)}
-                            title="Delete resource and remove cloned files"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          />
                         </div>
                       </td>
                     </tr>
@@ -591,6 +583,14 @@ export function SecurityContent() {
 
       {section === 'scan' && (
         <SecurityScanPanel
+          resources={resources}
+          toolSettings={toolSettings}
+          loading={resourcesLoading || toolsLoading}
+        />
+      )}
+
+      {section === 'automation' && (
+        <SecurityAutomationPanel
           resources={resources}
           toolSettings={toolSettings}
           loading={resourcesLoading || toolsLoading}
@@ -669,7 +669,7 @@ export function SecurityContent() {
                     <th className="px-5 py-3 text-left font-medium">Tool</th>
                     <th className="px-5 py-3 text-left font-medium">Resource</th>
                     <th className="px-5 py-3 text-left font-medium">Created</th>
-                    <th className="px-5 py-3 text-right font-medium">Download</th>
+                    <th className="px-5 py-3 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -682,7 +682,7 @@ export function SecurityContent() {
                         {new Date(row.createdAt).toLocaleString()}
                       </td>
                       <td className="px-5 py-3">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1.5">
                           <Button
                             type="button"
                             variant="outline"
@@ -690,7 +690,7 @@ export function SecurityContent() {
                             className="h-8 text-[11px]"
                             onClick={() => setPreviewReportId(row.id)}
                           >
-                            HTML
+                            Preview
                           </Button>
                           <Button
                             type="button"
@@ -701,7 +701,7 @@ export function SecurityContent() {
                           >
                             <a href={`/api/security/reports/${row.id}/download?format=html`}>
                               <FileUp className="h-3 w-3" />
-                              .html
+                              HTML
                             </a>
                           </Button>
                           <Button
@@ -713,9 +713,16 @@ export function SecurityContent() {
                           >
                             <a href={`/api/security/reports/${row.id}/download?format=pdf`}>
                               <FileUp className="h-3 w-3" />
-                              .pdf
+                              PDF
                             </a>
                           </Button>
+                          <SecurityIconButton
+                            icon={Trash2}
+                            label="Delete report"
+                            tone="danger"
+                            disabled={deleteReport.isPending}
+                            onClick={() => deleteReport.mutate(row.id)}
+                          />
                         </div>
                       </td>
                     </tr>
