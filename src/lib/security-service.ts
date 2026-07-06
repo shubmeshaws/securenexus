@@ -277,7 +277,7 @@ export async function setSecurityToolEnabled(toolId: string, enabled: boolean): 
 
 export async function installSecurityToolRuntime(
   toolId: string,
-  options?: { enableAfter?: boolean; osType?: ServerOsType }
+  options?: { enableAfter?: boolean; osType?: ServerOsType; onProgress?: (message: string) => void }
 ): Promise<{
   toolId: string;
   enabled: boolean;
@@ -298,7 +298,7 @@ export async function installSecurityToolRuntime(
   }
 
   await ensureToolSettingsSeeded();
-  const installResult = await installToolRuntime(toolId, options.osType);
+  const installResult = await installToolRuntime(toolId, options.osType, options.onProgress);
   const installedAt = new Date();
 
   await prisma.securityToolSetting.upsert({

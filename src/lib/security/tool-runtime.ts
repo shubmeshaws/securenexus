@@ -186,15 +186,21 @@ async function linkSemgrepBinary(sourcePath: string): Promise<void> {
   }
 }
 
-async function installSemgrepViaVenv(osType: ServerOsType): Promise<void> {
+async function installSemgrepViaVenv(
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  onProgress?.('Ensuring Python venv support…');
   await ensurePythonVenvSupport(osType);
   await fs.mkdir(path.dirname(SEMGREP_VENV_DIR), { recursive: true });
 
   if (!(await pathExists(SEMGREP_VENV_DIR))) {
+    onProgress?.('Creating virtual environment…');
     await runCommand('python3', ['-m', 'venv', SEMGREP_VENV_DIR]);
   }
 
   const pip = path.join(SEMGREP_VENV_DIR, 'bin', 'pip');
+  onProgress?.('Installing Semgrep CE (this may take a few minutes)…');
   await runCommand(pip, ['install', '--upgrade', 'pip']);
   await runCommand(pip, ['install', 'semgrep']);
 
@@ -206,18 +212,22 @@ async function installSemgrepViaVenv(osType: ServerOsType): Promise<void> {
   await linkSemgrepBinary(semgrepBin);
 }
 
-async function installSemgrepOnLinux(osType: ServerOsType): Promise<void> {
+async function installSemgrepOnLinux(
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
+): Promise<void> {
   let lastError: Error | null = null;
 
-  // Primary: project-local venv avoids PEP 668 (externally-managed-environment) on Ubuntu.
   try {
-    await installSemgrepViaVenv(osType);
+    onProgress?.('Preparing Python virtual environment…');
+    await installSemgrepViaVenv(osType, onProgress);
     if (await isSemgrepAvailable()) return;
   } catch (err) {
     lastError = err instanceof Error ? err : new Error(String(err));
   }
 
   try {
+    onProgress?.('Trying pipx install…');
     if (await ensurePipx(osType)) {
       const installed = await installSemgrepViaPipx();
       if (installed) return;
@@ -297,23 +307,29 @@ async function installWithBrew(packageName: string): Promise<void> {
   await runCommand('brew', ['install', packageName]);
 }
 
-async function installSemgrep(osType: ServerOsType): Promise<void> {
+async function installSemgrep(
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
+): Promise<void> {
   if (await isSemgrepAvailable()) return;
 
   if (osType === 'macos') {
     if (await hasCommand('brew')) {
+      onProgress?.('Installing Semgrep via Homebrew…');
       await installWithBrew('semgrep');
       return;
     }
     if (await ensurePipx('macos')) {
+      onProgress?.('Installing Semgrep via pipx…');
       const installed = await installSemgrepViaPipx();
       if (installed) return;
     }
-    await installSemgrepViaVenv('macos');
+    onProgress?.('Installing Semgrep in a local virtual environment…');
+    await installSemgrepViaVenv('macos', onProgress);
     return;
   }
 
-  await installSemgrepOnLinux(osType);
+  await installSemgrepOnLinux(osType, onProgress);
 }
 
 async function installNpmAuditRuntime(osType: ServerOsType): Promise<void> {
@@ -370,7 +386,8 @@ async function installGitleaks(osType: ServerOsType): Promise<void> {
 
 export async function installToolRuntime(
   toolId: string,
-  osType: ServerOsType
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
 ): Promise<{
   version: string | null;
   message: string;
@@ -382,9 +399,18 @@ export async function installToolRuntime(
     throw new Error('Select a valid server OS type before installing.');
   }
 
-  if (toolId === 'semgrep') await installSemgrep(osType);
-  else if (toolId === 'npm-audit') await installNpmAuditRuntime(osType);
-  else if (toolId === 'gitleaks') await installGitleaks(osType);
+  const progress = (message: string) => onProgress?.(message);
+
+  if (toolId === 'semgrep') {
+    progress('Installing Semgrep CE…');
+    await installSemgrep(osType, progress);
+  } else if (toolId === 'npm-audit') {
+    progress('Installing Node.js and npm…');
+    await installNpmAuditRuntime(osType);
+  } else if (toolId === 'gitleaks') {
+    progress('Installing Gitleaks…');
+    await installGitleaks(osType);
+  }
 
   const available = await checkToolRuntimeAvailable(toolId);
   if (!available) {

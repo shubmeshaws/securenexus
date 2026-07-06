@@ -1,6 +1,9 @@
 import type { NextApiResponse } from 'next';
 import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
-import { installSecurityToolRuntime } from '@/lib/security-service';
+import {
+  getToolInstallJob,
+  startToolInstallJob,
+} from '@/lib/security/tool-install-job';
 import { z } from 'zod';
 
 const installSchema = z.object({
@@ -9,25 +12,36 @@ const installSchema = z.object({
   enableAfter: z.boolean().optional(),
 });
 
-async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
-  const parsed = installSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-
-  try {
-    const result = await installSecurityToolRuntime(parsed.data.toolId, {
-      enableAfter: parsed.data.enableAfter ?? true,
-      osType: parsed.data.osType,
-    });
-    return res.status(200).json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Installation failed';
-    return res.status(400).json({ error: message });
-  }
+function setNoCacheHeaders(res: NextApiResponse) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
 }
 
 async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
-  if (req.method === 'POST') return postHandler(req, res);
-  return methodNotAllowed(res, ['POST']);
+  setNoCacheHeaders(res);
+
+  if (req.method === 'GET') {
+    return res.status(200).json(getToolInstallJob());
+  }
+
+  if (req.method !== 'POST') return methodNotAllowed(res, ['GET', 'POST']);
+
+  const parsed = installSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const started = startToolInstallJob(
+    parsed.data.toolId,
+    parsed.data.osType,
+    parsed.data.enableAfter ?? true
+  );
+
+  if (!started) {
+    return res.status(200).json(getToolInstallJob());
+  }
+
+  return res.status(202).json(getToolInstallJob());
 }
 
 export default requireAdmin(handler);

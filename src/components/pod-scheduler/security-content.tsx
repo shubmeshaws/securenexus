@@ -51,8 +51,16 @@ import {
   SERVER_OS_OPTIONS,
   type ServerOsType,
 } from '@/lib/security/tool-install-specs';
+import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
 
 type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports';
+
+const TOOL_INSTALL_POLL_MS = 2000;
+const TOOL_INSTALL_TIMEOUT_MS = 25 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function SecurityContent() {
   const queryClient = useQueryClient();
@@ -73,6 +81,7 @@ export function SecurityContent() {
     reinstall?: boolean;
   } | null>(null);
   const [selectedInstallOs, setSelectedInstallOs] = useState<ServerOsType | null>(null);
+  const [installPhase, setInstallPhase] = useState<string | null>(null);
 
   useEffect(() => {
     if (!installDialog) {
@@ -140,18 +149,45 @@ export function SecurityContent() {
   }
 
   const installTool = useMutation({
-    mutationFn: ({ toolId, osType }: { toolId: string; osType: ServerOsType }) =>
-      apiFetch<{
-        message: string;
-        tools: SecurityToolSettingView[];
-      }>('/api/security/tools/install', {
+    mutationFn: async ({ toolId, osType }: { toolId: string; osType: ServerOsType }) => {
+      setInstallPhase('Starting installation…');
+      await apiFetch<ToolInstallJobState>('/api/security/tools/install', {
         method: 'POST',
         body: JSON.stringify({ toolId, osType, enableAfter: true }),
-      }),
+      });
+
+      const startedAt = Date.now();
+      while (true) {
+        if (Date.now() - startedAt > TOOL_INSTALL_TIMEOUT_MS) {
+          throw new Error(
+            'Installation is still running on the server. Wait a few minutes, then refresh this page.'
+          );
+        }
+
+        const job = await apiFetch<ToolInstallJobState>('/api/security/tools/install');
+        setInstallPhase(job.phase);
+
+        if (job.result) {
+          return job.result;
+        }
+        if (job.error) {
+          throw new Error(job.error);
+        }
+        if (!job.running) {
+          throw new Error('Installation finished without a result.');
+        }
+
+        await sleep(TOOL_INSTALL_POLL_MS);
+      }
+    },
     onSuccess: (data) => {
       queryClient.setQueryData(['security-tools'], { tools: data.tools });
       setInstallDialog(null);
       setSelectedInstallOs(null);
+      setInstallPhase(null);
+    },
+    onError: () => {
+      setInstallPhase(null);
     },
   });
 
@@ -687,6 +723,9 @@ export function SecurityContent() {
                       it.
                     </p>
                   ) : null}
+                  {installTool.isPending && installPhase ? (
+                    <p className="text-foreground">{installPhase}</p>
+                  ) : null}
                   {installTool.isError ? (
                     <p className="text-red-600">
                       {installTool.error instanceof Error
@@ -696,6 +735,12 @@ export function SecurityContent() {
                   ) : null}
                   {installTool.isSuccess ? (
                     <p className="text-emerald-600">{installTool.data.message}</p>
+                  ) : null}
+                  {installTool.isPending ? (
+                    <p className="text-muted-foreground">
+                      This can take several minutes the first time. The dialog will stay open until
+                      installation completes.
+                    </p>
                   ) : null}
                 </div>
               )}
