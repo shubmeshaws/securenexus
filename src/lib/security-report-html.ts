@@ -61,27 +61,39 @@ export function reportPageStyles(): string {
       gap: 16px;
       margin-bottom: 22px;
     }
-    .securenexus-brand { text-align: left; }
+    .securenexus-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
     .securenexus-logo {
+      display: inline-flex;
+      align-items: baseline;
       font-size: 38px;
       font-weight: 800;
-      letter-spacing: 0.04em;
       line-height: 1;
+      white-space: nowrap;
     }
-    .logo-secure { color: #0f172a; }
+    .logo-secure {
+      color: #0f172a;
+      letter-spacing: 0.03em;
+    }
     .logo-nexus {
       background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: #2563eb;
       -webkit-text-fill-color: transparent;
+      letter-spacing: 0.03em;
     }
     .logo-byline {
-      margin-top: 8px;
+      margin: 8px 0 0;
+      padding-left: 1px;
       font-size: 13px;
       font-weight: 500;
       color: #64748b;
-      letter-spacing: 0.01em;
+      letter-spacing: 0;
+      text-align: left;
     }
     .brand {
       display: flex;
@@ -273,11 +285,11 @@ export function reportPageStyles(): string {
       font-size: 12px;
       color: #fff;
     }
-    .sev-critical { background: #7f1d1d; }
+    .sev-critical { background: #7f1d1d; color: #fff; }
     .sev-high { background: #991b1b; color: #fff; font-weight: 600; }
     .sev-medium { background: #9a3412; color: #fff; font-weight: 600; }
-    .sev-warning { background: #a16207; }
-    .sev-low { background: #166534; color: #2563eb; font-weight: 600; }
+    .sev-warning { background: #a16207; color: #fff; }
+    .sev-low { background: #dcfce7; color: #15803d; font-weight: 700; }
     .sev-sca-high { background: #f4a582; color: #7c2d12; font-weight: 700; }
     .sev-sca-moderate { background: #fde9d9; color: #9a3412; font-weight: 700; }
     .sev-sca-low { background: #dcfce7; color: #166534; font-weight: 700; }
@@ -389,6 +401,10 @@ export function reportPdfCompatibilityStyles(): string {
     .source-url-list a {
       color: #1d4ed8 !important;
       text-decoration: underline !important;
+    }
+    .sev-low {
+      background-color: #dcfce7 !important;
+      color: #15803d !important;
     }
   `;
 }

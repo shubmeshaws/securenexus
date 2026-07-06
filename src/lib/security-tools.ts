@@ -279,8 +279,8 @@ export function isToolCompatibleWithResourceType(
   resourceType: 'repository' | 'target_url',
   category: SecurityToolCategory
 ): boolean {
-  if (resourceType === 'repository') return category !== 'dast';
-  return true;
+  if (resourceType === 'target_url') return category === 'dast';
+  return category !== 'dast';
 }
 
 export function availableCategoriesForResourceTypes(
@@ -288,18 +288,17 @@ export function availableCategoriesForResourceTypes(
 ): SecurityToolCategory[] {
   const hasRepo = types.includes('repository');
   const hasUrl = types.includes('target_url');
-  const categories = new Set<SecurityToolCategory>();
-  if (hasRepo) {
-    for (const id of ['sast', 'sca', 'iac', 'secrets'] as SecurityToolCategory[]) {
-      categories.add(id);
-    }
+
+  if (hasUrl && !hasRepo) {
+    return ['dast'];
   }
-  if (hasUrl) {
-    for (const id of SECURITY_TOOL_CATEGORIES.map((row) => row.id)) {
-      categories.add(id);
-    }
+  if (hasRepo && !hasUrl) {
+    return ['sast', 'sca', 'iac', 'secrets'];
   }
-  return Array.from(categories);
+  if (hasRepo && hasUrl) {
+    return ['sast', 'sca', 'iac', 'secrets', 'dast'];
+  }
+  return [];
 }
 
 export function compatibleToolsForResource(

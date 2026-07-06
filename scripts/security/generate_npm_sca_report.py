@@ -262,26 +262,39 @@ def report_styles() -> str:
       gap: 16px;
       margin-bottom: 22px;
     }
-    .securenexus-brand { text-align: left; }
+    .securenexus-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
     .securenexus-logo {
+      display: inline-flex;
+      align-items: baseline;
       font-size: 38px;
       font-weight: 800;
-      letter-spacing: 0.04em;
       line-height: 1;
+      white-space: nowrap;
     }
-    .logo-secure { color: #0f172a; }
+    .logo-secure {
+      color: #0f172a;
+      letter-spacing: 0.03em;
+    }
     .logo-nexus {
       background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
       -webkit-background-clip: text;
       background-clip: text;
       color: #2563eb;
       -webkit-text-fill-color: transparent;
+      letter-spacing: 0.03em;
     }
     .logo-byline {
-      margin-top: 8px;
+      margin: 8px 0 0;
+      padding-left: 1px;
       font-size: 13px;
       font-weight: 500;
       color: #64748b;
+      letter-spacing: 0;
+      text-align: left;
     }
     .scan-badge {
       background: #eff6ff;
@@ -404,11 +417,11 @@ def report_styles() -> str:
       font-size: 12px;
       color: #fff;
     }
-    .sev-critical { background: #7f1d1d; }
-    .sev-high { background: #991b1b; }
-    .sev-medium { background: #9a3412; }
-    .sev-warning { background: #a16207; }
-    .sev-low { background: #166534; }
+    .sev-critical { background: #7f1d1d; color: #ffffff; }
+    .sev-high { background: #991b1b; color: #ffffff; }
+    .sev-medium { background: #9a3412; color: #ffffff; }
+    .sev-warning { background: #a16207; color: #ffffff; }
+    .sev-low { background: #dcfce7; color: #15803d; }
     .report-footer {
       margin-top: 24px;
       text-align: center;

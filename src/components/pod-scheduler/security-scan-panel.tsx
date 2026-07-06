@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
+import { ChevronDown, GitBranch, Globe2, Layers, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
@@ -32,6 +32,42 @@ import {
   rerunSecurityScanJobClient,
   startSecurityScanJob,
 } from '@/lib/security-scan-client';
+
+function ScanStepSection({
+  step,
+  title,
+  description,
+  children,
+  disabled = false,
+}: {
+  step: number;
+  title: string;
+  description?: string;
+  children: ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <section
+      className={cn(
+        'rounded-xl border border-border/80 bg-card/50 p-4 shadow-sm',
+        disabled && 'pointer-events-none opacity-45'
+      )}
+    >
+      <div className="mb-3 flex items-start gap-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-xs font-bold text-emerald-700 dark:text-emerald-400">
+          {step}
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          {description ? (
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{description}</p>
+          ) : null}
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
 
 function ScanMultiSelect<T extends string>({
   label,
@@ -362,6 +398,15 @@ export function SecurityScanPanel({
     [enabledResources, selectedTargetIds]
   );
 
+  const targetSelectionHint = useMemo(() => {
+    if (!selectedResources.length) return null;
+    const onlyUrl = selectedResources.every((row) => row.type === 'target_url');
+    const onlyRepo = selectedResources.every((row) => row.type === 'repository');
+    if (onlyUrl) return 'URL targets support DAST scans only.';
+    if (onlyRepo) return 'Repositories support SAST, SCA, IaC, and Secrets scans.';
+    return 'Mixed selection: repositories and URL targets use different scan types. Tools are matched per target.';
+  }, [selectedResources]);
+
   const availableCategories = useMemo(() => {
     if (!selectedResources.length) return [];
     const ids = availableCategoriesForResourceTypes(selectedResources.map((row) => row.type));
@@ -376,6 +421,16 @@ export function SecurityScanPanel({
       selectedCategories
     );
   }, [selectedResources, selectedCategories, enabledToolIds]);
+
+  const toolsByCategory = useMemo(() => {
+    const groups = new Map<SecurityToolCategory, typeof availableTools>();
+    for (const tool of availableTools) {
+      const list = groups.get(tool.category) ?? [];
+      list.push(tool);
+      groups.set(tool.category, list);
+    }
+    return groups;
+  }, [availableTools]);
 
   const scanPairCount = useMemo(() => {
     if (!selectedResources.length || !selectedToolIds.length) return 0;
@@ -432,6 +487,17 @@ export function SecurityScanPanel({
   }, [activeJob, queryClient]);
 
   useEffect(() => {
+    if (!selectedResources.length) return;
+    const onlyUrl = selectedResources.every((row) => row.type === 'target_url');
+    const onlyRepo = selectedResources.every((row) => row.type === 'repository');
+    if (onlyUrl) {
+      setSelectedCategories(['dast']);
+    } else if (onlyRepo) {
+      setSelectedCategories((prev) => prev.filter((category) => category !== 'dast'));
+    }
+  }, [selectedResources]);
+
+  useEffect(() => {
     setSelectedCategories((prev) =>
       prev.filter((id) => availableCategories.some((row) => row.id === id))
     );
@@ -471,6 +537,24 @@ export function SecurityScanPanel({
     },
   });
 
+  const toggleTarget = (id: string) => {
+    setSelectedTargetIds((prev) =>
+      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
+    );
+  };
+
+  const toggleCategory = (id: SecurityToolCategory) => {
+    setSelectedCategories((prev) =>
+      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
+    );
+  };
+
+  const toggleTool = (id: string) => {
+    setSelectedToolIds((prev) =>
+      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
+    );
+  };
+
   const canPickTypes = selectedTargetIds.length > 0;
   const canPickTools = canPickTypes && selectedCategories.length > 0;
   const canScan = canPickTools && selectedToolIds.length > 0 && scanPairCount > 0;
@@ -500,63 +584,153 @@ export function SecurityScanPanel({
           No enabled targets. Add a repository or URL target under Add resources first.
         </p>
       ) : (
-        <div className="space-y-5 px-5 py-4">
-          <ScanMultiSelect
-            label="1. Select target(s)"
-            description="Choose one or more registered resources or URL targets."
-            options={enabledResources.map((row) => row.id)}
-            selected={selectedTargetIds}
-            onChange={setSelectedTargetIds}
-            getLabel={(id) => enabledResources.find((row) => row.id === id)?.name ?? id}
-            getMeta={(id) => {
-              const row = enabledResources.find((r) => r.id === id);
-              if (!row) return undefined;
-              const type = row.type === 'target_url' ? 'URL target' : 'Repository';
-              return `${type} · ${row.repoUrl ?? row.targetUrl ?? '—'}`;
-            }}
-            placeholder="Select target(s)"
-          />
+        <div className="space-y-4 px-5 py-4">
+          <ScanStepSection
+            step={1}
+            title="Select targets"
+            description="Choose repositories for code scanning or URL targets for live application testing."
+          >
+            <div className="grid gap-2 sm:grid-cols-2">
+              {enabledResources.map((row) => {
+                const selected = selectedTargetIds.includes(row.id);
+                const isUrl = row.type === 'target_url';
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() => toggleTarget(row.id)}
+                    className={cn(
+                      'rounded-lg border p-3 text-left transition-all',
+                      selected
+                        ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
+                        : 'border-border bg-background hover:border-emerald-500/30 hover:bg-muted/30'
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <div
+                        className={cn(
+                          'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                          isUrl ? 'bg-violet-500/10 text-violet-600' : 'bg-sky-500/10 text-sky-600'
+                        )}
+                      >
+                        {isUrl ? (
+                          <Globe2 className="h-4 w-4" strokeWidth={1.75} />
+                        ) : (
+                          <GitBranch className="h-4 w-4" strokeWidth={1.75} />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-foreground">{row.name}</p>
+                        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          {isUrl ? 'URL target · DAST' : 'Repository · SAST/SCA/Secrets'}
+                        </p>
+                        <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                          {row.repoUrl ?? row.targetUrl ?? '—'}
+                        </p>
+                      </div>
+                      <Checkbox checked={selected} className="mt-1 pointer-events-none" />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </ScanStepSection>
 
-          {canPickTypes ? (
-            <ScanMultiSelect
-              label="2. Select scan type(s)"
-              description="Pick categories such as DAST, SAST, SCA, IaC, or Secrets."
-              options={availableCategories.map((row) => row.id)}
-              selected={selectedCategories}
-              onChange={setSelectedCategories}
-              getLabel={(id) =>
-                availableCategories.find((row) => row.id === id)?.label ?? id.toUpperCase()
-              }
-              getMeta={(id) =>
-                availableCategories.find((row) => row.id === id)?.description
-              }
-              placeholder="Select scan type(s)"
-            />
-          ) : null}
+          <ScanStepSection
+            step={2}
+            title="Select scan types"
+            description={targetSelectionHint ?? 'Pick one or more scan categories.'}
+            disabled={!canPickTypes}
+          >
+            <div className="flex flex-wrap gap-2">
+              {availableCategories.map((row) => {
+                const selected = selectedCategories.includes(row.id);
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() => toggleCategory(row.id)}
+                    className={cn(
+                      'rounded-lg border px-3 py-2 text-left transition-all',
+                      selected
+                        ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
+                        : 'border-border bg-background hover:bg-muted/30'
+                    )}
+                  >
+                    <span className="block text-xs font-semibold text-foreground">{row.label}</span>
+                    <span className="mt-0.5 block max-w-[220px] text-[10px] text-muted-foreground">
+                      {row.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </ScanStepSection>
 
-          {canPickTools ? (
-            <ScanMultiSelect
-              label="3. Select tool(s)"
-              description="Only enabled tools matching your scan types are listed."
-              options={availableTools.map((tool) => tool.id)}
-              selected={selectedToolIds}
-              onChange={setSelectedToolIds}
-              getLabel={(id) => availableTools.find((tool) => tool.id === id)?.name ?? id}
-              getMeta={(id) => {
-                const tool = availableTools.find((row) => row.id === id);
-                if (!tool) return undefined;
-                const category = SECURITY_TOOL_CATEGORIES.find((row) => row.id === tool.category);
-                return category?.label ?? tool.category.toUpperCase();
-              }}
-              placeholder={
-                availableTools.length ? 'Select tool(s)' : 'Enable tools under Tools first'
-              }
-              disabled={!availableTools.length}
-            />
-          ) : null}
+          <ScanStepSection
+            step={3}
+            title="Select tools"
+            description={
+              availableTools.length
+                ? 'Enabled tools matching your targets and scan types.'
+                : 'Enable matching tools under the Tools tab first.'
+            }
+            disabled={!canPickTools}
+          >
+            {!availableTools.length ? (
+              <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                No enabled tools match this selection.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {Array.from(toolsByCategory.entries()).map(([category, tools]) => {
+                  const label =
+                    SECURITY_TOOL_CATEGORIES.find((row) => row.id === category)?.label ??
+                    category.toUpperCase();
+                  return (
+                    <div key={category}>
+                      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        <Layers className="h-3 w-3" />
+                        {label}
+                      </p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {tools.map((tool) => {
+                          const selected = selectedToolIds.includes(tool.id);
+                          return (
+                            <button
+                              key={tool.id}
+                              type="button"
+                              onClick={() => toggleTool(tool.id)}
+                              className={cn(
+                                'flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-all',
+                                selected
+                                  ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
+                                  : 'border-border bg-background hover:bg-muted/30'
+                              )}
+                            >
+                              <div
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
+                                style={{ backgroundColor: tool.color }}
+                              >
+                                {tool.initials}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium text-foreground">{tool.name}</p>
+                              </div>
+                              <Checkbox checked={selected} className="pointer-events-none" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </ScanStepSection>
 
           {canScan ? (
-            <div className="space-y-3 border-t border-border pt-4">
+            <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
               {scanPairCount > 1 ? (
                 <div className="space-y-2">
                   <Label className="text-[11px]">Report output</Label>
@@ -614,20 +788,7 @@ export function SecurityScanPanel({
                   {isScanning && activeJob ? ` · ${activeJob.message ?? 'Running…'}` : ''}
                 </p>
               </div>
-            </div>
-          ) : null}
-
-          {selectedTargetIds.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {selectedResources.map((row) => (
-                <Badge key={row.id} variant="outline" className="text-[10px]">
-                  {row.name}
-                  <span className="ml-1 text-muted-foreground">
-                    ({row.type === 'target_url' ? 'URL' : 'Repo'})
-                  </span>
-                </Badge>
-              ))}
-            </div>
+            </section>
           ) : null}
 
           {runScan.isError ? (
