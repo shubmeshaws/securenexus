@@ -227,6 +227,7 @@ model SecurityToolSetting {
   id          String    @id @default(cuid())
   toolId      String    @unique
   enabled     Boolean   @default(false)
+  scanOptions Json?
   installedAt DateTime?
   installedOs String?
   updatedAt   DateTime  @updatedAt

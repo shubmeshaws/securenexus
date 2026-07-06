@@ -12,6 +12,11 @@ import { toolPathEnv } from '@/lib/security/tool-path-env';
 import { getSecurityToolById } from '@/lib/security-tools';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { prepareRepositoryPath } from './security-repo-prep';
+import {
+  buildGitleaksCliArgs,
+  gitleaksModeLabel,
+  type GitleaksScanOptions,
+} from './gitleaks-options';
 
 const execFileAsync = promisify(execFile);
 const GITLEAKS_TIMEOUT_MS = 15 * 60 * 1000;
@@ -100,9 +105,11 @@ function sanitizeGitleaksError(message: string): string {
 
 export async function runGitleaksScan(input: {
   resource: SecurityResourceView;
+  scanOptions?: GitleaksScanOptions;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<GitleaksScanResult> {
   const progress = input.onProgress;
+  const scanOptions = input.scanOptions ?? { mode: 'detect' };
   let cleanup: (() => Promise<void>) | null = null;
 
   try {
@@ -111,28 +118,16 @@ export async function runGitleaksScan(input: {
     cleanup = prepared.cleanup;
 
     const reportPath = path.join(prepared.outputDir, 'gitleaks-report.json');
-    progress?.(22, 'Running Gitleaks secret scan…');
+    progress?.(22, `Running Gitleaks (${gitleaksModeLabel(scanOptions.mode)})…`);
+
+    const cliArgs = buildGitleaksCliArgs(scanOptions, prepared.repoPath, reportPath);
 
     try {
-      await execFileAsync(
-        'gitleaks',
-        [
-          'detect',
-          '--source',
-          prepared.repoPath,
-          '--report-format',
-          'json',
-          '--report-path',
-          reportPath,
-          '--no-banner',
-          '--redact',
-        ],
-        {
-          maxBuffer: 50 * 1024 * 1024,
-          timeout: GITLEAKS_TIMEOUT_MS,
-          env: process.env,
-        }
-      );
+      await execFileAsync('gitleaks', cliArgs, {
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: GITLEAKS_TIMEOUT_MS,
+        env: toolPathEnv(),
+      });
     } catch (err: unknown) {
       const execErr = err as { code?: number | string };
       if (execErr.code !== 1) {
@@ -160,8 +155,8 @@ export async function runGitleaksScan(input: {
     const findingCount = findings.length;
     const summary =
       findingCount === 0
-        ? `Gitleaks scan completed for ${input.resource.name} — no secrets detected.`
-        : `Gitleaks scan completed for ${input.resource.name} — ${findingCount} potential secret${findingCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
+        ? `Gitleaks (${gitleaksModeLabel(scanOptions.mode)}) completed for ${input.resource.name} — no secrets detected.`
+        : `Gitleaks (${gitleaksModeLabel(scanOptions.mode)}) completed for ${input.resource.name} — ${findingCount} potential secret${findingCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
 
     const htmlContent = buildSecretsReportHtml({
       resource: input.resource,

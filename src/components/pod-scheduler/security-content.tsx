@@ -46,6 +46,8 @@ import { SecurityScanPanel } from '@/components/pod-scheduler/security-scan-pane
 import { SecurityAutomationPanel } from '@/components/pod-scheduler/security-automation-panel';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { SecurityReportActions } from '@/components/pod-scheduler/security-report-actions';
+import { GitleaksOptionsPanel } from '@/components/pod-scheduler/gitleaks-options-panel';
+import { DEFAULT_GITLEAKS_SCAN_OPTIONS } from '@/lib/security/gitleaks-options';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type {
   SecurityReportView,
@@ -343,6 +345,15 @@ export function SecurityContent() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-tools'] }),
   });
 
+  const updateToolScanOptions = useMutation({
+    mutationFn: (input: { toolId: string; scanOptions: { mode: string } }) =>
+      apiFetch('/api/security/tools', {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-tools'] }),
+  });
+
   const generateReport = useMutation({
     mutationFn: () =>
       apiFetch('/api/security/reports', {
@@ -571,8 +582,18 @@ export function SecurityContent() {
                         tool={tool}
                         setting={toolSettingById.get(tool.id)}
                         enabled={toolEnabledMap.get(tool.id) ?? false}
-                        pending={toggleTool.isPending || installTool.isPending}
+                        pending={
+                          toggleTool.isPending ||
+                          installTool.isPending ||
+                          updateToolScanOptions.isPending
+                        }
                         onToggle={(enabled) => handleToolToggle(tool, enabled)}
+                        onGitleaksOptionsChange={
+                          tool.id === 'gitleaks'
+                            ? (scanOptions) =>
+                                updateToolScanOptions.mutate({ toolId: 'gitleaks', scanOptions })
+                            : undefined
+                        }
                       />
                     ))}
                   </div>
@@ -995,12 +1016,14 @@ function ToolCard({
   enabled,
   pending,
   onToggle,
+  onGitleaksOptionsChange,
 }: {
   tool: SecurityToolDefinition;
   setting?: SecurityToolSettingView;
   enabled: boolean;
   pending: boolean;
   onToggle: (enabled: boolean) => void;
+  onGitleaksOptionsChange?: (scanOptions: { mode: string }) => void;
 }) {
   return (
     <div
@@ -1059,6 +1082,13 @@ function ToolCard({
             <Globe2 className="h-2.5 w-2.5" />
           </a>
         </div>
+        {tool.id === 'gitleaks' && enabled && onGitleaksOptionsChange ? (
+          <GitleaksOptionsPanel
+            value={setting?.scanOptions ?? DEFAULT_GITLEAKS_SCAN_OPTIONS}
+            disabled={pending}
+            onChange={onGitleaksOptionsChange}
+          />
+        ) : null}
       </div>
     </div>
   );

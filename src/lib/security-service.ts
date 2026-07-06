@@ -11,6 +11,11 @@ import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
 import {
+  DEFAULT_GITLEAKS_SCAN_OPTIONS,
+  parseGitleaksScanOptions,
+  type GitleaksScanOptions,
+} from './security/gitleaks-options';
+import {
   getToolRuntimeStatus,
   installToolRuntime,
   isRuntimeSecurityTool,
@@ -74,6 +79,7 @@ export interface SecurityToolSettingView {
   runtimeVersion: string | null;
   installCommands: string[];
   installCommandsByOs: Record<ServerOsType, string[]> | null;
+  scanOptions: GitleaksScanOptions | null;
 }
 
 export interface SecurityReportView {
@@ -378,7 +384,13 @@ async function ensureToolSettingsSeeded(): Promise<void> {
   for (const tool of SECURITY_TOOLS) {
     await prisma.securityToolSetting.upsert({
       where: { toolId: tool.id },
-      create: { toolId: tool.id, enabled: false },
+      create: {
+        toolId: tool.id,
+        enabled: false,
+        ...(tool.id === 'gitleaks'
+          ? { scanOptions: DEFAULT_GITLEAKS_SCAN_OPTIONS as object }
+          : {}),
+      },
       update: {},
     });
   }
@@ -422,6 +434,8 @@ export async function listSecurityToolSettings(): Promise<SecurityToolSettingVie
         runtimeVersion: runtime.version,
         installCommands: runtime.installCommands,
         installCommandsByOs: getInstallCommandsByOs(tool.id),
+        scanOptions:
+          tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
       };
     })
   );
@@ -455,6 +469,31 @@ export async function setSecurityToolEnabled(toolId: string, enabled: boolean): 
   if (enabled) {
     await scheduleReportPdfRuntimeIfNeeded();
   }
+}
+
+export async function updateSecurityToolScanOptions(
+  toolId: string,
+  scanOptions: GitleaksScanOptions
+): Promise<SecurityToolSettingView[]> {
+  await assertSecurityModuleEnabled();
+  const tool = getSecurityToolById(toolId);
+  if (!tool) throw new Error('Unknown security tool');
+  if (toolId !== 'gitleaks') {
+    throw new Error('Scan options are only configurable for Gitleaks.');
+  }
+
+  await ensureToolSettingsSeeded();
+  await prisma.securityToolSetting.upsert({
+    where: { toolId },
+    create: {
+      toolId,
+      enabled: false,
+      scanOptions: scanOptions as object,
+    },
+    update: { scanOptions: scanOptions as object },
+  });
+
+  return listSecurityToolSettings();
 }
 
 export async function installSecurityToolRuntime(
@@ -677,6 +716,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting Gitleaks scan for ${resourceView.name}…`);
     const gitleaksResult = await runGitleaksScan({
       resource: resourceView,
+      scanOptions: parseGitleaksScanOptions(toolSetting?.scanOptions),
       onProgress: runnerProgress,
     });
     summary = gitleaksResult.summary;
