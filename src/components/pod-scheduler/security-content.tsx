@@ -54,7 +54,7 @@ import {
   type ServerOsType,
 } from '@/lib/security/tool-install-specs';
 import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
-import type { SecurityResourceSyncJobState } from '@/lib/security/security-resource-sync-job';
+import type { SecurityResourceSyncJobState } from '@/lib/security-service';
 
 type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports';
 

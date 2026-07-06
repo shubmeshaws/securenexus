@@ -3,7 +3,7 @@ import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib
 import {
   getSecurityResourceSyncJob,
   startSecurityResourceSyncJob,
-} from '@/lib/security/security-resource-sync-job';
+} from '@/lib/security-service';
 
 function setNoCacheHeaders(res: NextApiResponse) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');

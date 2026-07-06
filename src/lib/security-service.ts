@@ -218,6 +218,96 @@ export async function pullSecurityResource(id: string): Promise<SecurityResource
   return getSecurityResource(id);
 }
 
+export type SecurityResourceSyncAction = 'clone' | 'pull';
+
+export type SecurityResourceSyncJobState = {
+  running: boolean;
+  resourceId: string | null;
+  action: SecurityResourceSyncAction | null;
+  phase: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  result: SecurityResourceView | null;
+  message: string | null;
+  error: string | null;
+};
+
+let securityResourceSyncJob: SecurityResourceSyncJobState = {
+  running: false,
+  resourceId: null,
+  action: null,
+  phase: null,
+  startedAt: null,
+  finishedAt: null,
+  result: null,
+  message: null,
+  error: null,
+};
+
+export function getSecurityResourceSyncJob(): SecurityResourceSyncJobState {
+  return securityResourceSyncJob;
+}
+
+export function startSecurityResourceSyncJob(
+  resourceId: string,
+  action: SecurityResourceSyncAction
+): boolean {
+  if (securityResourceSyncJob.running) return false;
+
+  securityResourceSyncJob = {
+    running: true,
+    resourceId,
+    action,
+    phase: action === 'clone' ? 'Cloning repository…' : 'Pulling latest changes…',
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    result: null,
+    message: null,
+    error: null,
+  };
+
+  void (async () => {
+    try {
+      const resource = await getSecurityResource(resourceId);
+      if (action === 'clone') {
+        securityResourceSyncJob = { ...securityResourceSyncJob, phase: 'Cloning repository…' };
+        await cloneSecurityResourceRepo(resource, (phase) => {
+          securityResourceSyncJob = { ...securityResourceSyncJob, phase };
+        });
+      } else {
+        securityResourceSyncJob = { ...securityResourceSyncJob, phase: 'Pulling latest changes…' };
+        await pullSecurityResourceRepo(resource, (phase) => {
+          securityResourceSyncJob = { ...securityResourceSyncJob, phase };
+        });
+      }
+      const updated = await getSecurityResource(resourceId);
+      securityResourceSyncJob = {
+        ...securityResourceSyncJob,
+        running: false,
+        finishedAt: new Date().toISOString(),
+        phase: action === 'clone' ? 'Clone complete' : 'Pull complete',
+        result: updated,
+        message:
+          action === 'clone'
+            ? `Cloned ${updated.name} successfully.`
+            : `Pulled latest changes for ${updated.name}.`,
+        error: null,
+      };
+    } catch (err) {
+      securityResourceSyncJob = {
+        ...securityResourceSyncJob,
+        running: false,
+        finishedAt: new Date().toISOString(),
+        phase: null,
+        result: null,
+        error: err instanceof Error ? err.message : `${action} failed`,
+      };
+    }
+  })();
+
+  return true;
+}
+
 export async function updateSecurityResource(
   id: string,
   input: {
