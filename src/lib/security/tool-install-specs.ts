@@ -19,7 +19,7 @@ export const SERVER_OS_OPTIONS: { id: ServerOsType; label: string; description: 
   },
 ];
 
-export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks';
+export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks' | 'zap';
 
 const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string[]>> = {
   semgrep: {
@@ -52,6 +52,25 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
     linux: [
       'SecureNexus downloads the latest Gitleaks release from GitHub automatically',
       'Extracts gitleaks_<version>_linux_x64.tar.gz into .securenexus/bin/',
+    ],
+  },
+  zap: {
+    macos: [
+      'brew install --cask zaproxy',
+      'Requires Java — install via brew install openjdk if needed',
+    ],
+    ubuntu: [
+      'sudo apt update',
+      'sudo apt install -y default-jdk',
+      'cd /opt',
+      'sudo wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz',
+      'sudo tar -xvzf ZAP_2.16.1_Linux.tar.gz',
+      'sudo mv ZAP_2.16.1 zap',
+      'Scans run: ./zap.sh -cmd -quickurl <url> -quickout <report> -quickprogress',
+    ],
+    linux: [
+      'sudo yum install -y java-11-openjdk || sudo dnf install -y java-11-openjdk',
+      'SecureNexus downloads ZAP 2.16.1 into .securenexus/zap when /opt is not writable',
     ],
   },
 };

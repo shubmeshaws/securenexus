@@ -3,8 +3,17 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
-import { isGitleaksAvailable } from './gitleaks-runner';
+import {
+  ZAP_DOWNLOAD_URL,
+  ZAP_LINUX_TARBALL,
+  ZAP_LOCAL_DIR,
+  ZAP_SYSTEM_DIR,
+  ZAP_VERSION,
+  isZapAvailable,
+  resolveZapSh,
+} from './zap-install';
 import { resolveGitleaksDownloadUrl } from './gitleaks-install';
+import { isGitleaksAvailable } from './gitleaks-runner';
 import { isNpmAuditAvailable } from './npm-audit-runner';
 import { isSemgrepAvailable } from './semgrep-runner';
 import { toolPathEnv } from './tool-path-env';
@@ -20,7 +29,7 @@ const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const LOCAL_BIN = path.join(process.cwd(), '.securenexus', 'bin');
 const SEMGREP_VENV_DIR = path.join(process.cwd(), '.securenexus', 'venv-semgrep');
 
-export const RUNTIME_SECURITY_TOOL_IDS = ['semgrep', 'npm-audit', 'gitleaks'] as const;
+export const RUNTIME_SECURITY_TOOL_IDS = ['semgrep', 'npm-audit', 'gitleaks', 'zap'] as const;
 export type RuntimeSecurityToolId = (typeof RUNTIME_SECURITY_TOOL_IDS)[number];
 
 export type { ServerOsType } from './tool-install-specs';
@@ -62,6 +71,10 @@ const RUNTIME_SPECS: Record<RuntimeSecurityToolId, Omit<ToolRuntimeSpec, 'toolId
   gitleaks: {
     name: 'Gitleaks',
     summary: 'Gitleaks CLI is required for live secrets scanning on this server.',
+  },
+  zap: {
+    name: 'OWASP ZAP',
+    summary: 'OWASP ZAP and Java are required for live DAST scans on this server.',
   },
 };
 
@@ -262,6 +275,13 @@ async function readToolVersion(toolId: RuntimeSecurityToolId): Promise<string | 
       const out = await runCommand('gitleaks', ['version'], env);
       return out.trim() || null;
     }
+    if (toolId === 'zap') {
+      const zapSh = await resolveZapSh();
+      const installDir = path.dirname(zapSh);
+      const out = await runCommand(zapSh, ['-version'], { ...env, ZAP_HOME: installDir });
+      const line = out.split('\n').find((row) => /ZAP/i.test(row));
+      return line?.trim() || `ZAP ${ZAP_VERSION}`;
+    }
   } catch {
     return null;
   }
@@ -273,6 +293,7 @@ export async function checkToolRuntimeAvailable(toolId: string): Promise<boolean
   if (toolId === 'semgrep') return isSemgrepAvailable();
   if (toolId === 'npm-audit') return isNpmAuditAvailable();
   if (toolId === 'gitleaks') return isGitleaksAvailable();
+  if (toolId === 'zap') return isZapAvailable();
   return false;
 }
 
@@ -384,6 +405,80 @@ async function installGitleaks(osType: ServerOsType): Promise<void> {
   }
 }
 
+async function installZapUbuntu(onProgress?: (message: string) => void): Promise<void> {
+  onProgress?.('Installing Java (default-jdk)…');
+  await runShell('sudo DEBIAN_FRONTEND=noninteractive apt-get update');
+  await runShell('sudo DEBIAN_FRONTEND=noninteractive apt-get install -y default-jdk wget');
+
+  onProgress?.('Downloading OWASP ZAP 2.16.1…');
+  await runShell(
+    `cd /opt && sudo wget -q "${ZAP_DOWNLOAD_URL}" -O "${ZAP_LINUX_TARBALL}" || cd /opt && sudo curl -fsSL -o "${ZAP_LINUX_TARBALL}" "${ZAP_DOWNLOAD_URL}"`
+  );
+
+  onProgress?.('Extracting ZAP to /opt/zap…');
+  await runShell(
+    `cd /opt && sudo tar -xzf "${ZAP_LINUX_TARBALL}" && sudo rm -rf zap && sudo mv "ZAP_${ZAP_VERSION}" zap`
+  );
+}
+
+async function installZapLocal(onProgress?: (message: string) => void): Promise<void> {
+  const tarPath = path.join(os.tmpdir(), `zap-${Date.now()}.tar.gz`);
+  const extractDir = path.join(os.tmpdir(), `zap-extract-${Date.now()}`);
+
+  onProgress?.('Downloading OWASP ZAP 2.16.1…');
+  try {
+    await runShell(
+      `wget -qO "${tarPath}" "${ZAP_DOWNLOAD_URL}" || curl -fsSL -o "${tarPath}" "${ZAP_DOWNLOAD_URL}"`
+    );
+    await fs.mkdir(extractDir, { recursive: true });
+    await runShell(`tar -xzf "${tarPath}" -C "${extractDir}"`);
+    await fs.rm(ZAP_LOCAL_DIR, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rename(path.join(extractDir, `ZAP_${ZAP_VERSION}`), ZAP_LOCAL_DIR);
+  } finally {
+    await fs.rm(tarPath, { force: true }).catch(() => undefined);
+    await fs.rm(extractDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function installZap(osType: ServerOsType, onProgress?: (message: string) => void): Promise<void> {
+  if (await isZapAvailable()) return;
+
+  if (osType === 'macos') {
+    onProgress?.('Installing OWASP ZAP via Homebrew…');
+    if (await hasCommand('brew')) {
+      await runCommand('brew', ['install', '--cask', 'zaproxy']);
+      if (await isZapAvailable()) return;
+    }
+    throw new Error('Install OWASP ZAP with: brew install --cask zaproxy');
+  }
+
+  if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
+    try {
+      await installZapUbuntu(onProgress);
+      if (await isZapAvailable()) return;
+    } catch (err) {
+      onProgress?.('Falling back to local ZAP install in .securenexus/zap…');
+    }
+  }
+
+  if (osType === 'linux') {
+    onProgress?.('Installing Java…');
+    await runShell(
+      'sudo dnf install -y java-11-openjdk wget || sudo yum install -y java-11-openjdk wget'
+    ).catch(() => undefined);
+  }
+
+  if (!(await pathExists(path.join(ZAP_SYSTEM_DIR, 'zap.sh')))) {
+    await installZapLocal(onProgress);
+  }
+
+  if (!(await isZapAvailable())) {
+    throw new Error(
+      `OWASP ZAP could not be installed automatically. Install manually under ${ZAP_SYSTEM_DIR} or enable sudo apt on this server.`
+    );
+  }
+}
+
 export async function installToolRuntime(
   toolId: string,
   osType: ServerOsType,
@@ -410,6 +505,9 @@ export async function installToolRuntime(
   } else if (toolId === 'gitleaks') {
     progress('Installing Gitleaks…');
     await installGitleaks(osType);
+  } else if (toolId === 'zap') {
+    progress('Installing OWASP ZAP…');
+    await installZap(osType, progress);
   }
 
   const available = await checkToolRuntimeAvailable(toolId);

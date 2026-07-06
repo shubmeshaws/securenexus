@@ -16,6 +16,7 @@ import type { SecurityReportMode } from './security-scan-types';
 import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
+import { runZapScan } from './security/zap-runner';
 import {
   DEFAULT_GITLEAKS_SCAN_OPTIONS,
   parseGitleaksScanOptions,
@@ -740,6 +741,17 @@ async function executeSecurityScanPair(input: {
     highCount = gitleaksResult.highCount;
     mediumCount = gitleaksResult.mediumCount;
     lowCount = gitleaksResult.lowCount;
+  } else if (tool.id === 'zap') {
+    stageProgress(5, `Starting OWASP ZAP DAST scan for ${resourceView.name}…`);
+    const zapResult = await runZapScan({
+      resource: resourceView,
+      onProgress: runnerProgress,
+    });
+    summary = zapResult.summary;
+    htmlContent = zapResult.htmlContent;
+    highCount = zapResult.highCount;
+    mediumCount = zapResult.mediumCount;
+    lowCount = zapResult.lowCount;
   } else {
     stageProgress(15, `Generating ${tool.name} report…`);
     summary = `Security assessment report for ${resourceView.name} using ${tool.name}. Review findings and remediate high-severity items first.`;
