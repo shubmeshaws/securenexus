@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, GitBranch, Globe2, Layers, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
+import { ChevronDown, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
@@ -164,7 +164,7 @@ function ScanMultiSelect<T extends string>({
 
   return (
     <div className="space-y-1.5" ref={containerRef}>
-      <Label className="text-[11px]">{label}</Label>
+      {label ? <Label className="text-[11px]">{label}</Label> : null}
       {description ? (
         <p className="text-[10px] text-muted-foreground">{description}</p>
       ) : null}
@@ -422,16 +422,6 @@ export function SecurityScanPanel({
     );
   }, [selectedResources, selectedCategories, enabledToolIds]);
 
-  const toolsByCategory = useMemo(() => {
-    const groups = new Map<SecurityToolCategory, typeof availableTools>();
-    for (const tool of availableTools) {
-      const list = groups.get(tool.category) ?? [];
-      list.push(tool);
-      groups.set(tool.category, list);
-    }
-    return groups;
-  }, [availableTools]);
-
   const scanPairCount = useMemo(() => {
     if (!selectedResources.length || !selectedToolIds.length) return 0;
     return resolveScanPairs({
@@ -537,24 +527,6 @@ export function SecurityScanPanel({
     },
   });
 
-  const toggleTarget = (id: string) => {
-    setSelectedTargetIds((prev) =>
-      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
-    );
-  };
-
-  const toggleCategory = (id: SecurityToolCategory) => {
-    setSelectedCategories((prev) =>
-      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
-    );
-  };
-
-  const toggleTool = (id: string) => {
-    setSelectedToolIds((prev) =>
-      prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]
-    );
-  };
-
   const canPickTypes = selectedTargetIds.length > 0;
   const canPickTools = canPickTypes && selectedCategories.length > 0;
   const canScan = canPickTools && selectedToolIds.length > 0 && scanPairCount > 0;
@@ -588,146 +560,69 @@ export function SecurityScanPanel({
           <ScanStepSection
             step={1}
             title="Select targets"
-            description="Choose repositories for code scanning or URL targets for live application testing."
+            description="Choose one or more repositories or URL targets."
           >
-            <div className="grid gap-2 sm:grid-cols-2">
-              {enabledResources.map((row) => {
-                const selected = selectedTargetIds.includes(row.id);
-                const isUrl = row.type === 'target_url';
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => toggleTarget(row.id)}
-                    className={cn(
-                      'rounded-lg border p-3 text-left transition-all',
-                      selected
-                        ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
-                        : 'border-border bg-background hover:border-emerald-500/30 hover:bg-muted/30'
-                    )}
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <div
-                        className={cn(
-                          'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                          isUrl ? 'bg-violet-500/10 text-violet-600' : 'bg-sky-500/10 text-sky-600'
-                        )}
-                      >
-                        {isUrl ? (
-                          <Globe2 className="h-4 w-4" strokeWidth={1.75} />
-                        ) : (
-                          <GitBranch className="h-4 w-4" strokeWidth={1.75} />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-foreground">{row.name}</p>
-                        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          {isUrl ? 'URL target · DAST' : 'Repository · SAST/SCA/Secrets'}
-                        </p>
-                        <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
-                          {row.repoUrl ?? row.targetUrl ?? '—'}
-                        </p>
-                      </div>
-                      <Checkbox checked={selected} className="mt-1 pointer-events-none" />
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            <ScanMultiSelect
+              label=""
+              options={enabledResources.map((row) => row.id)}
+              selected={selectedTargetIds}
+              onChange={setSelectedTargetIds}
+              getLabel={(id) => enabledResources.find((row) => row.id === id)?.name ?? id}
+              getMeta={(id) => {
+                const row = enabledResources.find((r) => r.id === id);
+                if (!row) return undefined;
+                const type = row.type === 'target_url' ? 'URL target' : 'Repository';
+                return `${type} · ${row.repoUrl ?? row.targetUrl ?? '—'}`;
+              }}
+              placeholder="Select target(s)"
+            />
           </ScanStepSection>
 
-          <ScanStepSection
-            step={2}
-            title="Select scan types"
-            description={targetSelectionHint ?? 'Pick one or more scan categories.'}
-            disabled={!canPickTypes}
-          >
-            <div className="flex flex-wrap gap-2">
-              {availableCategories.map((row) => {
-                const selected = selectedCategories.includes(row.id);
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => toggleCategory(row.id)}
-                    className={cn(
-                      'rounded-lg border px-3 py-2 text-left transition-all',
-                      selected
-                        ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
-                        : 'border-border bg-background hover:bg-muted/30'
-                    )}
-                  >
-                    <span className="block text-xs font-semibold text-foreground">{row.label}</span>
-                    <span className="mt-0.5 block max-w-[220px] text-[10px] text-muted-foreground">
-                      {row.description}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </ScanStepSection>
+          {canPickTypes ? (
+            <ScanStepSection
+              step={2}
+              title="Select scan types"
+              description={targetSelectionHint ?? 'Pick one or more scan categories.'}
+            >
+              <ScanMultiSelect
+                label=""
+                options={availableCategories.map((row) => row.id)}
+                selected={selectedCategories}
+                onChange={setSelectedCategories}
+                getLabel={(id) =>
+                  availableCategories.find((row) => row.id === id)?.label ?? id.toUpperCase()
+                }
+                getMeta={(id) => availableCategories.find((row) => row.id === id)?.description}
+                placeholder="Select scan type(s)"
+              />
+            </ScanStepSection>
+          ) : null}
 
-          <ScanStepSection
-            step={3}
-            title="Select tools"
-            description={
-              availableTools.length
-                ? 'Enabled tools matching your targets and scan types.'
-                : 'Enable matching tools under the Tools tab first.'
-            }
-            disabled={!canPickTools}
-          >
-            {!availableTools.length ? (
-              <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
-                No enabled tools match this selection.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {Array.from(toolsByCategory.entries()).map(([category, tools]) => {
-                  const label =
-                    SECURITY_TOOL_CATEGORIES.find((row) => row.id === category)?.label ??
-                    category.toUpperCase();
-                  return (
-                    <div key={category}>
-                      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        <Layers className="h-3 w-3" />
-                        {label}
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {tools.map((tool) => {
-                          const selected = selectedToolIds.includes(tool.id);
-                          return (
-                            <button
-                              key={tool.id}
-                              type="button"
-                              onClick={() => toggleTool(tool.id)}
-                              className={cn(
-                                'flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-all',
-                                selected
-                                  ? 'border-emerald-500/50 bg-emerald-500/5 ring-1 ring-emerald-500/20'
-                                  : 'border-border bg-background hover:bg-muted/30'
-                              )}
-                            >
-                              <div
-                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[10px] font-bold text-white"
-                                style={{ backgroundColor: tool.color }}
-                              >
-                                {tool.initials}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-xs font-medium text-foreground">{tool.name}</p>
-                              </div>
-                              <Checkbox checked={selected} className="pointer-events-none" />
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </ScanStepSection>
+          {canPickTools ? (
+            <ScanStepSection
+              step={3}
+              title="Select tools"
+              description="Only enabled tools matching your targets and scan types are listed."
+            >
+              <ScanMultiSelect
+                label=""
+                options={availableTools.map((tool) => tool.id)}
+                selected={selectedToolIds}
+                onChange={setSelectedToolIds}
+                getLabel={(id) => availableTools.find((tool) => tool.id === id)?.name ?? id}
+                getMeta={(id) => {
+                  const tool = availableTools.find((row) => row.id === id);
+                  if (!tool) return undefined;
+                  const category = SECURITY_TOOL_CATEGORIES.find((row) => row.id === tool.category);
+                  return category?.label ?? tool.category.toUpperCase();
+                }}
+                placeholder={
+                  availableTools.length ? 'Select tool(s)' : 'Enable tools under Tools first'
+                }
+                disabled={!availableTools.length}
+              />
+            </ScanStepSection>
+          ) : null}
 
           {canScan ? (
             <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
