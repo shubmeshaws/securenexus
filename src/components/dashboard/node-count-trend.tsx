@@ -162,7 +162,7 @@ function DayTrendLegend({
   onToggleDay: (date: string) => void;
   onClearSelection: () => void;
 }) {
-  const selectionEnabled = dayCount > DAY_SELECTION_THRESHOLD;
+  const selectionEnabled = dayCount >= DAY_SELECTION_THRESHOLD;
   const hasSelection = selectedDates.size > 0;
   const compact = dayCount > DAY_SELECTION_THRESHOLD;
 
@@ -312,7 +312,7 @@ export default function NodeCountTrend({
   const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
   const pointFill = theme === 'dark' ? '#0f172a' : '#ffffff';
   const dayCount = daySeries.length;
-  const selectionEnabled = dayCount > DAY_SELECTION_THRESHOLD;
+  const selectionEnabled = dayCount >= DAY_SELECTION_THRESHOLD;
 
   const lineDatasets = useMemo(
     () =>
