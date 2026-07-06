@@ -115,6 +115,34 @@ export function dayTrendShouldFill(index: number, total: number): boolean {
   return index >= total - 2;
 }
 
+export function colorWithAlpha(color: string, alpha: number): string {
+  if (color.startsWith('#')) {
+    const hex = color.length === 4
+      ? color
+          .slice(1)
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : color.slice(1);
+    const r = Number.parseInt(hex.slice(0, 2), 16);
+    const g = Number.parseInt(hex.slice(2, 4), 16);
+    const b = Number.parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
+
+export type DayTrendHighlight = 'default' | 'emphasized' | 'muted';
+
+export function resolveDayTrendHighlight(
+  date: string,
+  selectedDates: ReadonlySet<string>,
+  selectionEnabled: boolean
+): DayTrendHighlight {
+  if (!selectionEnabled || selectedDates.size === 0) return 'default';
+  return selectedDates.has(date) ? 'emphasized' : 'muted';
+}
+
 /** @deprecated */
 export const NODES_SERIES_STYLE = YESTERDAY_SERIES_STYLE;
 /** @deprecated */
