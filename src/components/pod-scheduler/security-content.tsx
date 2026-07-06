@@ -361,9 +361,9 @@ export function SecurityContent() {
       {section === 'tools' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
-            <strong className="font-medium text-foreground">Live scan tools install on first enable.</strong>{' '}
-            Semgrep, npm audit, and Gitleaks prompt for a one-time server install. After a successful
-            install, enabling them again is instant. Other tools use sample reports until integrated.
+            <strong className="font-medium text-foreground">Live scan tools install automatically on first enable.</strong>{' '}
+            Semgrep, npm audit, and Gitleaks install on the SecureNexus server when you click Install
+            &amp; enable — no manual terminal steps. Other tools use sample reports until integrated.
           </div>
           {toolsLoading ? (
             <div className="flex justify-center p-10">
@@ -669,13 +669,17 @@ export function SecurityContent() {
                     </Button>
                   </div>
                   <p>
-                    SecureNexus will run the commands below on this server. Installation may take
-                    several minutes the first time.
+                    SecureNexus installs {installDialog.tool.name} automatically when you click{' '}
+                    <span className="font-medium text-foreground">Install &amp; enable</span>. You do
+                    not need to run any commands manually.
                   </p>
-                  <div className="rounded-lg border border-border bg-muted/30 p-3 font-mono text-[10px] text-foreground">
-                    {installCommandsForSelection.map((command) => (
-                      <div key={command}>{command}</div>
-                    ))}
+                  <div className="rounded-lg border border-border bg-muted/30 p-3 text-[10px] text-foreground">
+                    <p className="mb-2 font-medium">What happens automatically:</p>
+                    <ul className="list-inside list-disc space-y-1 text-muted-foreground">
+                      {installCommandsForSelection.map((command) => (
+                        <li key={command}>{command}</li>
+                      ))}
+                    </ul>
                   </div>
                   {installDialog.setting.runtimeAvailable ? (
                     <p className="text-emerald-600">

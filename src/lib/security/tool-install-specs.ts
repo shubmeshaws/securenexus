@@ -23,13 +23,20 @@ export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks';
 
 const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string[]>> = {
   semgrep: {
-    macos: ['brew install semgrep', 'pip3 install semgrep'],
-    ubuntu: [
-      'sudo apt update',
-      'sudo apt install -y python3-pip',
-      'pip3 install --user semgrep',
+    macos: [
+      'Install Semgrep via Homebrew, pipx, or a local virtual environment',
+      'Enable live SAST scans automatically',
     ],
-    linux: ['sudo yum install -y python3-pip || sudo dnf install -y python3-pip', 'pip3 install --user semgrep'],
+    ubuntu: [
+      'Install python3-venv via apt if needed (automatic, uses sudo)',
+      'Create .securenexus/venv-semgrep and install Semgrep CE',
+      'Enable live SAST scans — no manual terminal steps required',
+    ],
+    linux: [
+      'Install Python 3 dependencies if needed (automatic, uses sudo)',
+      'Create .securenexus/venv-semgrep and install Semgrep CE',
+      'Enable live SAST scans — no manual terminal steps required',
+    ],
   },
   'npm-audit': {
     macos: ['brew install node'],

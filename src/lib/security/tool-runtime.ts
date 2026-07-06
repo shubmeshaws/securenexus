@@ -17,6 +17,7 @@ import {
 const execFileAsync = promisify(execFile);
 const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const LOCAL_BIN = path.join(process.cwd(), '.securenexus', 'bin');
+const SEMGREP_VENV_DIR = path.join(process.cwd(), '.securenexus', 'venv-semgrep');
 
 export const RUNTIME_SECURITY_TOOL_IDS = ['semgrep', 'npm-audit', 'gitleaks'] as const;
 export type RuntimeSecurityToolId = (typeof RUNTIME_SECURITY_TOOL_IDS)[number];
@@ -86,9 +87,13 @@ async function runShell(command: string, env?: NodeJS.ProcessEnv): Promise<strin
   const { stdout, stderr } = await execFileAsync('sh', ['-c', command], {
     timeout: INSTALL_TIMEOUT_MS,
     maxBuffer: 20 * 1024 * 1024,
-    env: { ...process.env, ...env },
+    env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive', ...env },
   });
   return `${stdout}\n${stderr}`.trim();
+}
+
+function aptInstall(packages: string): string {
+  return `sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${packages}`;
 }
 
 async function hasCommand(command: string): Promise<boolean> {
@@ -103,6 +108,132 @@ async function hasCommand(command: string): Promise<boolean> {
 async function ensureLocalBin(): Promise<string> {
   await fs.mkdir(LOCAL_BIN, { recursive: true });
   return LOCAL_BIN;
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensurePythonVenvSupport(osType: ServerOsType): Promise<void> {
+  const probeDir = path.join(os.tmpdir(), `sn-venv-probe-${Date.now()}`);
+  try {
+    await runCommand('python3', ['-m', 'venv', probeDir]);
+    await fs.rm(probeDir, { recursive: true, force: true });
+    return;
+  } catch {
+    await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
+    await runShell(aptInstall('python3-venv python3-full'));
+    return;
+  }
+
+  if (osType === 'linux') {
+    await runShell(
+      'sudo dnf install -y python3 python3-pip || sudo yum install -y python3 python3-pip'
+    );
+  }
+}
+
+async function ensurePipx(osType: ServerOsType): Promise<boolean> {
+  if (await hasCommand('pipx')) return true;
+
+  if (osType === 'macos' && (await hasCommand('brew'))) {
+    await runCommand('brew', ['install', 'pipx']).catch(() => undefined);
+    return hasCommand('pipx');
+  }
+
+  if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
+    await runShell(aptInstall('pipx python3-venv python3-full'));
+    await runCommand('pipx', ['ensurepath']).catch(() => undefined);
+    return hasCommand('pipx');
+  }
+
+  if (osType === 'linux') {
+    await runShell(
+      'sudo dnf install -y pipx python3-pip || sudo yum install -y pipx python3-pip'
+    ).catch(() => undefined);
+    return hasCommand('pipx');
+  }
+
+  return false;
+}
+
+async function installSemgrepViaPipx(): Promise<boolean> {
+  try {
+    await runCommand('pipx', ['install', 'semgrep', '--force'], toolPathEnv());
+    return await isSemgrepAvailable();
+  } catch {
+    return false;
+  }
+}
+
+async function linkSemgrepBinary(sourcePath: string): Promise<void> {
+  const binDir = await ensureLocalBin();
+  const linkTarget = path.join(binDir, 'semgrep');
+  await fs.rm(linkTarget, { force: true }).catch(() => undefined);
+  try {
+    await fs.symlink(sourcePath, linkTarget);
+  } catch {
+    await fs.copyFile(sourcePath, linkTarget);
+    await fs.chmod(linkTarget, 0o755);
+  }
+}
+
+async function installSemgrepViaVenv(osType: ServerOsType): Promise<void> {
+  await ensurePythonVenvSupport(osType);
+  await fs.mkdir(path.dirname(SEMGREP_VENV_DIR), { recursive: true });
+
+  if (!(await pathExists(SEMGREP_VENV_DIR))) {
+    await runCommand('python3', ['-m', 'venv', SEMGREP_VENV_DIR]);
+  }
+
+  const pip = path.join(SEMGREP_VENV_DIR, 'bin', 'pip');
+  await runCommand(pip, ['install', '--upgrade', 'pip']);
+  await runCommand(pip, ['install', 'semgrep']);
+
+  const semgrepBin = path.join(SEMGREP_VENV_DIR, 'bin', 'semgrep');
+  if (!(await pathExists(semgrepBin))) {
+    throw new Error('Semgrep was installed in a virtual environment but the binary was not found.');
+  }
+
+  await linkSemgrepBinary(semgrepBin);
+}
+
+async function installSemgrepOnLinux(osType: ServerOsType): Promise<void> {
+  let lastError: Error | null = null;
+
+  // Primary: project-local venv avoids PEP 668 (externally-managed-environment) on Ubuntu.
+  try {
+    await installSemgrepViaVenv(osType);
+    if (await isSemgrepAvailable()) return;
+  } catch (err) {
+    lastError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  try {
+    if (await ensurePipx(osType)) {
+      const installed = await installSemgrepViaPipx();
+      if (installed) return;
+    }
+  } catch (err) {
+    lastError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  if (await isSemgrepAvailable()) return;
+
+  throw (
+    lastError ??
+    new Error(
+      'Semgrep could not be installed automatically. Ensure python3 is available and the SecureNexus process can run sudo apt-get on this server.'
+    )
+  );
 }
 
 async function readToolVersion(toolId: RuntimeSecurityToolId): Promise<string | null> {
@@ -174,19 +305,15 @@ async function installSemgrep(osType: ServerOsType): Promise<void> {
       await installWithBrew('semgrep');
       return;
     }
-    await runCommand('pip3', ['install', 'semgrep']);
+    if (await ensurePipx('macos')) {
+      const installed = await installSemgrepViaPipx();
+      if (installed) return;
+    }
+    await installSemgrepViaVenv('macos');
     return;
   }
 
-  if (!(await hasCommand('pip3'))) {
-    if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
-      await runShell('sudo apt-get update && sudo apt-get install -y python3-pip');
-    } else if (osType === 'linux') {
-      await runShell('sudo yum install -y python3-pip || sudo dnf install -y python3-pip');
-    }
-  }
-
-  await runCommand('pip3', ['install', '--user', 'semgrep']);
+  await installSemgrepOnLinux(osType);
 }
 
 async function installNpmAuditRuntime(osType: ServerOsType): Promise<void> {

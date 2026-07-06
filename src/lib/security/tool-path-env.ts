@@ -4,6 +4,7 @@ import path from 'path';
 export function extendedToolPath(): string {
   return [
     path.join(process.cwd(), '.securenexus', 'bin'),
+    path.join(process.cwd(), '.securenexus', 'venv-semgrep', 'bin'),
     path.join(os.homedir(), '.local', 'bin'),
     process.env.PATH ?? '',
   ]
