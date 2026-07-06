@@ -7,6 +7,7 @@ import {
   countFindingsBySeverity,
   type SecretsFindingRow,
 } from '@/lib/security-report-export';
+import { resolveSecretsRemediation } from '@/lib/security/secrets-remediation';
 import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { toolPathEnv } from '@/lib/security/tool-path-env';
 import { getSecurityToolById } from '@/lib/security-tools';
@@ -76,6 +77,7 @@ export function parseGitleaksReport(raw: unknown): SecretsFindingRow[] {
       finding.Description?.trim() ||
       `Potential secret detected (${rule})`;
     const preview = redactPreview(finding.Match ?? finding.Secret);
+    const remediation = resolveSecretsRemediation(rule, location);
 
     return {
       id: `K-${String(index + 1).padStart(3, '0')}`,
@@ -83,6 +85,9 @@ export function parseGitleaksReport(raw: unknown): SecretsFindingRow[] {
       rule,
       location,
       message: `${description} — match: ${preview}`,
+      recommendation: remediation.summary,
+      remediationSteps: remediation.steps,
+      remediationCommands: remediation.commands,
     };
   });
 }

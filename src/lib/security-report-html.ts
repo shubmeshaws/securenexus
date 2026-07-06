@@ -186,6 +186,22 @@ export function reportPageStyles(): string {
     .observations li { margin-bottom: 8px; }
     .detail-table th, .detail-table td { text-align: left; vertical-align: top; }
     .detail-table tr:nth-child(even) td { background: #f8fafc; }
+    .remediation { font-size: 13px; line-height: 1.45; }
+    .remediation-summary { margin: 0 0 8px; font-weight: 600; color: #0f172a; }
+    .remediation-steps { margin: 0 0 8px; padding-left: 18px; }
+    .remediation-steps li { margin-bottom: 4px; }
+    .remediation-cmd {
+      margin: 0;
+      padding: 8px 10px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-x: auto;
+    }
     .findings-table th, .findings-table td { text-align: left; vertical-align: top; }
     .findings-table tr:nth-child(even) td { background: #f8fafc; }
     code {
@@ -287,6 +303,10 @@ export function reportPdfCompatibilityStyles(): string {
     .col-high { background-color: #fff1f2 !important; }
     .col-critical { background-color: #fef2f2 !important; }
     .row-alt td { background-color: #eff6ff !important; }
+    .remediation-cmd {
+      background-color: #0f172a !important;
+      color: #e2e8f0 !important;
+    }
   `;
 }
 

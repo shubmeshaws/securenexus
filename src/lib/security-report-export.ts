@@ -8,6 +8,10 @@ import {
   categoryReportSubtitle,
   reportPageStyles,
 } from './security-report-html';
+import {
+  resolveSecretsRemediation,
+  type SecretsRemediation,
+} from './security/secrets-remediation';
 
 export interface SecurityReportContext {
   resource: SecurityResourceView | null;
@@ -25,6 +29,9 @@ export interface SecretsFindingRow {
   rule: string;
   location: string;
   message: string;
+  recommendation?: string;
+  remediationSteps?: string[];
+  remediationCommands?: string[];
 }
 
 export function buildSecurityReportHtml(ctx: SecurityReportContext): string {
@@ -161,11 +168,11 @@ function buildSastObservations(repoName: string, findings: SastFindingRow[]): st
 }
 
 function sampleSecretsFindings(toolId: string): SecretsFindingRow[] {
-  return [
+  const rows = [
     {
       id: 'K-001',
       severity: 'High',
-      rule: `${toolId}:aws-access-key`,
+      rule: `${toolId}:aws-access-token`,
       location: 'config/production.env:12',
       message: 'AWS access key detected — match: AKIA…XY',
     },
@@ -184,6 +191,39 @@ function sampleSecretsFindings(toolId: string): SecretsFindingRow[] {
       message: 'Generic API key pattern detected — match: sk_l…9a',
     },
   ];
+
+  return rows.map((row) => {
+    const remediation = resolveSecretsRemediation(row.rule, row.location);
+    return {
+      ...row,
+      recommendation: remediation.summary,
+      remediationSteps: remediation.steps,
+      remediationCommands: remediation.commands,
+    };
+  });
+}
+
+function buildSecretsRemediationCell(row: SecretsFindingRow): string {
+  const remediation: SecretsRemediation = row.recommendation
+    ? {
+        summary: row.recommendation,
+        steps: row.remediationSteps ?? [],
+        commands: row.remediationCommands ?? [],
+      }
+    : resolveSecretsRemediation(row.rule, row.location);
+
+  const steps = remediation.steps
+    .map((step) => `<li>${escapeHtml(step)}</li>`)
+    .join('');
+  const commands = remediation.commands.length
+    ? `<pre class="remediation-cmd">${remediation.commands.map((cmd) => escapeHtml(cmd)).join('\n')}</pre>`
+    : '';
+
+  return `<div class="remediation">
+    <p class="remediation-summary">${escapeHtml(remediation.summary)}</p>
+    ${steps ? `<ol class="remediation-steps">${steps}</ol>` : ''}
+    ${commands}
+  </div>`;
 }
 
 function buildSecretsObservations(repoName: string, findings: SecretsFindingRow[]): string[] {
@@ -246,7 +286,7 @@ export function buildSecretsReportHtml(ctx: SecurityReportContext): string {
         <td>${escapeHtml(repoName)}</td>
         <td><code>${escapeHtml(row.location)}</code></td>
         <td>${escapeHtml(row.message)}</td>
-        <td>Rotate credential, purge from git history, and use a secret manager</td>
+        <td>${buildSecretsRemediationCell(row)}</td>
       </tr>`
     )
     .join('');
@@ -336,7 +376,7 @@ export function buildSecretsReportHtml(ctx: SecurityReportContext): string {
             <th>Repository</th>
             <th>Location</th>
             <th>Description</th>
-            <th>Recommendation</th>
+            <th>Fix / Remediation</th>
           </tr>
         </thead>
         <tbody>${detailRows || '<tr><td colspan="7" style="text-align:center;padding:24px;">No secrets detected</td></tr>'}</tbody>
