@@ -14,6 +14,7 @@ import {
   wkhtmltopdfEnv,
 } from './security/report-pdf-runtime';
 import os from 'os';
+import { injectReportPdfStyles } from './security-report-html';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,7 +47,7 @@ async function htmlToPdfWithPuppeteer(html: string): Promise<Buffer> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    await page.setContent(html, { waitUntil: 'load' });
+    await page.setContent(injectReportPdfStyles(html), { waitUntil: 'load' });
     await page.emulateMediaType('screen');
     const pdf = await page.pdf({
       format: 'A4',
@@ -68,13 +69,13 @@ async function htmlToPdfWithWkhtmltopdf(html: string): Promise<Buffer> {
   const pdfPath = join(dir, 'report.pdf');
 
   try {
-    await writeFile(htmlPath, html, 'utf8');
+    const pdfHtml = injectReportPdfStyles(html);
+    await writeFile(htmlPath, pdfHtml, 'utf8');
     await execFileAsync(
       bin,
       [
         '--quiet',
         '--enable-local-file-access',
-        '--print-media-type',
         '--background',
         '--page-size',
         'A4',

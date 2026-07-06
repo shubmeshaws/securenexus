@@ -46,8 +46,9 @@ export function reportPageStyles(): string {
       padding: 28px 24px 40px;
     }
     .report-header {
-      background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
-      color: #fff;
+      background-color: #1e3a5f;
+      background-image: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+      color: #ffffff;
       border-radius: 16px;
       padding: 24px 28px;
       margin-bottom: 24px;
@@ -82,7 +83,7 @@ export function reportPageStyles(): string {
     }
     .brand-sub {
       font-size: 12px;
-      opacity: 0.82;
+      color: #dbeafe;
     }
     .scan-badge {
       background: rgba(255,255,255,0.14);
@@ -103,7 +104,7 @@ export function reportPageStyles(): string {
     .report-subtitle {
       margin: 0 0 18px;
       font-size: 14px;
-      opacity: 0.88;
+      color: #dbeafe;
     }
     .meta-grid {
       display: grid;
@@ -121,13 +122,14 @@ export function reportPageStyles(): string {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      opacity: 0.75;
+      color: #bfdbfe;
       margin-bottom: 4px;
     }
     .meta-value {
       display: block;
       font-size: 14px;
       font-weight: 600;
+      color: #ffffff;
       word-break: break-word;
     }
     .report-body {
@@ -227,6 +229,73 @@ export function reportPageStyles(): string {
       color: #94a3b8;
     }
   `;
+}
+
+/** Extra styles injected for wkhtmltopdf / print engines that drop gradients and opacity. */
+export function reportPdfCompatibilityStyles(): string {
+  return `
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .report-header {
+      background-color: #1e3a5f !important;
+      background-image: none !important;
+      color: #ffffff !important;
+    }
+    .report-header .report-title,
+    .report-header .brand-title,
+    .report-header .meta-value,
+    .report-header .scan-badge,
+    .report-header .brand-badge {
+      color: #ffffff !important;
+    }
+    .report-header .brand-sub,
+    .report-header .report-subtitle,
+    .report-header .meta-label {
+      color: #cbd5e1 !important;
+      opacity: 1 !important;
+    }
+    .report-header .meta-item {
+      background-color: #2563eb !important;
+      border: 1px solid #3b82f6 !important;
+    }
+    .report-header .brand-badge {
+      background-color: #3b82f6 !important;
+    }
+    .report-header .scan-badge {
+      background-color: #1d4ed8 !important;
+      border: 1px solid #60a5fa !important;
+    }
+    table th {
+      background-color: #4472c4 !important;
+      color: #ffffff !important;
+    }
+    .summary-table .cell-total {
+      background-color: #dbeafe !important;
+      color: #1d4ed8 !important;
+    }
+    .summary-table .cell-critical-high {
+      background-color: #fee2e2 !important;
+      color: #b91c1c !important;
+    }
+    .summary-table .cell-medium {
+      background-color: #fef3c7 !important;
+      color: #b45309 !important;
+    }
+    .summary-table .cell-low-info {
+      background-color: #dcfce7 !important;
+      color: #15803d !important;
+    }
+    .col-high { background-color: #fff1f2 !important; }
+    .col-critical { background-color: #fef2f2 !important; }
+    .row-alt td { background-color: #eff6ff !important; }
+  `;
+}
+
+export function injectReportPdfStyles(html: string): string {
+  const styles = `<style>${reportPdfCompatibilityStyles()}</style>`;
+  if (html.includes('</head>')) {
+    return html.replace('</head>', `${styles}</head>`);
+  }
+  return `${styles}${html}`;
 }
 
 export function buildReportHeaderHtml(input: {
