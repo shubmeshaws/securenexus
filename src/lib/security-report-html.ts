@@ -46,20 +46,42 @@ export function reportPageStyles(): string {
       padding: 28px 24px 40px;
     }
     .report-header {
-      background-color: #1e3a5f;
-      background-image: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
-      color: #ffffff;
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #dbe3ee;
       border-radius: 16px;
-      padding: 24px 28px;
+      padding: 28px 32px;
       margin-bottom: 24px;
-      box-shadow: 0 10px 30px rgba(37, 99, 235, 0.18);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     }
     .report-header-top {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 18px;
+      margin-bottom: 22px;
+    }
+    .securenexus-brand { text-align: left; }
+    .securenexus-logo {
+      font-size: 38px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+    .logo-secure { color: #0f172a; }
+    .logo-nexus {
+      background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: #2563eb;
+      -webkit-text-fill-color: transparent;
+    }
+    .logo-byline {
+      margin-top: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #64748b;
+      letter-spacing: 0.01em;
     }
     .brand {
       display: flex;
@@ -70,12 +92,13 @@ export function reportPageStyles(): string {
       width: 42px;
       height: 42px;
       border-radius: 12px;
-      background: rgba(255,255,255,0.16);
+      background: rgba(37, 99, 235, 0.1);
       display: flex;
       align-items: center;
       justify-content: center;
       font-weight: 700;
       letter-spacing: 0.04em;
+      color: #2563eb;
     }
     .brand-title {
       font-size: 15px;
@@ -83,28 +106,31 @@ export function reportPageStyles(): string {
     }
     .brand-sub {
       font-size: 12px;
-      color: #dbeafe;
+      color: #64748b;
     }
     .scan-badge {
-      background: rgba(255,255,255,0.14);
-      border: 1px solid rgba(255,255,255,0.22);
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
       border-radius: 999px;
-      padding: 6px 14px;
+      padding: 8px 16px;
       font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
+      font-weight: 800;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
     }
     .report-title {
-      margin: 0 0 6px;
-      font-size: 28px;
-      line-height: 1.2;
-      font-weight: 700;
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.15;
+      font-weight: 800;
+      color: #0f172a;
     }
     .report-subtitle {
-      margin: 0 0 18px;
-      font-size: 14px;
-      color: #dbeafe;
+      margin: 0 0 20px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #475569;
     }
     .meta-grid {
       display: grid;
@@ -112,8 +138,8 @@ export function reportPageStyles(): string {
       gap: 12px;
     }
     .meta-item {
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.14);
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
       border-radius: 10px;
       padding: 10px 12px;
     }
@@ -122,14 +148,14 @@ export function reportPageStyles(): string {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: #bfdbfe;
+      color: #64748b;
       margin-bottom: 4px;
     }
     .meta-value {
       display: block;
       font-size: 14px;
       font-weight: 600;
-      color: #ffffff;
+      color: #0f172a;
       word-break: break-word;
     }
     .report-body {
@@ -139,14 +165,17 @@ export function reportPageStyles(): string {
       padding: 24px;
     }
     h2 {
-      font-size: 18px;
-      margin: 0 0 10px;
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0 0 12px;
       color: #0f172a;
+      letter-spacing: -0.01em;
     }
-    h2:not(:first-child) { margin-top: 28px; }
+    h2:not(:first-child) { margin-top: 32px; }
     h3 {
-      font-size: 16px;
-      margin: 24px 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+      margin: 24px 0 10px;
       color: #0f172a;
     }
     table {
@@ -173,8 +202,9 @@ export function reportPageStyles(): string {
     .cell-critical-high { background: #fee2e2; color: #b91c1c; }
     .cell-medium { background: #fef3c7; color: #b45309; }
     .cell-low-info { background: #dcfce7; color: #15803d; }
-    .col-critical { background: #fef2f2; }
-    .col-high { background: #fff1f2; }
+    td.col-critical { background: #fef2f2; color: #b91c1c; font-weight: 600; }
+    td.col-high { background: #fff1f2; color: #be123c; font-weight: 600; }
+    .repo-table th { background: #4472c4; color: #fff; }
     .row-alt td { background: #eff6ff; }
     .observations {
       background: #fff;
@@ -186,6 +216,21 @@ export function reportPageStyles(): string {
     .observations li { margin-bottom: 8px; }
     .detail-table th, .detail-table td { text-align: left; vertical-align: top; }
     .detail-table tr:nth-child(even) td { background: #f8fafc; }
+    .detail-table .col-location code {
+      white-space: nowrap;
+      word-break: normal;
+    }
+    .detail-table .col-vulnerability,
+    .detail-table .col-rule {
+      min-width: 140px;
+      max-width: 240px;
+      word-break: break-word;
+    }
+    .detail-table .col-recommendation,
+    .detail-table .col-remediation {
+      min-width: 220px;
+      word-break: break-word;
+    }
     .remediation { font-size: 13px; line-height: 1.45; }
     .remediation-summary { margin: 0 0 8px; font-weight: 600; color: #0f172a; }
     .remediation-steps { margin: 0 0 8px; padding-left: 18px; }
@@ -263,33 +308,45 @@ export function reportPdfCompatibilityStyles(): string {
   return `
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .report-header {
-      background-color: #1e3a5f !important;
+      background-color: #ffffff !important;
       background-image: none !important;
-      color: #ffffff !important;
+      color: #0f172a !important;
+      border: 1px solid #dbe3ee !important;
     }
     .report-header .report-title,
+    .report-header .meta-value {
+      color: #0f172a !important;
+    }
     .report-header .brand-title,
-    .report-header .meta-value,
-    .report-header .scan-badge,
     .report-header .brand-badge {
-      color: #ffffff !important;
+      color: #2563eb !important;
     }
     .report-header .brand-sub,
     .report-header .report-subtitle,
-    .report-header .meta-label {
-      color: #cbd5e1 !important;
+    .report-header .meta-label,
+    .report-header .logo-byline {
+      color: #64748b !important;
       opacity: 1 !important;
     }
+    .report-header .logo-secure {
+      color: #0f172a !important;
+      -webkit-text-fill-color: #0f172a !important;
+    }
+    .report-header .logo-nexus {
+      color: #2563eb !important;
+      -webkit-text-fill-color: #2563eb !important;
+    }
     .report-header .meta-item {
-      background-color: #2563eb !important;
-      border: 1px solid #3b82f6 !important;
+      background-color: #f8fafc !important;
+      border: 1px solid #e2e8f0 !important;
     }
     .report-header .brand-badge {
-      background-color: #3b82f6 !important;
+      background-color: #eff6ff !important;
     }
     .report-header .scan-badge {
-      background-color: #1d4ed8 !important;
-      border: 1px solid #60a5fa !important;
+      background-color: #eff6ff !important;
+      border: 1px solid #bfdbfe !important;
+      color: #1d4ed8 !important;
     }
     table th {
       background-color: #4472c4 !important;
@@ -311,8 +368,19 @@ export function reportPdfCompatibilityStyles(): string {
       background-color: #dcfce7 !important;
       color: #15803d !important;
     }
-    .col-high { background-color: #fff1f2 !important; }
-    .col-critical { background-color: #fef2f2 !important; }
+    td.col-high {
+      background-color: #fff1f2 !important;
+      color: #be123c !important;
+    }
+    td.col-critical {
+      background-color: #fef2f2 !important;
+      color: #b91c1c !important;
+    }
+    table th.col-critical,
+    table th.col-high {
+      background-color: #4472c4 !important;
+      color: #ffffff !important;
+    }
     .row-alt td { background-color: #eff6ff !important; }
     .remediation-cmd {
       background-color: #0f172a !important;
@@ -331,6 +399,16 @@ export function injectReportPdfStyles(html: string): string {
     return html.replace('</head>', `${styles}</head>`);
   }
   return `${styles}${html}`;
+}
+
+export function buildSecureNexusBrandHtml(): string {
+  return `
+      <div class="securenexus-brand">
+        <div class="securenexus-logo" aria-label="SecureNexus">
+          <span class="logo-secure">SECURE</span><span class="logo-nexus">NEXUS</span>
+        </div>
+        <div class="logo-byline">By DevOps Team</div>
+      </div>`;
 }
 
 export function buildReportHeaderHtml(input: {
@@ -353,13 +431,7 @@ export function buildReportHeaderHtml(input: {
   return `
   <header class="report-header">
     <div class="report-header-top">
-      <div class="brand">
-        <div class="brand-badge">SN</div>
-        <div>
-          <div class="brand-title">SecureNexus</div>
-          <div class="brand-sub">Security Assessment Platform</div>
-        </div>
-      </div>
+      ${buildSecureNexusBrandHtml()}
       <div class="scan-badge">${input.categoryLabel}</div>
     </div>
     <h1 class="report-title">${input.toolName} · ${input.resourceName}</h1>

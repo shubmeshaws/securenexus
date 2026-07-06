@@ -1,5 +1,5 @@
 import { formatTimestampIST } from './utils';
-import { reportPageStyles } from './security-report-html';
+import { buildSecureNexusBrandHtml, reportPageStyles } from './security-report-html';
 import type { SecurityToolCategory } from './security-tools';
 
 export interface MergedReportSection {
@@ -31,6 +31,13 @@ function extractReportBody(html: string): string {
   return bodyMatch?.[1]?.trim() ?? html;
 }
 
+function extractMergedSectionContent(html: string): string {
+  let content = extractReportBody(html);
+  content = content.replace(/<h2[^>]*>\s*Issue Summary\s*<\/h2>[\s\S]*?(?=<h2|<h3|$)/i, '');
+  content = content.replace(/<h2[^>]*>\s*Issues by Repository\s*<\/h2>[\s\S]*?(?=<h2|<h3|$)/i, '');
+  return content.trim();
+}
+
 export function buildMergedSecurityReportHtml(sections: MergedReportSection[]): string {
   const generatedAt = formatTimestampIST(new Date().toISOString());
   const totalHigh = sections.reduce((sum, row) => sum + row.highCount, 0);
@@ -59,9 +66,20 @@ export function buildMergedSecurityReportHtml(sections: MergedReportSection[]): 
     .map(
       (row, index) => `
       <section class="merged-section" id="section-${index + 1}">
-        <h2>${index + 1}. ${escapeHtml(row.toolName)} · ${escapeHtml(row.resourceName)}</h2>
+        <div class="merged-section-header">
+          <div class="merged-section-heading">
+            <span class="merged-section-index">${index + 1}</span>
+            <div>
+              <h2 class="merged-section-title">${escapeHtml(row.toolName)}</h2>
+              <p class="merged-section-meta">${escapeHtml(row.categoryLabel)} · ${escapeHtml(row.resourceName)}</p>
+            </div>
+          </div>
+          <span class="merged-section-badge">${escapeHtml(row.categoryLabel)}</span>
+        </div>
         <p class="section-summary">${escapeHtml(row.summary)}</p>
-        ${extractReportBody(row.htmlContent)}
+        <div class="merged-section-body">
+          ${extractMergedSectionContent(row.htmlContent)}
+        </div>
       </section>`
     )
     .join('\n');
@@ -82,14 +100,68 @@ export function buildMergedSecurityReportHtml(sections: MergedReportSection[]): 
   <style>
     ${reportPageStyles()}
     .merged-section {
-      margin-top: 28px;
-      padding-top: 24px;
-      border-top: 1px solid #dbe3ee;
+      margin-top: 32px;
+      padding: 24px;
+      border: 1px solid #dbe3ee;
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
     }
     .merged-section:first-of-type {
       margin-top: 0;
-      padding-top: 0;
-      border-top: none;
+    }
+    .merged-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      padding-bottom: 14px;
+      border-bottom: 2px solid #e2e8f0;
+    }
+    .merged-section-heading {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .merged-section-index {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .merged-section-title {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .merged-section-meta {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: #64748b;
+      font-weight: 500;
+    }
+    .merged-section-badge {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .merged-section-body h2:first-child,
+    .merged-section-body h3:first-child {
+      margin-top: 0;
     }
     .section-summary {
       background: #fff;
@@ -116,13 +188,7 @@ export function buildMergedSecurityReportHtml(sections: MergedReportSection[]): 
   <div class="page">
     <header class="report-header">
       <div class="report-header-top">
-        <div class="brand">
-          <div class="brand-badge">SN</div>
-          <div>
-            <div class="brand-title">SecureNexus</div>
-            <div class="brand-sub">Security Assessment Platform</div>
-          </div>
-        </div>
+        ${buildSecureNexusBrandHtml()}
         <div class="scan-badge">COMBINED</div>
       </div>
       <h1 class="report-title">Combined Security Scan Report</h1>
@@ -169,7 +235,7 @@ export function buildMergedSecurityReportHtml(sections: MergedReportSection[]): 
       </table>
 
       <h2>Scans Included</h2>
-      <table>
+      <table class="repo-table">
         <thead>
           <tr>
             <th class="text-left">Repository</th>

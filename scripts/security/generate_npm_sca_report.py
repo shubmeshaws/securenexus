@@ -222,6 +222,15 @@ def build_key_observations(rows: list[dict], repo: str) -> list[str]:
     return observations[:6]
 
 
+SECURENEXUS_BRAND_HTML = """
+      <div class="securenexus-brand">
+        <div class="securenexus-logo" aria-label="SecureNexus">
+          <span class="logo-secure">SECURE</span><span class="logo-nexus">NEXUS</span>
+        </div>
+        <div class="logo-byline">By DevOps Team</div>
+      </div>"""
+
+
 def report_styles() -> str:
     return """
     * { box-sizing: border-box; }
@@ -238,58 +247,65 @@ def report_styles() -> str:
       padding: 28px 24px 40px;
     }
     .report-header {
-      background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
-      color: #fff;
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #dbe3ee;
       border-radius: 16px;
-      padding: 24px 28px;
+      padding: 28px 32px;
       margin-bottom: 24px;
-      box-shadow: 0 10px 30px rgba(37, 99, 235, 0.18);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     }
     .report-header-top {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 18px;
+      margin-bottom: 22px;
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .brand-badge {
-      width: 42px;
-      height: 42px;
-      border-radius: 12px;
-      background: rgba(255,255,255,0.16);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
+    .securenexus-brand { text-align: left; }
+    .securenexus-logo {
+      font-size: 38px;
+      font-weight: 800;
       letter-spacing: 0.04em;
+      line-height: 1;
     }
-    .brand-title { font-size: 15px; font-weight: 700; }
-    .brand-sub { font-size: 12px; opacity: 0.82; }
+    .logo-secure { color: #0f172a; }
+    .logo-nexus {
+      background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: #2563eb;
+      -webkit-text-fill-color: transparent;
+    }
+    .logo-byline {
+      margin-top: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #64748b;
+    }
     .scan-badge {
-      background: rgba(255,255,255,0.14);
-      border: 1px solid rgba(255,255,255,0.22);
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
       border-radius: 999px;
-      padding: 6px 14px;
+      padding: 8px 16px;
       font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
+      font-weight: 800;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
     }
     .report-title {
-      margin: 0 0 6px;
-      font-size: 28px;
-      line-height: 1.2;
-      font-weight: 700;
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.15;
+      font-weight: 800;
+      color: #0f172a;
     }
     .report-subtitle {
-      margin: 0 0 18px;
-      font-size: 14px;
-      opacity: 0.88;
+      margin: 0 0 20px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #475569;
     }
     .meta-grid {
       display: grid;
@@ -297,8 +313,8 @@ def report_styles() -> str:
       gap: 12px;
     }
     .meta-item {
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.14);
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
       border-radius: 10px;
       padding: 10px 12px;
     }
@@ -307,13 +323,14 @@ def report_styles() -> str:
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      opacity: 0.75;
+      color: #64748b;
       margin-bottom: 4px;
     }
     .meta-value {
       display: block;
       font-size: 14px;
       font-weight: 600;
+      color: #0f172a;
       word-break: break-word;
     }
     .report-body {
@@ -323,14 +340,16 @@ def report_styles() -> str:
       padding: 24px;
     }
     h2 {
-      font-size: 18px;
-      margin: 0 0 10px;
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0 0 12px;
       color: #0f172a;
     }
-    h2:not(:first-child) { margin-top: 28px; }
+    h2:not(:first-child) { margin-top: 32px; }
     h3 {
-      font-size: 16px;
-      margin: 24px 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+      margin: 24px 0 10px;
       color: #0f172a;
     }
     table {
@@ -357,8 +376,9 @@ def report_styles() -> str:
     .cell-critical-high { background: #fee2e2; color: #b91c1c; }
     .cell-medium { background: #fef3c7; color: #b45309; }
     .cell-low-info { background: #dcfce7; color: #15803d; }
-    .col-critical { background: #fef2f2; }
-    .col-high { background: #fff1f2; }
+    td.col-critical { background: #fef2f2; color: #b91c1c; font-weight: 600; }
+    td.col-high { background: #fff1f2; color: #be123c; font-weight: 600; }
+    .repo-table th { background: #4472c4; color: #fff; }
     .row-alt td { background: #eff6ff; }
     .observations {
       background: #fff;
@@ -416,13 +436,7 @@ def build_report_header(
     return f"""
   <header class="report-header">
     <div class="report-header-top">
-      <div class="brand">
-        <div class="brand-badge">SN</div>
-        <div>
-          <div class="brand-title">SecureNexus</div>
-          <div class="brand-sub">Security Assessment Platform</div>
-        </div>
-      </div>
+      {SECURENEXUS_BRAND_HTML}
       <div class="scan-badge">SCA</div>
     </div>
     <h1 class="report-title">{escape(tool_name)} · {escape(resource_name)}</h1>
@@ -518,7 +532,7 @@ def build_sca_html(
   </table>
 
   <h2>Issues by Repository</h2>
-  <table>
+  <table class="repo-table">
     <thead>
       <tr>
         <th class="text-left">Repository</th>

@@ -46,6 +46,7 @@ import { SecurityScanPanel } from '@/components/pod-scheduler/security-scan-pane
 import { SecurityAutomationPanel } from '@/components/pod-scheduler/security-automation-panel';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { SecurityReportActions } from '@/components/pod-scheduler/security-report-actions';
+import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GitleaksOptionsPanel } from '@/components/pod-scheduler/gitleaks-options-panel';
 import { DEFAULT_GITLEAKS_SCAN_OPTIONS } from '@/lib/security/gitleaks-options';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -120,6 +121,7 @@ export function SecurityContent() {
   const [resourceName, setResourceName] = useState('');
   const [description, setDescription] = useState('');
   const [previewReportId, setPreviewReportId] = useState<string | null>(null);
+  const [reportToDelete, setReportToDelete] = useState<SecurityReportView | null>(null);
   const [generateResourceId, setGenerateResourceId] = useState('');
   const [generateToolId, setGenerateToolId] = useState('');
   const [installDialog, setInstallDialog] = useState<{
@@ -383,6 +385,7 @@ export function SecurityContent() {
     mutationFn: (id: string) =>
       apiFetch(`/api/security/reports/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
+      setReportToDelete(null);
       queryClient.invalidateQueries({ queryKey: ['security-reports'] });
       queryClient.invalidateQueries({ queryKey: ['security-dashboard'] });
     },
@@ -712,8 +715,8 @@ export function SecurityContent() {
                         <SecurityReportActions
                           reportId={row.id}
                           onPreview={() => setPreviewReportId(row.id)}
-                          onDelete={() => deleteReport.mutate(row.id)}
-                          deleting={deleteReport.isPending}
+                          onDelete={() => setReportToDelete(row)}
+                          deleting={deleteReport.isPending && reportToDelete?.id === row.id}
                         />
                       </td>
                     </tr>
@@ -723,8 +726,34 @@ export function SecurityContent() {
               </div>
             </TooltipProvider>
           )}
+          {deleteReport.isError ? (
+            <div className="mx-5 mt-3 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[11px] text-red-700">
+              {deleteReport.error instanceof Error ? deleteReport.error.message : 'Failed to delete report'}
+            </div>
+          ) : null}
         </GlassPanel>
       )}
+
+      <ConfirmDialog
+        open={reportToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteReport.isPending) setReportToDelete(null);
+        }}
+        title="Delete report?"
+        description={
+          reportToDelete ? (
+            <>
+              Permanently delete <span className="font-medium text-foreground">{reportToDelete.title}</span>?
+              This cannot be undone.
+            </>
+          ) : (
+            'Permanently delete this report?'
+          )
+        }
+        confirmLabel="Delete report"
+        onConfirm={() => reportToDelete && deleteReport.mutate(reportToDelete.id)}
+        loading={deleteReport.isPending}
+      />
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="sm:max-w-lg">

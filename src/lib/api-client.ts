@@ -51,7 +51,9 @@ export async function apiFetch<T>(
     throw new Error(formatApiError(body.error, res.status, body.message));
   }
 
-  return res.json() as Promise<T>;
+  const text = await res.text();
+  if (!text.trim()) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export interface Schedule {

@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
+import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -343,6 +344,7 @@ export function SecurityScanPanel({
   const [selectedCategories, setSelectedCategories] = useState<SecurityToolCategory[]>([]);
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
   const [reportMode, setReportMode] = useState<SecurityReportMode>('separate');
+  const [scanJobToDelete, setScanJobToDelete] = useState<SecurityScanJobView | null>(null);
   const resumeChecked = useRef(false);
 
   const enabledResources = useMemo(
@@ -455,6 +457,7 @@ export function SecurityScanPanel({
   const deleteJob = useMutation({
     mutationFn: (jobId: string) => deleteSecurityScanJobClient(jobId),
     onSuccess: () => {
+      setScanJobToDelete(null);
       queryClient.invalidateQueries({ queryKey: ['security-scan-jobs'] });
     },
   });
@@ -484,6 +487,7 @@ export function SecurityScanPanel({
   }
 
   return (
+    <>
     <GlassPanel className="flex flex-col overflow-visible">
       <PanelHeader title="Scan" icon={ScanSearch} accent="emerald" />
       <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
@@ -664,9 +668,9 @@ export function SecurityScanPanel({
                     job={job}
                     isScanning={isScanning}
                     rerunPending={rerunJob.isPending}
-                    deletePending={deleteJob.isPending}
+                    deletePending={deleteJob.isPending && scanJobToDelete?.id === job.id}
                     onRerun={() => rerunJob.mutate(job.id)}
-                    onDelete={() => deleteJob.mutate(job.id)}
+                    onDelete={() => setScanJobToDelete(job)}
                   />
                 ))}
               </div>
@@ -686,5 +690,30 @@ export function SecurityScanPanel({
         </div>
       )}
     </GlassPanel>
+
+    <ConfirmDialog
+      open={scanJobToDelete !== null}
+      onOpenChange={(open) => {
+        if (!open && !deleteJob.isPending) setScanJobToDelete(null);
+      }}
+      title="Delete scan?"
+      description={
+        scanJobToDelete ? (
+          <>
+            Permanently delete this scan from{' '}
+            <span className="font-medium text-foreground">
+              {new Date(scanJobToDelete.createdAt).toLocaleString()}
+            </span>
+            ? This cannot be undone.
+          </>
+        ) : (
+          'Permanently delete this scan?'
+        )
+      }
+      confirmLabel="Delete scan"
+      onConfirm={() => scanJobToDelete && deleteJob.mutate(scanJobToDelete.id)}
+      loading={deleteJob.isPending}
+    />
+    </>
   );
 }

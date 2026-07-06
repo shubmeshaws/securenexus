@@ -339,13 +339,13 @@ export function buildSecretsReportHtml(ctx: SecurityReportContext): string {
       (row, index) => `
       <tr>
         <td>${escapeHtml(row.id ?? `K-${String(index + 1).padStart(3, '0')}`)}</td>
-        <td>${escapeHtml(row.rule)}</td>
+        <td class="col-rule">${escapeHtml(row.rule)}</td>
         <td>${escapeHtml(row.severity)}</td>
         <td>${escapeHtml(repoName)}</td>
-        <td><code>${escapeHtml(row.location)}</code></td>
+        <td class="col-location"><code>${escapeHtml(row.location)}</code></td>
         <td>${buildSecretsUrlCell(row.urls)}</td>
         <td>${escapeHtml(row.message)}</td>
-        <td>${buildSecretsRemediationCell(row)}</td>
+        <td class="col-remediation">${buildSecretsRemediationCell(row)}</td>
       </tr>`
     )
     .join('');
@@ -395,7 +395,7 @@ export function buildSecretsReportHtml(ctx: SecurityReportContext): string {
       </table>
 
       <h2>Issues by Repository</h2>
-      <table>
+      <table class="repo-table">
         <thead>
           <tr>
             <th class="text-left">Repository</th>
@@ -529,7 +529,7 @@ function buildSastReportHtml(ctx: SecurityReportContext): string {
       </table>
 
       <h2>Issues by Repository</h2>
-      <table>
+      <table class="repo-table">
         <thead>
           <tr>
             <th class="text-left">Repository</th>
@@ -815,7 +815,7 @@ export function buildScaReportHtml(ctx: SecurityReportContext): string {
       </table>
 
       <h2>Issues by Repository</h2>
-      <table>
+      <table class="repo-table">
         <thead>
           <tr>
             <th class="text-left">Repository</th>
