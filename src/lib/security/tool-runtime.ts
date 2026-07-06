@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import { isGitleaksAvailable } from './gitleaks-runner';
+import { resolveGitleaksDownloadUrl } from './gitleaks-install';
 import { isNpmAuditAvailable } from './npm-audit-runner';
 import { isSemgrepAvailable } from './semgrep-runner';
 import { toolPathEnv } from './tool-path-env';
@@ -368,8 +369,7 @@ async function installGitleaks(osType: ServerOsType): Promise<void> {
 
   const binDir = await ensureLocalBin();
   const tarPath = path.join(os.tmpdir(), `gitleaks-${Date.now()}.tar.gz`);
-  const downloadUrl =
-    'https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz';
+  const downloadUrl = await resolveGitleaksDownloadUrl();
 
   try {
     await runShell(`wget -qO "${tarPath}" "${downloadUrl}" || curl -fsSL -o "${tarPath}" "${downloadUrl}"`);

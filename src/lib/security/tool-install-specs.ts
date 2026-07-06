@@ -46,12 +46,12 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
   gitleaks: {
     macos: ['brew install gitleaks'],
     ubuntu: [
-      'wget -qO /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz',
-      'sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks',
+      'SecureNexus downloads the latest Gitleaks release from GitHub automatically',
+      'Extracts gitleaks_<version>_linux_x64.tar.gz into .securenexus/bin/',
     ],
     linux: [
-      'wget -qO /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz',
-      'sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks',
+      'SecureNexus downloads the latest Gitleaks release from GitHub automatically',
+      'Extracts gitleaks_<version>_linux_x64.tar.gz into .securenexus/bin/',
     ],
   },
 };
