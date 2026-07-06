@@ -8,6 +8,7 @@ import {
   type SecretsFindingRow,
 } from '@/lib/security-report-export';
 import { resolveSecretsRemediation } from '@/lib/security/secrets-remediation';
+import { buildFindingSourceUrls, type RepoSourceContext } from '@/lib/security/repo-source-url';
 import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { toolPathEnv } from '@/lib/security/tool-path-env';
 import { getSecurityToolById } from '@/lib/security-tools';
@@ -36,11 +37,14 @@ interface GitleaksRawFinding {
   RuleID?: string;
   Description?: string;
   File?: string;
+  SymlinkFile?: string;
   StartLine?: number;
   EndLine?: number;
   Match?: string;
   Secret?: string;
   Tags?: string[];
+  Commit?: string;
+  Link?: string;
 }
 
 function mapRuleSeverity(ruleId: string, tags: string[] = []): SecretsFindingRow['severity'] {
@@ -65,7 +69,10 @@ function redactPreview(value: string | undefined): string {
   return `${trimmed.slice(0, 4)}…${trimmed.slice(-2)}`;
 }
 
-export function parseGitleaksReport(raw: unknown): SecretsFindingRow[] {
+export function parseGitleaksReport(
+  raw: unknown,
+  context?: RepoSourceContext | null
+): SecretsFindingRow[] {
   const rows = Array.isArray(raw) ? raw : [];
   return rows.map((entry, index) => {
     const finding = entry as GitleaksRawFinding;
@@ -78,6 +85,14 @@ export function parseGitleaksReport(raw: unknown): SecretsFindingRow[] {
       `Potential secret detected (${rule})`;
     const preview = redactPreview(finding.Match ?? finding.Secret);
     const remediation = resolveSecretsRemediation(rule, location);
+    const urls = buildFindingSourceUrls(context, {
+      file,
+      symlinkFile: finding.SymlinkFile,
+      startLine: finding.StartLine,
+      endLine: finding.EndLine,
+      commit: finding.Commit,
+      gitleaksLink: finding.Link,
+    });
 
     return {
       id: `K-${String(index + 1).padStart(3, '0')}`,
@@ -85,6 +100,7 @@ export function parseGitleaksReport(raw: unknown): SecretsFindingRow[] {
       rule,
       location,
       message: `${description} — match: ${preview}`,
+      urls,
       recommendation: remediation.summary,
       remediationSteps: remediation.steps,
       remediationCommands: remediation.commands,
@@ -149,7 +165,10 @@ export async function runGitleaksScan(input: {
       parsedRaw = [];
     }
 
-    const findings = parseGitleaksReport(parsedRaw);
+    const findings = parseGitleaksReport(parsedRaw, {
+      repoUrl: input.resource.repoUrl ?? '',
+      defaultBranch: input.resource.defaultBranch,
+    });
     const counts = countFindingsBySeverity(findings);
     const gitleaksVersion = await getGitleaksVersion();
     const tool = getSecurityToolById('gitleaks');

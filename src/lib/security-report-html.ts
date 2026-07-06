@@ -202,6 +202,17 @@ export function reportPageStyles(): string {
       word-break: break-word;
       overflow-x: auto;
     }
+    .source-url-list {
+      margin: 0;
+      padding-left: 18px;
+      list-style: disc;
+    }
+    .source-url-list li { margin-bottom: 6px; }
+    .source-url-list a {
+      color: #2563eb;
+      text-decoration: underline;
+      word-break: break-all;
+    }
     .findings-table th, .findings-table td { text-align: left; vertical-align: top; }
     .findings-table tr:nth-child(even) td { background: #f8fafc; }
     code {
@@ -306,6 +317,10 @@ export function reportPdfCompatibilityStyles(): string {
     .remediation-cmd {
       background-color: #0f172a !important;
       color: #e2e8f0 !important;
+    }
+    .source-url-list a {
+      color: #1d4ed8 !important;
+      text-decoration: underline !important;
     }
   `;
 }
