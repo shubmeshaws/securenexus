@@ -13,7 +13,8 @@ import { repoClonePath } from '@/lib/git-repositories';
 import type { SecurityResourceView } from '@/lib/security-service';
 
 const execFileAsync = promisify(execFile);
-const GIT_TIMEOUT_MS = 5 * 60 * 1000;
+const GIT_TIMEOUT_MS = 15 * 60 * 1000;
+const CLONE_DEPTH = '200';
 
 function resolveSecurityRepoRoot(): string {
   const override = process.env.SECURITY_REPO_ROOT?.trim();
@@ -24,8 +25,6 @@ function resolveSecurityRepoRoot(): string {
 }
 
 function resolveSecurityScanRoot(): string {
-  // Allow relocating ephemeral scan clones outside the project tree so Next.js's
-  // dev file watcher doesn't try to watch thousands of cloned repo files (EMFILE).
   const override = process.env.SECURITY_SCAN_ROOT?.trim();
   if (override) {
     return path.isAbsolute(override) ? override : path.join(process.cwd(), override);
@@ -53,6 +52,11 @@ export function securityResourceClonePath(resourceId: string): string {
 
 function cloneMetaPath(clonePath: string): string {
   return path.join(path.dirname(clonePath), 'clone-meta.json');
+}
+
+function resolveBranch(defaultBranch: string | null | undefined): string {
+  const branch = defaultBranch?.trim();
+  return branch || 'main';
 }
 
 async function readCloneMeta(clonePath: string): Promise<CloneMeta | null> {
@@ -96,75 +100,23 @@ export async function removeSecurityResourceClone(resourceId: string): Promise<v
   await fs.rm(resourceDir, { recursive: true, force: true });
 }
 
-export async function cloneSecurityResourceRepo(
-  resource: SecurityResourceView
-): Promise<SecurityResourceCloneStatus> {
-  if (resource.type !== 'repository' || !resource.repoUrl?.trim()) {
-    throw new Error('Only repository resources can be cloned');
-  }
-
-  const clonePath = securityResourceClonePath(resource.id);
-  await removeSecurityResourceClone(resource.id);
-  await fs.mkdir(clonePath, { recursive: true });
-
+async function runGit(args: string[], cwd?: string): Promise<string> {
   try {
-    await cloneRepository(resource.repoUrl.trim(), clonePath, resource.defaultBranch);
-    await writeCloneMeta(clonePath, {
-      clonedAt: new Date().toISOString(),
-      lastPulledAt: null,
+    const { stdout, stderr } = await execFileAsync('git', args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 20 * 1024 * 1024,
+      timeout: GIT_TIMEOUT_MS,
     });
+    return `${stdout}\n${stderr}`.trim();
   } catch (err) {
-    await removeSecurityResourceClone(resource.id);
-    throw new Error(formatRepositoryCloneError(err, resource.repoUrl));
+    const execErr = err as Error & { stderr?: string; stdout?: string; killed?: boolean; signal?: string };
+    if (execErr.killed || execErr.signal === 'SIGTERM') {
+      throw new Error(`Git operation timed out after ${GIT_TIMEOUT_MS / 60_000} minutes.`);
+    }
+    const detail = [execErr.stderr, execErr.stdout, execErr.message].filter(Boolean).join('\n');
+    throw new Error(detail || 'Git command failed');
   }
-
-  return getSecurityResourceCloneStatus(resource.id);
-}
-
-export async function pullSecurityResourceRepo(
-  resource: SecurityResourceView
-): Promise<SecurityResourceCloneStatus> {
-  if (resource.type !== 'repository' || !resource.repoUrl?.trim()) {
-    throw new Error('Only repository resources can be pulled');
-  }
-
-  const clonePath = securityResourceClonePath(resource.id);
-  if (!(await pathExists(path.join(clonePath, '.git')))) {
-    throw new Error(`"${resource.name}" is not cloned yet. Click Clone first.`);
-  }
-
-  try {
-    await pullCloneStrict(clonePath, resource.defaultBranch);
-    await writeCloneMeta(clonePath, { lastPulledAt: new Date().toISOString() });
-  } catch (err) {
-    throw new Error(formatRepositoryCloneError(err, resource.repoUrl));
-  }
-
-  return getSecurityResourceCloneStatus(resource.id);
-}
-
-async function pullCloneStrict(clonePath: string, branch?: string | null): Promise<void> {
-  const branchName = branch?.trim();
-  if (branchName) {
-    await runGit(['fetch', 'origin', branchName, '--depth', '1'], clonePath);
-    await runGit(['checkout', branchName], clonePath);
-  }
-  await runGit(['pull', '--ff-only'], clonePath);
-}
-
-export interface PreparedRepository {
-  repoPath: string;
-  outputDir: string;
-  cleanup: () => Promise<void>;
-}
-
-async function runGit(args: string[], cwd?: string): Promise<void> {
-  await execFileAsync('git', args, {
-    cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    maxBuffer: 20 * 1024 * 1024,
-    timeout: GIT_TIMEOUT_MS,
-  });
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -188,6 +140,123 @@ async function resolveCloneUrl(repoUrl: string): Promise<string> {
   return buildBitbucketCloneUrl(creds, parsed.workspace, parsed.repoSlug);
 }
 
+async function performSecurityClone(
+  repoUrl: string,
+  clonePath: string,
+  branch: string,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  onProgress?.('Resolving Bitbucket credentials…');
+  const cloneUrl = await resolveCloneUrl(repoUrl);
+
+  onProgress?.(`Cloning branch ${branch}…`);
+  try {
+    await runGit(
+      ['clone', '--depth', CLONE_DEPTH, '--branch', branch, '--single-branch', cloneUrl, clonePath]
+    );
+    return;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    if (!/could not find remote branch|Remote branch|not found in upstream/i.test(message)) {
+      throw err;
+    }
+  }
+
+  onProgress?.(`Branch ${branch} not found on remote; cloning default branch…`);
+  await runGit(['clone', '--depth', CLONE_DEPTH, cloneUrl, clonePath]);
+  try {
+    await runGit(['checkout', branch], clonePath);
+  } catch {
+    // Use whatever branch was cloned by default.
+  }
+}
+
+async function performSecurityPull(
+  repoUrl: string,
+  clonePath: string,
+  branch: string,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  onProgress?.('Refreshing remote credentials…');
+  const cloneUrl = await resolveCloneUrl(repoUrl);
+
+  await runGit(['remote', 'set-url', 'origin', cloneUrl], clonePath);
+
+  const currentBranch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], clonePath)).trim();
+  if (currentBranch !== branch) {
+    onProgress?.(`Checking out ${branch}…`);
+    await runGit(['fetch', 'origin', branch, '--depth', CLONE_DEPTH], clonePath);
+    await runGit(['checkout', branch], clonePath);
+  }
+
+  onProgress?.('Pulling latest commits…');
+  await runGit(['pull', '--ff-only', 'origin', branch], clonePath);
+}
+
+export async function cloneSecurityResourceRepo(
+  resource: SecurityResourceView,
+  onProgress?: (message: string) => void
+): Promise<SecurityResourceCloneStatus> {
+  if (resource.type !== 'repository' || !resource.repoUrl?.trim()) {
+    throw new Error('Only repository resources can be cloned');
+  }
+
+  const clonePath = securityResourceClonePath(resource.id);
+  const branch = resolveBranch(resource.defaultBranch);
+  const repoUrl = resource.repoUrl.trim();
+
+  await removeSecurityResourceClone(resource.id);
+  await fs.mkdir(path.dirname(clonePath), { recursive: true });
+
+  try {
+    await performSecurityClone(repoUrl, clonePath, branch, onProgress);
+    if (!(await pathExists(path.join(clonePath, '.git')))) {
+      throw new Error('Git clone finished but .git directory was not created.');
+    }
+    await writeCloneMeta(clonePath, {
+      clonedAt: new Date().toISOString(),
+      lastPulledAt: null,
+    });
+  } catch (err) {
+    await removeSecurityResourceClone(resource.id);
+    throw new Error(formatRepositoryCloneError(err, repoUrl));
+  }
+
+  return getSecurityResourceCloneStatus(resource.id);
+}
+
+export async function pullSecurityResourceRepo(
+  resource: SecurityResourceView,
+  onProgress?: (message: string) => void
+): Promise<SecurityResourceCloneStatus> {
+  if (resource.type !== 'repository' || !resource.repoUrl?.trim()) {
+    throw new Error('Only repository resources can be pulled');
+  }
+
+  const clonePath = securityResourceClonePath(resource.id);
+  if (!(await pathExists(path.join(clonePath, '.git')))) {
+    throw new Error(`"${resource.name}" is not cloned yet. Click Clone first.`);
+  }
+
+  const branch = resolveBranch(resource.defaultBranch);
+  const repoUrl = resource.repoUrl.trim();
+
+  try {
+    await performSecurityPull(repoUrl, clonePath, branch, onProgress);
+    await writeCloneMeta(clonePath, { lastPulledAt: new Date().toISOString() });
+  } catch (err) {
+    throw new Error(formatRepositoryCloneError(err, repoUrl));
+  }
+
+  return getSecurityResourceCloneStatus(resource.id);
+}
+
+export interface PreparedRepository {
+  repoPath: string;
+  outputDir: string;
+  cleanup: () => Promise<void>;
+}
+
 async function findExistingSyncedClone(repoUrl: string): Promise<string | null> {
   const parsed = parseBitbucketRepoUrl(repoUrl);
   if (!parsed) return null;
@@ -207,49 +276,17 @@ async function findExistingSyncedClone(repoUrl: string): Promise<string | null> 
   return clonePath;
 }
 
-async function refreshExistingClone(clonePath: string, branch?: string | null): Promise<void> {
-  const branchName = branch?.trim();
-  try {
-    if (branchName) {
-      await runGit(['fetch', 'origin', branchName, '--depth', '1'], clonePath);
-      await runGit(['checkout', branchName], clonePath);
-    }
-    await runGit(['pull', '--ff-only'], clonePath);
-  } catch {
-    // Scan against the last synced copy if refresh fails.
-  }
-}
-
-async function cloneRepository(
+async function refreshExistingClone(
   repoUrl: string,
   clonePath: string,
   branch?: string | null
 ): Promise<void> {
-  const cloneUrl = await resolveCloneUrl(repoUrl);
-  const branchName = branch?.trim();
-
-  if (branchName) {
-    try {
-      await runGit([
-        'clone',
-        '--depth',
-        '1',
-        '--branch',
-        branchName,
-        '--single-branch',
-        cloneUrl,
-        clonePath,
-      ]);
-      return;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (!/403|401|could not find remote branch|Remote branch/i.test(message)) {
-        throw err;
-      }
-    }
+  const branchName = resolveBranch(branch);
+  try {
+    await performSecurityPull(repoUrl, clonePath, branchName);
+  } catch {
+    // Scan against the last synced copy if refresh fails.
   }
-
-  await runGit(['clone', '--depth', '1', cloneUrl, clonePath]);
 }
 
 export async function prepareRepositoryPath(
@@ -264,12 +301,8 @@ export async function prepareRepositoryPath(
 
   const persistentClone = securityResourceClonePath(resource.id);
   if (await pathExists(path.join(persistentClone, '.git'))) {
-    try {
-      await refreshExistingClone(persistentClone, resource.defaultBranch);
-      await writeCloneMeta(persistentClone, { lastPulledAt: new Date().toISOString() });
-    } catch {
-      // Scan against last pulled copy if refresh fails.
-    }
+    await refreshExistingClone(repoUrl, persistentClone, resource.defaultBranch);
+    await writeCloneMeta(persistentClone, { lastPulledAt: new Date().toISOString() });
     await fs.mkdir(outputDir, { recursive: true });
     return {
       repoPath: persistentClone,
@@ -282,7 +315,7 @@ export async function prepareRepositoryPath(
 
   const existingClone = await findExistingSyncedClone(repoUrl);
   if (existingClone) {
-    await refreshExistingClone(existingClone, resource.defaultBranch);
+    await refreshExistingClone(repoUrl, existingClone, resource.defaultBranch);
     await fs.mkdir(outputDir, { recursive: true });
     return {
       repoPath: existingClone,

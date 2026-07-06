@@ -54,14 +54,53 @@ import {
   type ServerOsType,
 } from '@/lib/security/tool-install-specs';
 import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
+import type { SecurityResourceSyncJobState } from '@/lib/security/security-resource-sync-job';
 
 type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports';
 
 const TOOL_INSTALL_POLL_MS = 2000;
 const TOOL_INSTALL_TIMEOUT_MS = 25 * 60 * 1000;
+const REPO_SYNC_POLL_MS = 2000;
+const REPO_SYNC_TIMEOUT_MS = 20 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pollResourceSync(
+  resourceId: string,
+  action: 'clone' | 'pull',
+  onPhase: (phase: string | null) => void
+): Promise<{ resource: SecurityResourceView; message: string }> {
+  await apiFetch<SecurityResourceSyncJobState>(`/api/security/resources/${resourceId}/${action}`, {
+    method: 'POST',
+  });
+
+  const startedAt = Date.now();
+  while (true) {
+    if (Date.now() - startedAt > REPO_SYNC_TIMEOUT_MS) {
+      throw new Error(
+        'Clone/pull is still running on the server. Wait a few minutes, then refresh this page.'
+      );
+    }
+
+    const job = await apiFetch<SecurityResourceSyncJobState>(
+      `/api/security/resources/${resourceId}/${action}`
+    );
+    onPhase(job.phase);
+
+    if (job.result) {
+      return { resource: job.result, message: job.message ?? '' };
+    }
+    if (job.error) {
+      throw new Error(job.error);
+    }
+    if (!job.running && Date.now() - startedAt > 5000) {
+      throw new Error(`${action === 'clone' ? 'Clone' : 'Pull'} finished without a result.`);
+    }
+
+    await sleep(REPO_SYNC_POLL_MS);
+  }
 }
 
 export function SecurityContent() {
@@ -84,6 +123,8 @@ export function SecurityContent() {
   } | null>(null);
   const [selectedInstallOs, setSelectedInstallOs] = useState<ServerOsType | null>(null);
   const [installPhase, setInstallPhase] = useState<string | null>(null);
+  const [repoSyncPhase, setRepoSyncPhase] = useState<string | null>(null);
+  const [repoActionError, setRepoActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!installDialog) {
@@ -245,21 +286,35 @@ export function SecurityContent() {
   });
 
   const cloneResource = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<{ resource: SecurityResourceView; message: string }>(
-        `/api/security/resources/${id}/clone`,
-        { method: 'POST' }
-      ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
+    mutationFn: (id: string) => {
+      setRepoActionError(null);
+      setRepoSyncPhase('Starting clone…');
+      return pollResourceSync(id, 'clone', setRepoSyncPhase);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      setRepoSyncPhase(null);
+    },
+    onError: (err) => {
+      setRepoActionError(err instanceof Error ? err.message : 'Clone failed');
+      setRepoSyncPhase(null);
+    },
   });
 
   const pullResource = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<{ resource: SecurityResourceView; message: string }>(
-        `/api/security/resources/${id}/pull`,
-        { method: 'POST' }
-      ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
+    mutationFn: (id: string) => {
+      setRepoActionError(null);
+      setRepoSyncPhase('Starting pull…');
+      return pollResourceSync(id, 'pull', setRepoSyncPhase);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      setRepoSyncPhase(null);
+    },
+    onError: (err) => {
+      setRepoActionError(err instanceof Error ? err.message : 'Pull failed');
+      setRepoSyncPhase(null);
+    },
   });
 
   const repoActionPendingId =
@@ -267,6 +322,12 @@ export function SecurityContent() {
       ? cloneResource.variables
       : pullResource.isPending && pullResource.variables
         ? pullResource.variables
+        : null;
+  const repoActionKind =
+    cloneResource.isPending && cloneResource.variables
+      ? 'clone'
+      : pullResource.isPending && pullResource.variables
+        ? 'pull'
         : null;
 
   const toggleTool = useMutation({
@@ -367,6 +428,17 @@ export function SecurityContent() {
             before running scans. Add URL targets for DAST and other scan types against live
             applications.
           </p>
+          {repoActionError ? (
+            <div className="mx-5 mt-3 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[11px] text-red-700">
+              {repoActionError}
+            </div>
+          ) : null}
+          {repoSyncPhase ? (
+            <div className="mx-5 mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {repoSyncPhase}
+            </div>
+          ) : null}
           {resourcesLoading ? (
             <div className="flex justify-center p-10">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -431,7 +503,7 @@ export function SecurityContent() {
                                 onClick={() => cloneResource.mutate(row.id)}
                                 title={row.clone?.cloned ? 'Re-clone repository' : 'Clone repository'}
                               >
-                                {repoActionPendingId === row.id && cloneResource.isPending ? (
+                                {repoActionPendingId === row.id && repoActionKind === 'clone' ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
                                   <Download className="h-3.5 w-3.5" />
@@ -447,7 +519,7 @@ export function SecurityContent() {
                                 onClick={() => pullResource.mutate(row.id)}
                                 title="Pull latest changes"
                               >
-                                {repoActionPendingId === row.id && pullResource.isPending ? (
+                                {repoActionPendingId === row.id && repoActionKind === 'pull' ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
                                   <RefreshCcw className="h-3.5 w-3.5" />
