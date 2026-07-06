@@ -23,10 +23,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api-client';
 import {
   NODE_COUNT_TREND_PLACEHOLDER,
-  SERIES_STYLE,
+  NODES_SERIES_STYLE,
+  PODS_SERIES_STYLE,
   formatNodeCount,
   type NodeCountTrendResponse,
-  type NodePodSeriesId,
 } from '@/lib/node-count-trend-data';
 import {
   appendDashboardDateQuery,
@@ -49,7 +49,6 @@ import { cn } from '@/lib/utils';
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip);
 
 type ChartMode = 'line' | 'bar';
-type SeriesMode = NodePodSeriesId;
 
 const CHART_HEIGHT_PX = 260;
 
@@ -80,9 +79,11 @@ function NodeCountTrendSkeleton() {
       </div>
       <div className="flex flex-1 flex-col gap-4 px-5 py-4">
         <Skeleton className="w-full flex-1 rounded-xl" style={{ minHeight: CHART_HEIGHT_PX }} />
-        <div className="grid grid-cols-2 gap-6 px-8">
-          <Skeleton className="mx-auto h-12 w-24" />
-          <Skeleton className="mx-auto h-12 w-24" />
+        <div className="grid grid-cols-4 gap-4 px-4">
+          <Skeleton className="mx-auto h-12 w-20" />
+          <Skeleton className="mx-auto h-12 w-20" />
+          <Skeleton className="mx-auto h-12 w-20" />
+          <Skeleton className="mx-auto h-12 w-20" />
         </div>
       </div>
     </GlassPanel>
@@ -98,7 +99,6 @@ export default function NodeCountTrend({
 }) {
   const { theme } = useTheme();
   const [chartMode, setChartMode] = useState<ChartMode>('line');
-  const [seriesMode, setSeriesMode] = useState<SeriesMode>('nodes');
   const [cluster, setCluster] = useState('');
 
   const rangeReady = isDashboardDateRangeReady(dateRange);
@@ -136,53 +136,85 @@ export default function NodeCountTrend({
     }
   }, [cluster, availableClusters]);
 
-  const seriesValues = chartData.series[seriesMode];
-  const seriesSummary = chartData.summary[seriesMode];
-  const hasData = chartData.hasSamples && seriesValues.some((value) => value != null);
+  const nodeValues = chartData.series.nodes;
+  const podValues = chartData.series.pods;
+  const hasNodeData = nodeValues.some((value) => value != null);
+  const hasPodData = podValues.some((value) => value != null);
+  const hasData = chartData.hasSamples && (hasNodeData || hasPodData);
 
-  const seriesLabel = seriesMode === 'nodes' ? 'Ready node count' : 'Running pod count';
   const periodLabel = rangeReady ? getDashboardPeriodLabel(dateRange) : 'Select period';
-
   const pointFill = theme === 'dark' ? '#0f172a' : '#ffffff';
 
   const lineDatasets = useMemo(
     () => [
       {
-        label: seriesLabel,
-        data: seriesValues,
-        borderColor: SERIES_STYLE.color,
+        label: 'Nodes',
+        data: nodeValues,
+        yAxisID: 'yNodes',
+        borderColor: NODES_SERIES_STYLE.color,
         backgroundColor: (context: ScriptableContext<'line'>) => {
           const chart = context.chart;
           const { ctx, chartArea } = chart;
-          if (!chartArea) return SERIES_STYLE.fillTop;
-          return createAreaGradient(ctx, chartArea, SERIES_STYLE.fillTop, SERIES_STYLE.fillBottom);
+          if (!chartArea) return NODES_SERIES_STYLE.fillTop;
+          return createAreaGradient(
+            ctx,
+            chartArea,
+            NODES_SERIES_STYLE.fillTop,
+            NODES_SERIES_STYLE.fillBottom
+          );
         },
         tension: 0.35,
         borderWidth: 2.5,
         pointRadius: chartData.days <= 14 ? 3 : 2,
         pointHoverRadius: 5,
         pointBackgroundColor: pointFill,
-        pointBorderColor: SERIES_STYLE.color,
+        pointBorderColor: NODES_SERIES_STYLE.color,
         pointBorderWidth: 2,
         spanGaps: true,
         fill: true,
       },
+      {
+        label: 'Pods',
+        data: podValues,
+        yAxisID: 'yPods',
+        borderColor: PODS_SERIES_STYLE.color,
+        backgroundColor: 'transparent',
+        tension: 0.35,
+        borderWidth: 2.5,
+        pointRadius: chartData.days <= 14 ? 3 : 2,
+        pointHoverRadius: 5,
+        pointBackgroundColor: pointFill,
+        pointBorderColor: PODS_SERIES_STYLE.color,
+        pointBorderWidth: 2,
+        spanGaps: true,
+        fill: false,
+      },
     ],
-    [seriesValues, seriesLabel, pointFill, chartData.days]
+    [nodeValues, podValues, pointFill, chartData.days]
   );
 
   const barDatasets = useMemo(
     () => [
       {
-        label: seriesLabel,
-        data: seriesValues,
-        backgroundColor: SERIES_STYLE.barBg,
-        borderColor: SERIES_STYLE.color,
+        label: 'Nodes',
+        data: nodeValues,
+        yAxisID: 'yNodes',
+        backgroundColor: NODES_SERIES_STYLE.barBg,
+        borderColor: NODES_SERIES_STYLE.color,
+        borderWidth: 1,
+        borderRadius: 3,
+      },
+      {
+        label: 'Pods',
+        data: podValues,
+        yAxisID: 'yPods',
+        backgroundColor: PODS_SERIES_STYLE.barBg,
+        borderColor: PODS_SERIES_STYLE.color,
         borderWidth: 1,
         borderRadius: 3,
       },
     ],
-    [seriesValues, seriesLabel]
+    [nodeValues, podValues]
   );
 
   const isDark = theme === 'dark';
@@ -221,27 +253,44 @@ export default function NodeCountTrend({
             color: tickColor,
             font: { size: 10 },
             maxTicksLimit: chartData.labels.length > 14 ? 10 : 8,
-            maxRotation: 0,
+            maxRotation: chartData.days > 7 ? 45 : 0,
           },
         },
-        y: {
+        yNodes: {
+          type: 'linear' as const,
+          position: 'left' as const,
           grid: { color: gridColor },
           ticks: {
-            color: tickColor,
+            color: NODES_SERIES_STYLE.color,
+            font: { size: 10 },
+            callback: (value: string | number) => formatNodeCount(Number(value)),
+          },
+          beginAtZero: true,
+        },
+        yPods: {
+          type: 'linear' as const,
+          position: 'right' as const,
+          grid: { drawOnChartArea: false },
+          ticks: {
+            color: PODS_SERIES_STYLE.color,
             font: { size: 10 },
             callback: (value: string | number) => formatNodeCount(Number(value)),
           },
           beginAtZero: true,
         },
       },
+      datasets: {
+        bar: {
+          barPercentage: 0.65,
+          categoryPercentage: 0.75,
+        },
+      },
     }),
-    [chartMode, chartData.labels.length, gridColor, tickColor]
+    [chartMode, chartData.labels.length, chartData.days, gridColor, tickColor]
   );
 
-  const latestDisplay =
-    seriesSummary.latest != null ? formatNodeCount(seriesSummary.latest) : '—';
-  const averageDisplay =
-    seriesSummary.average != null ? formatNodeCount(Math.round(seriesSummary.average)) : '—';
+  const formatSummary = (value: number | null) =>
+    value != null ? formatNodeCount(value) : '—';
 
   if (isLoading && !data) {
     return <NodeCountTrendSkeleton />;
@@ -268,15 +317,6 @@ export default function NodeCountTrend({
             </DashboardFilterSelect>
           ) : null}
           <DashboardToggleGroup
-            value={seriesMode}
-            onChange={setSeriesMode}
-            capitalize
-            options={[
-              { id: 'nodes' as const, label: 'nodes' },
-              { id: 'pods' as const, label: 'pods' },
-            ]}
-          />
-          <DashboardToggleGroup
             value={chartMode}
             onChange={setChartMode}
             capitalize
@@ -288,12 +328,28 @@ export default function NodeCountTrend({
         </DashboardFilterBar>
       </DashboardChartToolbar>
       <PanelSubtitle className="min-h-10 shrink-0">
-        Daily {seriesLabel.toLowerCase()} · {periodLabel} (IST, max 30 days)
+        Daily node & pod counts · {periodLabel} (IST, max 30 days)
         {isFetching ? ' · updating…' : ''}
       </PanelSubtitle>
 
       <div className="flex flex-1 flex-col px-5 pb-5 pt-2">
-        <div className="mb-3 min-h-5" aria-hidden="true" />
+        <div className="mb-3 flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: NODES_SERIES_STYLE.legend }}
+            />
+            <span>Nodes (left axis)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: PODS_SERIES_STYLE.legend }}
+            />
+            <span>Pods (right axis)</span>
+          </div>
+        </div>
+
         <div className="relative w-full shrink-0" style={{ height: CHART_HEIGHT_PX }}>
           {!rangeReady ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -313,7 +369,7 @@ export default function NodeCountTrend({
             </div>
           ) : !hasData ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              No {seriesMode} samples for the selected period yet.
+              No samples for the selected period yet.
             </div>
           ) : chartMode === 'line' ? (
             <Line
@@ -329,16 +385,34 @@ export default function NodeCountTrend({
         </div>
 
         {hasData && (
-          <DashboardChartComparisonFooter columns={2}>
+          <DashboardChartComparisonFooter columns={4}>
             <DashboardComparisonStat
-              color={SERIES_STYLE.color}
-              label="Latest"
-              value={latestDisplay}
+              color={NODES_SERIES_STYLE.legend}
+              label="Nodes (latest)"
+              value={formatSummary(chartData.summary.nodes.latest)}
             />
             <DashboardComparisonStat
-              color={SERIES_STYLE.color}
-              label="Period avg"
-              value={averageDisplay}
+              color={NODES_SERIES_STYLE.legend}
+              label="Nodes (avg)"
+              value={formatSummary(
+                chartData.summary.nodes.average != null
+                  ? Math.round(chartData.summary.nodes.average)
+                  : null
+              )}
+            />
+            <DashboardComparisonStat
+              color={PODS_SERIES_STYLE.legend}
+              label="Pods (latest)"
+              value={formatSummary(chartData.summary.pods.latest)}
+            />
+            <DashboardComparisonStat
+              color={PODS_SERIES_STYLE.legend}
+              label="Pods (avg)"
+              value={formatSummary(
+                chartData.summary.pods.average != null
+                  ? Math.round(chartData.summary.pods.average)
+                  : null
+              )}
             />
           </DashboardChartComparisonFooter>
         )}

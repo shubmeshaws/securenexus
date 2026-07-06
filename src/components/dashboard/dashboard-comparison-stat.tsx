@@ -33,13 +33,17 @@ export function DashboardChartComparisonFooter({
   columns = 2,
 }: {
   children: React.ReactNode;
-  columns?: 2 | 3;
+  columns?: 2 | 3 | 4;
 }) {
   return (
     <div
       className={cn(
         'mt-4 grid gap-6 border-t border-border/50 pt-5',
-        columns === 2 ? 'grid-cols-2' : 'grid-cols-3'
+        columns === 2
+          ? 'grid-cols-2'
+          : columns === 3
+            ? 'grid-cols-3'
+            : 'grid-cols-2 sm:grid-cols-4'
       )}
     >
       {children}

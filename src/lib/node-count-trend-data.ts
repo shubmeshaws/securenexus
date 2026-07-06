@@ -63,23 +63,25 @@ export function latestNonNullValue(data: (number | null)[]): number | null {
   return null;
 }
 
-export const SERIES_STYLE = {
+export const NODES_SERIES_STYLE = {
   color: '#6366F1',
-  fillTop: 'rgba(99, 102, 241, 0.32)',
+  fillTop: 'rgba(99, 102, 241, 0.22)',
   fillBottom: 'rgba(99, 102, 241, 0.02)',
   barBg: 'rgba(99, 102, 241, 0.75)',
+  legend: '#6366F1',
 } as const;
 
-/** @deprecated use SERIES_STYLE */
-export const YESTERDAY_SERIES_STYLE = SERIES_STYLE;
-/** @deprecated use SERIES_STYLE */
-export const TODAY_SERIES_STYLE = {
+export const PODS_SERIES_STYLE = {
   color: '#22C55E',
-  fillTop: 'rgba(34, 197, 94, 0.32)',
+  fillTop: 'rgba(34, 197, 94, 0.22)',
   fillBottom: 'rgba(34, 197, 94, 0.02)',
   barBg: 'rgba(34, 197, 94, 0.75)',
+  legend: '#22C55E',
 } as const;
+
+/** @deprecated use NODES_SERIES_STYLE */
+export const SERIES_STYLE = NODES_SERIES_STYLE;
 /** @deprecated */
-export const NODES_SERIES_STYLE = SERIES_STYLE;
+export const YESTERDAY_SERIES_STYLE = NODES_SERIES_STYLE;
 /** @deprecated */
-export const PODS_SERIES_STYLE = TODAY_SERIES_STYLE;
+export const TODAY_SERIES_STYLE = PODS_SERIES_STYLE;
