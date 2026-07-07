@@ -8,6 +8,7 @@ export interface SecurityToolDefinition {
   website: string;
   color: string;
   initials: string;
+  iconUrl?: string;
 }
 
 export const SECURITY_TOOL_CATEGORIES: {
@@ -53,6 +54,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://semgrep.dev',
     color: '#16a34a',
     initials: 'SG',
+    iconUrl: '/icons/security/semgrep.png',
   },
   {
     id: 'sonarqube',
@@ -62,6 +64,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://www.sonarqube.org',
     color: '#2563eb',
     initials: 'SQ',
+    iconUrl: '/icons/security/sonarqube.png',
   },
   {
     id: 'codeql',
@@ -144,6 +147,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://trivy.dev',
     color: '#0891b2',
     initials: 'TV',
+    iconUrl: '/icons/security/trivy.png',
   },
   {
     id: 'grype',
@@ -189,6 +193,17 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://docs.npmjs.com/cli/v10/commands/npm-audit',
     color: '#cb3837',
     initials: 'NA',
+    iconUrl: '/icons/security/npm-audit.png',
+  },
+  {
+    id: 'snyk',
+    name: 'Snyk',
+    category: 'sca',
+    description: 'Developer security platform for dependency and Snyk Code static analysis.',
+    website: 'https://snyk.io',
+    color: '#4c3772',
+    initials: 'SK',
+    iconUrl: '/icons/security/snyk.png',
   },
   // DAST
   {
@@ -199,6 +214,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://www.zaproxy.org',
     color: '#dc2626',
     initials: 'ZP',
+    iconUrl: '/icons/security/zap.png',
   },
   {
     id: 'nuclei',
@@ -255,6 +271,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     website: 'https://gitleaks.io',
     color: '#f59e0b',
     initials: 'GL',
+    iconUrl: '/icons/security/gitleaks.png',
   },
   {
     id: 'detect-secrets',

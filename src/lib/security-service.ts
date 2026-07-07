@@ -31,6 +31,7 @@ import {
   isRuntimeSecurityTool,
   type ServerOsType,
 } from './security/tool-runtime';
+import { isSnykAuthenticated } from './security/snyk-runner';
 import { getInstallCommandsByOs, getInstallCommandsForOs, isServerOsType } from './security/tool-install-specs';
 import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
@@ -153,6 +154,7 @@ export interface SecurityToolSettingView {
   installCommands: string[];
   installCommandsByOs: Record<ServerOsType, string[]> | null;
   scanOptions: GitleaksScanOptions | null;
+  runtimeAuthenticated?: boolean | null;
 }
 
 export interface SecurityReportView {
@@ -586,6 +588,7 @@ export async function listSecurityToolSettings(options?: {
         installCommandsByOs: runtimeRequired ? getInstallCommandsByOs(tool.id) : null,
         scanOptions:
           tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
+        runtimeAuthenticated: null,
       };
     });
     toolSettingsLiteCache = { at: Date.now(), data: tools };
@@ -615,6 +618,7 @@ export async function listSecurityToolSettings(options?: {
           installCommandsByOs: runtimeRequired ? getInstallCommandsByOs(tool.id) : null,
           scanOptions:
             tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
+          runtimeAuthenticated: null,
         };
       }
 
@@ -623,6 +627,10 @@ export async function listSecurityToolSettings(options?: {
         row?.installedAt ?? null,
         row?.installedOs ?? null
       );
+      const runtimeAuthenticated =
+        tool.id === 'snyk' && runtime.runtimeAvailable
+          ? await isSnykAuthenticated()
+          : null;
       return {
         toolId: tool.id,
         enabled: row?.enabled ?? false,
@@ -636,6 +644,7 @@ export async function listSecurityToolSettings(options?: {
         installCommandsByOs: getInstallCommandsByOs(tool.id),
         scanOptions:
           tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
+        runtimeAuthenticated,
       };
     })
   );

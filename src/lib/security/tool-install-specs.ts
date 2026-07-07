@@ -19,7 +19,7 @@ export const SERVER_OS_OPTIONS: { id: ServerOsType; label: string; description: 
   },
 ];
 
-export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks' | 'zap';
+export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks' | 'zap' | 'snyk';
 
 const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string[]>> = {
   semgrep: {
@@ -71,6 +71,30 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
     linux: [
       'sudo yum install -y java-11-openjdk || sudo dnf install -y java-11-openjdk',
       'SecureNexus downloads ZAP 2.16.1 into .securenexus/zap when /opt is not writable',
+    ],
+  },
+  snyk: {
+    macos: [
+      'Ensure npm is installed (brew install node)',
+      'npm install snyk -g',
+      'After install, run: snyk auth',
+      'Enable Snyk Code and run: snyk code test',
+    ],
+    ubuntu: [
+      'Ensure npm is installed (sudo apt install -y nodejs npm)',
+      'npm install snyk -g',
+      'Or: curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o snyk',
+      'chmod +x ./snyk && sudo mv ./snyk /usr/local/bin/',
+      'After install, run: snyk auth',
+      'Enable Snyk Code and run: snyk code test',
+    ],
+    linux: [
+      'Ensure npm is installed',
+      'npm install snyk -g',
+      'Or: curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o snyk',
+      'chmod +x ./snyk && sudo mv ./snyk /usr/local/bin/',
+      'After install, run: snyk auth',
+      'Enable Snyk Code and run: snyk code test',
     ],
   },
 };

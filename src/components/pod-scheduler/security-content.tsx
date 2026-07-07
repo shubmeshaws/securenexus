@@ -338,6 +338,7 @@ export function SecurityContent() {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(['security-tools'], { tools: data.tools });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
       setInstallDialog(null);
       setSelectedInstallOs(null);
       setInstallPhase(null);
@@ -684,7 +685,7 @@ export function SecurityContent() {
         <div className="space-y-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
             <strong className="font-medium text-foreground">Live scan tools install automatically on first enable.</strong>{' '}
-            Semgrep, npm audit, Gitleaks, and OWASP ZAP install on the SecureNexus server when you click Install
+            Semgrep, npm audit, Gitleaks, OWASP ZAP, and Snyk install on the SecureNexus server when you click Install
             &amp; enable — no manual terminal steps. Other tools use sample reports until integrated.
           </div>
           {toolsLoading && !toolSettings.length ? (
@@ -728,6 +729,10 @@ export function SecurityContent() {
                           updateToolScanOptions.isPending
                         }
                         onToggle={(enabled) => handleToolToggle(tool, enabled)}
+                        onRefreshTools={() => {
+                          queryClient.invalidateQueries({ queryKey: ['security-tools'] });
+                          queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
+                        }}
                         onGitleaksOptionsChange={
                           tool.id === 'gitleaks'
                             ? (scanOptions) =>
@@ -1035,6 +1040,16 @@ export function SecurityContent() {
                       <span className="font-medium text-foreground">Install &amp; enable</span>. The
                       commands below run on the server — shown for reference.
                     </p>
+                    {installDialog.tool.id === 'snyk' ? (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
+                        <strong className="font-medium">npm is required.</strong> Snyk installs via{' '}
+                        <code className="font-mono">npm install snyk -g</code> or the Linux binary
+                        download. After installation, run{' '}
+                        <code className="font-mono">snyk auth</code> on the server (opens the Snyk
+                        login page), then enable Snyk Code for live{' '}
+                        <code className="font-mono">snyk code test</code> scans.
+                      </div>
+                    ) : null}
                     {installCommandsForSelection.length > 0 ? (
                       <InstallCommandsBlock
                         commands={installCommandsForSelection}
@@ -1186,6 +1201,7 @@ function ToolCard({
   enabled,
   pending,
   onToggle,
+  onRefreshTools,
   onGitleaksOptionsChange,
 }: {
   tool: SecurityToolDefinition;
@@ -1193,6 +1209,7 @@ function ToolCard({
   enabled: boolean;
   pending: boolean;
   onToggle: (enabled: boolean) => void;
+  onRefreshTools: () => void;
   onGitleaksOptionsChange?: (scanOptions: { mode: string }) => void;
 }) {
   return (
@@ -1202,13 +1219,22 @@ function ToolCard({
         enabled && 'border-emerald-500/30 bg-emerald-500/5'
       )}
     >
-      <div
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-bold text-white shadow-sm"
-        style={{ backgroundColor: tool.color }}
-        title={tool.name}
-      >
-        {tool.initials}
-      </div>
+      {tool.iconUrl ? (
+        <div
+          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/60 bg-white p-1.5 shadow-sm dark:bg-white/95"
+          title={tool.name}
+        >
+          <img src={tool.iconUrl} alt="" className="h-full w-full object-contain" />
+        </div>
+      ) : (
+        <div
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-bold text-white shadow-sm"
+          style={{ backgroundColor: tool.color }}
+          title={tool.name}
+        >
+          {tool.initials}
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -1242,6 +1268,17 @@ function ToolCard({
               </Badge>
             )
           ) : null}
+          {tool.id === 'snyk' && setting?.runtimeReady && setting.runtimeAvailable ? (
+            setting.runtimeAuthenticated ? (
+              <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-600">
+                Authenticated
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-amber-500/40 text-[9px] text-amber-600">
+                Auth required
+              </Badge>
+            )
+          ) : null}
           <a
             href={tool.website}
             target="_blank"
@@ -1258,6 +1295,47 @@ function ToolCard({
             disabled={pending}
             onChange={onGitleaksOptionsChange}
           />
+        ) : null}
+        {tool.id === 'snyk' && setting?.runtimeReady && setting.runtimeAvailable ? (
+          setting.runtimeAuthenticated ? (
+            <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-emerald-800 dark:text-emerald-200">
+              Snyk is authenticated. Enable this tool and run live scans with{' '}
+              <code className="font-mono">snyk code test</code>.
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
+              <p>
+                <strong className="font-medium">Authentication required.</strong> On the SecureNexus
+                server, run <code className="font-mono">snyk auth</code> to open the Snyk login page.
+                After signing in, enable Snyk Code for live{' '}
+                <code className="font-mono">snyk code test</code> scans.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px]"
+                  onClick={() => window.open('https://snyk.io/login', '_blank', 'noopener,noreferrer')}
+                >
+                  Open Snyk login
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-[10px]"
+                  disabled={pending}
+                  onClick={async () => {
+                    await apiFetch<{ authenticated: boolean }>('/api/security/tools/snyk-auth');
+                    onRefreshTools();
+                  }}
+                >
+                  Check auth status
+                </Button>
+              </div>
+            </div>
+          )
         ) : null}
       </div>
     </div>
