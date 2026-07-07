@@ -29,7 +29,7 @@ export interface SecurityScanTeamsInput {
   mediumCount: number;
   lowCount: number;
   reportLinks: Array<{ title: string; htmlUrl: string; csvUrl: string; pdfUrl: string }>;
-  appReportLinks: Array<{ title: string; htmlUrl: string }>;
+  appReportLinks: Array<{ title: string; pdfUrl: string }>;
   s3Bucket?: string | null;
   s3BucketUrl?: string | null;
   s3FolderUrl?: string | null;
@@ -272,8 +272,8 @@ export function buildSecurityScanTeamsCard(input: SecurityScanTeamsInput) {
           actions: [
             {
               type: 'Action.OpenUrl',
-              title: `${report.title} · HTML`,
-              url: report.htmlUrl,
+              title: `${report.title} · PDF`,
+              url: report.pdfUrl,
               style: 'positive',
             },
           ],
@@ -498,7 +498,7 @@ export async function sendAutomationTeamsNotification(input: {
   const appUrl = getAppUrl().replace(/\/$/, '');
   const appReportLinks = reports.map((report) => ({
     title: report.title,
-    htmlUrl: `${appUrl}/api/security/reports/${report.id}/download?format=html`,
+    pdfUrl: `${appUrl}/api/security/reports/${report.id}/download?format=pdf`,
   }));
 
   const card = buildSecurityScanTeamsCard({
@@ -592,7 +592,7 @@ export async function sendAutomationTeamsTestNotification(input: {
     appReportLinks: [
       {
         title: 'SAST Report',
-        htmlUrl: `${getAppUrl().replace(/\/$/, '')}/api/security/reports/sample/download?format=html`,
+        pdfUrl: `${getAppUrl().replace(/\/$/, '')}/api/security/reports/sample/download?format=pdf`,
       },
     ],
     reportLinks: sampleLinks,

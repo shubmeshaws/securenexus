@@ -160,7 +160,7 @@ function TeamsNotificationPreview({
   repositories: string[];
   urls: string[];
   status: 'Success' | 'Failed';
-  appReportLinks: Array<{ title: string; htmlUrl: string }>;
+  appReportLinks: Array<{ title: string; pdfUrl: string }>;
   s3ReportLinks: Array<{ title: string; htmlUrl: string }>;
   scheduleSummary: string;
   s3Bucket?: string;
@@ -212,12 +212,12 @@ function TeamsNotificationPreview({
             <div className="space-y-1">
               {appReportLinks.map((link) => (
                 <a
-                  key={link.htmlUrl}
-                  href={link.htmlUrl}
+                  key={link.pdfUrl}
+                  href={link.pdfUrl}
                   className="block break-all text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
                   onClick={(event) => event.preventDefault()}
                 >
-                  {link.title} · HTML
+                  {link.title} · PDF
                 </a>
               ))}
             </div>
@@ -428,7 +428,7 @@ export function SecurityAutomationPanel({
         : ['SAST Report'];
     return reports.map((title, index) => ({
       title,
-      htmlUrl: `${origin}/api/security/reports/sample-${index + 1}/download?format=html`,
+      pdfUrl: `${origin}/api/security/reports/sample-${index + 1}/download?format=pdf`,
     }));
   }, [draft.toolIds]);
 

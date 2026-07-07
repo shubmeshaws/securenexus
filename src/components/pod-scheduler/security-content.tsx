@@ -112,7 +112,7 @@ async function pollResourceSync(
 
 export function SecurityContent() {
   const queryClient = useQueryClient();
-  const [section, setSection] = useState<SecuritySection>('resources');
+  const [section, setSection] = useState<SecuritySection>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<'repository' | 'target_url'>('repository');
   const [repoUrl, setRepoUrl] = useState('');
@@ -392,11 +392,11 @@ export function SecurityContent() {
   });
 
   const sections: { id: SecuritySection; label: string }[] = [
-    { id: 'resources', label: 'Add resources' },
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'resources', label: 'Add Resource' },
     { id: 'tools', label: 'Tools' },
     { id: 'scan', label: 'Scan' },
     { id: 'automation', label: 'Automation' },
-    { id: 'dashboard', label: 'Dashboard' },
     { id: 'reports', label: 'Reports' },
   ];
 
