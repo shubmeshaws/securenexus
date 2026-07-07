@@ -10,6 +10,7 @@ import {
   createSecurityScanJob,
   executeSecurityScanJob,
 } from './security-scan-job-service';
+import { uploadAutomationReportsToS3 } from './security-automation-s3-upload';
 import { assertSecurityModuleEnabled } from './security-service';
 
 const RUNNER_GLOBAL_KEY = '__secureNexusSecurityAutomationRunnerStarted__';
@@ -36,6 +37,47 @@ function shouldExecuteAutomation(
 function parseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string');
+}
+
+async function deliverAutomationResults(
+  automation: {
+    id: string;
+    name: string;
+    s3Enabled: boolean;
+    s3Bucket: string | null;
+    s3Region: string | null;
+    s3Prefix: string | null;
+    awsCredentialId: string | null;
+  },
+  jobId: string,
+  completedAt: Date
+): Promise<string | null> {
+  if (!automation.s3Enabled) return null;
+
+  try {
+    if (!automation.s3Bucket?.trim() || !automation.awsCredentialId) {
+      throw new Error('S3 bucket or AWS credentials are not configured');
+    }
+
+    const result = await uploadAutomationReportsToS3({
+      automationName: automation.name,
+      s3Bucket: automation.s3Bucket,
+      s3Region: automation.s3Region,
+      s3Prefix: automation.s3Prefix,
+      awsCredentialId: automation.awsCredentialId,
+      scanJobId: jobId,
+      completedAt,
+    });
+
+    console.log(
+      `[SecurityAutomation] Uploaded ${result.uploaded} file(s) to s3://${automation.s3Bucket}/${result.keys[0]?.split('/').slice(0, -1).join('/') ?? ''}`
+    );
+    return null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'S3 upload failed';
+    console.error(`[SecurityAutomation] S3 upload failed for ${automation.id}:`, err);
+    return message;
+  }
 }
 
 async function finalizeAutomationRun(
@@ -68,6 +110,7 @@ async function finalizeAutomationRun(
 }
 
 async function syncAutomationFromScanJob(automationId: string, jobId: string): Promise<void> {
+  const automation = await prisma.securityAutomation.findUnique({ where: { id: automationId } });
   const job = await prisma.securityScanJob.findUnique({ where: { id: jobId } });
   if (!job) {
     await prisma.securityAutomation.update({
@@ -79,10 +122,22 @@ async function syncAutomationFromScanJob(automationId: string, jobId: string): P
 
   if (job.status === 'queued' || job.status === 'running') return;
 
+  let deliveryError: string | null = null;
+  if (job.status === 'completed' && automation) {
+    deliveryError = await deliverAutomationResults(
+      automation,
+      jobId,
+      job.completedAt ?? new Date()
+    );
+  }
+
+  const combinedError =
+    [job.error, deliveryError].filter((value): value is string => Boolean(value)).join(' · ') || null;
+
   await finalizeAutomationRun(
     automationId,
     job.status === 'completed' ? 'completed' : 'failed',
-    job.error
+    combinedError
   );
 }
 
@@ -104,6 +159,7 @@ async function executeAutomation(automationId: string): Promise<void> {
     const job = await createSecurityScanJob({
       resourceIds,
       toolIds,
+      reportMode: automation.reportMode === 'merged' ? 'merged' : 'separate',
       createdBy: `automation:${automation.name}`,
     });
 
@@ -119,11 +175,22 @@ async function executeAutomation(automationId: string): Promise<void> {
     await executeSecurityScanJob(job.id);
 
     const finished = await prisma.securityScanJob.findUnique({ where: { id: job.id } });
-    await finalizeAutomationRun(
-      automationId,
-      finished?.status === 'completed' ? 'completed' : 'failed',
-      finished?.error ?? null
-    );
+    const scanStatus = finished?.status === 'completed' ? 'completed' : 'failed';
+    let deliveryError: string | null = null;
+
+    if (scanStatus === 'completed') {
+      deliveryError = await deliverAutomationResults(
+        automation,
+        job.id,
+        finished?.completedAt ?? new Date()
+      );
+    }
+
+    const combinedError =
+      [finished?.error, deliveryError].filter((value): value is string => Boolean(value)).join(' · ') ||
+      null;
+
+    await finalizeAutomationRun(automationId, scanStatus, combinedError);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Automation run failed';
     await finalizeAutomationRun(automationId, 'failed', message);

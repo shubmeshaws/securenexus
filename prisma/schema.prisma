@@ -293,6 +293,7 @@ model SecurityAutomation {
   resourceIds       Json
   scanCategories    Json
   toolIds           Json
+  reportMode        String    @default("separate") // separate | merged
   s3Enabled         Boolean   @default(false)
   s3Bucket          String?
   s3Region          String?

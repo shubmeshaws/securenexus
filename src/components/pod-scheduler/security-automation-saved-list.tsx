@@ -115,6 +115,10 @@ function AutomationDetailDialog({
           <DetailRow label="Scan types" value={categoryLabels.join(', ') || '—'} />
           <DetailRow label="Tools" value={toolNames.join(', ') || '—'} />
           <DetailRow
+            label="Report output"
+            value={automation.reportMode === 'merged' ? 'One merged report' : 'Separate reports'}
+          />
+          <DetailRow
             label="S3 upload"
             value={
               automation.s3Enabled

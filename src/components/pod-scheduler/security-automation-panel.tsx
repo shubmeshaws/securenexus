@@ -21,6 +21,7 @@ import { SecurityAutomationSavedList } from '@/components/pod-scheduler/security
 import { cn } from '@/lib/utils';
 import type { SecurityAutomationView } from '@/lib/security-automation-service';
 import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
+import type { SecurityReportMode } from '@/lib/security-scan-types';
 import {
   AUTOMATION_SCHEDULE_FREQUENCIES,
   formatAutomationScheduleSummary,
@@ -32,6 +33,7 @@ import {
   SECURITY_TOOL_CATEGORIES,
   SECURITY_TOOLS,
   compatibleToolsForResources,
+  resolveScanPairs,
   type SecurityToolCategory,
 } from '@/lib/security-tools';
 import {
@@ -82,6 +84,7 @@ type AutomationDraft = {
   resourceIds: string[];
   scanCategories: SecurityToolCategory[];
   toolIds: string[];
+  reportMode: SecurityReportMode;
   s3Enabled: boolean;
   s3Bucket: string;
   s3Region: string;
@@ -105,6 +108,7 @@ function emptyDraft(): AutomationDraft {
     resourceIds: [],
     scanCategories: [],
     toolIds: [],
+    reportMode: 'separate',
     s3Enabled: false,
     s3Bucket: '',
     s3Region: '',
@@ -129,6 +133,7 @@ function draftFromAutomation(row: SecurityAutomationView): AutomationDraft {
     resourceIds: row.resourceIds,
     scanCategories: row.scanCategories,
     toolIds: row.toolIds,
+    reportMode: row.reportMode,
     s3Enabled: row.s3Enabled,
     s3Bucket: row.s3Bucket ?? '',
     s3Region: row.s3Region ?? '',
@@ -290,6 +295,18 @@ export function SecurityAutomationPanel({
     );
   }, [selectedResources, draft.scanCategories, enabledToolIds]);
 
+  const scanPairCount = useMemo(() => {
+    if (!selectedResources.length || !draft.toolIds.length) return 0;
+    return resolveScanPairs({
+      resources: selectedResources.map((row) => ({
+        id: row.id,
+        type: row.type,
+      })),
+      toolIds: draft.toolIds,
+      enabledToolIds,
+    }).length;
+  }, [selectedResources, draft.toolIds, enabledToolIds]);
+
   const previewScanTypes = useMemo(
     () =>
       draft.scanCategories.map(
@@ -360,6 +377,7 @@ export function SecurityAutomationPanel({
         resourceIds: draft.resourceIds,
         scanCategories: draft.scanCategories,
         toolIds: draft.toolIds,
+        reportMode: scanPairCount > 1 ? draft.reportMode : 'separate',
         s3Enabled: draft.s3Enabled,
         s3Bucket: draft.s3Bucket || undefined,
         s3Region: draft.s3Region || undefined,
@@ -767,6 +785,43 @@ export function SecurityAutomationPanel({
               </div>
             </div>
 
+            {scanPairCount > 1 ? (
+              <div className="space-y-2">
+                <Label className="text-[11px]">Report output</Label>
+                <div className="inline-flex rounded-lg border border-border bg-card/60 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setDraft((prev) => ({ ...prev, reportMode: 'separate' }))}
+                    className={cn(
+                      'rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors',
+                      draft.reportMode === 'separate'
+                        ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Separate reports ({scanPairCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraft((prev) => ({ ...prev, reportMode: 'merged' }))}
+                    className={cn(
+                      'rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors',
+                      draft.reportMode === 'merged'
+                        ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    One merged report
+                  </button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  {draft.reportMode === 'merged'
+                    ? 'All scan results are combined into a single HTML, CSV, and PDF report.'
+                    : 'Each tool and repository combination produces its own report files.'}
+                </p>
+              </div>
+            ) : null}
+
             <div className="rounded-xl border border-border p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -879,6 +934,9 @@ export function SecurityAutomationPanel({
                       onChange={(e) => setDraft((prev) => ({ ...prev, s3Prefix: e.target.value }))}
                       placeholder="security-reports/"
                     />
+                    <p className="text-[10px] text-muted-foreground">
+                      After each run, HTML, CSV, and PDF files are uploaded under this prefix.
+                    </p>
                   </div>
                 </div>
               ) : null}

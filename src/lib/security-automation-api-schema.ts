@@ -26,6 +26,7 @@ export const automationBodySchema = z.object({
   resourceIds: z.array(z.string()),
   scanCategories: z.array(z.enum(['sast', 'sca', 'dast', 'iac', 'secrets'])),
   toolIds: z.array(z.string()),
+  reportMode: z.enum(['separate', 'merged']).optional(),
   s3Enabled: z.boolean().optional(),
   s3Bucket: z.string().optional(),
   s3Region: z.string().optional(),

@@ -29,6 +29,7 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
       scheduleMonth: parsed.data.scheduleMonth ?? null,
       scheduleStartDate: parsed.data.scheduleStartDate ?? null,
       awsCredentialId: parsed.data.awsCredentialId ?? null,
+      reportMode: parsed.data.reportMode ?? 'separate',
       createdBy: req.user?.email,
     });
     return res.status(201).json({ automation });

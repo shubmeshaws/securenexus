@@ -1,6 +1,7 @@
 import prisma from './prisma';
 import { assertSecurityModuleEnabled } from './security-service';
 import type { SecurityToolCategory } from './security-tools';
+import type { SecurityReportMode } from './security-scan-types';
 import {
   automationScheduleRowFromRecord,
   computeAutomationNextRun,
@@ -32,6 +33,7 @@ export interface SecurityAutomationView {
   resourceIds: string[];
   scanCategories: SecurityToolCategory[];
   toolIds: string[];
+  reportMode: SecurityReportMode;
   s3Enabled: boolean;
   s3Bucket: string | null;
   s3Region: string | null;
@@ -87,6 +89,7 @@ function toAutomationView(row: {
   resourceIds: unknown;
   scanCategories: unknown;
   toolIds: unknown;
+  reportMode?: string | null;
   s3Enabled: boolean;
   s3Bucket: string | null;
   s3Region: string | null;
@@ -134,6 +137,7 @@ function toAutomationView(row: {
     resourceIds: parseStringArray(row.resourceIds),
     scanCategories: parseStringArray(row.scanCategories) as SecurityToolCategory[],
     toolIds: parseStringArray(row.toolIds),
+    reportMode: row.reportMode === 'merged' ? 'merged' : 'separate',
     s3Enabled: row.s3Enabled,
     s3Bucket: row.s3Bucket,
     s3Region: row.s3Region,
@@ -167,6 +171,7 @@ type AutomationWriteInput = {
   resourceIds: string[];
   scanCategories: SecurityToolCategory[];
   toolIds: string[];
+  reportMode?: SecurityReportMode;
   s3Enabled?: boolean;
   s3Bucket?: string;
   s3Region?: string;
@@ -231,6 +236,7 @@ function buildAutomationData(input: AutomationWriteInput) {
     resourceIds: input.resourceIds,
     scanCategories: input.scanCategories,
     toolIds: input.toolIds,
+    reportMode: input.reportMode ?? 'separate',
     s3Enabled: input.s3Enabled ?? false,
     s3Bucket: input.s3Bucket?.trim() || null,
     s3Region: input.s3Region?.trim() || null,
@@ -298,6 +304,9 @@ export async function updateSecurityAutomation(
       input.scanCategories ??
       (parseStringArray(existing.scanCategories) as SecurityToolCategory[]),
     toolIds: input.toolIds ?? parseStringArray(existing.toolIds),
+    reportMode:
+      input.reportMode ??
+      (existing.reportMode === 'merged' ? 'merged' : ('separate' as SecurityReportMode)),
     s3Enabled: input.s3Enabled ?? existing.s3Enabled,
     s3Bucket: input.s3Bucket === undefined ? existing.s3Bucket ?? undefined : input.s3Bucket ?? undefined,
     s3Region: input.s3Region === undefined ? existing.s3Region ?? undefined : input.s3Region ?? undefined,
@@ -330,6 +339,7 @@ export async function updateSecurityAutomation(
       resourceIds: merged.resourceIds,
       scanCategories: merged.scanCategories,
       toolIds: merged.toolIds,
+      reportMode: merged.reportMode ?? 'separate',
       s3Enabled: merged.s3Enabled ?? false,
       s3Bucket: merged.s3Bucket?.trim() || null,
       s3Region: merged.s3Region?.trim() || null,
