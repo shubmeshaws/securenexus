@@ -12,6 +12,7 @@ import {
   Trash2,
   GitBranch,
   ArrowDownToLine,
+  PenLine,
 } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
@@ -136,6 +137,7 @@ export function SecurityContent() {
   const [section, setSection] = useState<SecuritySection>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<'repository' | 'target_url'>('repository');
+  const [editingResource, setEditingResource] = useState<SecurityResourceView | null>(null);
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
@@ -355,13 +357,59 @@ export function SecurityContent() {
     return getInstallCommandsForOs(installDialog.tool.id, selectedInstallOs);
   }, [installDialog, selectedInstallOs]);
 
+  function resetResourceForm() {
+    setRepoUrl('');
+    setDefaultBranch('');
+    setTargetUrl('');
+    setResourceName('');
+    setDescription('');
+    setEditingResource(null);
+  }
+
   function openAddDialog(type: 'repository' | 'target_url') {
+    resetResourceForm();
     setAddType(type);
     setAddOpen(true);
   }
 
-  const createResource = useMutation({
+  function openEditDialog(resource: SecurityResourceView) {
+    setEditingResource(resource);
+    setAddType(resource.type);
+    setResourceName(resource.name);
+    setDescription(resource.description ?? '');
+    if (resource.type === 'repository') {
+      setRepoUrl(resource.repoUrl ?? '');
+      setDefaultBranch(resource.defaultBranch ?? '');
+      setTargetUrl('');
+    } else {
+      setTargetUrl(resource.targetUrl ?? '');
+      setRepoUrl('');
+      setDefaultBranch('');
+    }
+    setAddOpen(true);
+  }
+
+  const saveResource = useMutation({
     mutationFn: () => {
+      if (editingResource) {
+        return apiFetch(`/api/security/resources/${editingResource.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(
+            editingResource.type === 'repository'
+              ? {
+                  name: resourceName || undefined,
+                  repoUrl: repoUrl || undefined,
+                  defaultBranch: defaultBranch || null,
+                  description: description || null,
+                }
+              : {
+                  name: resourceName || undefined,
+                  targetUrl: targetUrl || undefined,
+                  description: description || null,
+                }
+          ),
+        });
+      }
       if (addType === 'repository') {
         return apiFetch('/api/security/resources', {
           method: 'POST',
@@ -388,11 +436,7 @@ export function SecurityContent() {
       queryClient.invalidateQueries({ queryKey: ['security-resources'] });
       queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
       setAddOpen(false);
-      setRepoUrl('');
-      setDefaultBranch('');
-      setTargetUrl('');
-      setResourceName('');
-      setDescription('');
+      resetResourceForm();
     },
   });
 
@@ -558,7 +602,6 @@ export function SecurityContent() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="outline"
                   className="h-8 gap-1 text-[11px]"
                   onClick={() => openAddDialog('repository')}
                 >
@@ -645,6 +688,13 @@ export function SecurityContent() {
                       </td>
                       <td className="px-5 py-3 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          <SecurityIconButton
+                            icon={PenLine}
+                            label="Edit resource"
+                            tone="slate"
+                            disabled={Boolean(repoActionPendingId) || deleteResource.isPending}
+                            onClick={() => openEditDialog(row)}
+                          />
                           {row.type === 'repository' ? (
                             <>
                               <SecurityIconButton
@@ -899,36 +949,54 @@ export function SecurityContent() {
         loading={deleteReport.isPending}
       />
 
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      <Dialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) resetResourceForm();
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {addType === 'target_url' ? 'Add URL target' : 'Add repository'}
+              {editingResource
+                ? editingResource.type === 'target_url'
+                  ? 'Edit URL target'
+                  : 'Edit repository'
+                : addType === 'target_url'
+                  ? 'Add URL target'
+                  : 'Add repository'}
             </DialogTitle>
             <DialogDescription>
-              {addType === 'target_url'
-                ? 'Register a live application URL for DAST and other dynamic security scans.'
-                : 'Register a source repository for SAST, SCA, IaC, and secrets scanning.'}
+              {editingResource
+                ? editingResource.type === 'target_url'
+                  ? 'Update the display name, URL, or description for this target.'
+                  : 'Update repository details. If you change the branch or URL, use Re-clone to refresh the local copy.'
+                : addType === 'target_url'
+                  ? 'Register a live application URL for DAST and other dynamic security scans.'
+                  : 'Register a source repository for SAST, SCA, IaC, and secrets scanning.'}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
-            <div className="space-y-2">
-              <Label>Resource type</Label>
-              <Select value={addType} onValueChange={(v) => setAddType(v as typeof addType)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="repository">Repository</SelectItem>
-                  <SelectItem value="target_url">URL target</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {!editingResource ? (
+              <div className="space-y-2">
+                <Label>Resource type</Label>
+                <Select value={addType} onValueChange={(v) => setAddType(v as typeof addType)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="repository">Repository</SelectItem>
+                    <SelectItem value="target_url">URL target</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
             <div className="space-y-2">
               <Label>Display name (optional)</Label>
               <Input value={resourceName} onChange={(e) => setResourceName(e.target.value)} />
             </div>
-            {addType === 'repository' ? (
+            {(editingResource?.type ?? addType) === 'repository' ? (
               <>
                 <div className="space-y-2">
                   <Label>Repository URL</Label>
@@ -970,13 +1038,21 @@ export function SecurityContent() {
               Cancel
             </Button>
             <Button
-              onClick={() => createResource.mutate()}
+              onClick={() => saveResource.mutate()}
               disabled={
-                createResource.isPending ||
-                (addType === 'repository' ? !repoUrl.trim() : !targetUrl.trim())
+                saveResource.isPending ||
+                ((editingResource?.type ?? addType) === 'repository'
+                  ? !repoUrl.trim()
+                  : !targetUrl.trim())
               }
             >
-              {createResource.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Add'}
+              {saveResource.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : editingResource ? (
+                'Save changes'
+              ) : (
+                'Add'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

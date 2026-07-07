@@ -6,6 +6,12 @@ import { getSecurityToolById, resolveScanPairs } from './security-tools';
 import type { ScanProgressCallback } from './security-scan-progress';
 
 import type { SecurityScanJobStatus, SecurityScanJobView, SecurityReportMode } from './security-scan-types';
+import {
+  clearScanJobCancel,
+  isScanJobCancelRequested,
+  requestScanJobCancel,
+  ScanCancelledError,
+} from './security-scan-cancel';
 
 export type { SecurityScanJobStatus, SecurityScanJobView } from './security-scan-types';
 
@@ -38,6 +44,29 @@ async function resolveJobLabels(resourceIds: string[], toolIds: string[]): Promi
   };
 }
 
+async function loadJobReports(jobIds: string[]): Promise<Map<string, SecurityScanJobView['reports']>> {
+  const byJob = new Map<string, SecurityScanJobView['reports']>();
+  if (!jobIds.length) return byJob;
+
+  const rows = await prisma.securityReport.findMany({
+    where: { scanJobId: { in: jobIds } },
+    select: { id: true, scanJobId: true, title: true, toolId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  for (const row of rows) {
+    if (!row.scanJobId) continue;
+    const list = byJob.get(row.scanJobId) ?? [];
+    list.push({
+      id: row.id,
+      title: row.title,
+      toolName: getSecurityToolById(row.toolId)?.name ?? row.toolId,
+    });
+    byJob.set(row.scanJobId, list);
+  }
+  return byJob;
+}
+
 async function toScanJobView(row: {
   id: string;
   resourceIds: unknown;
@@ -52,7 +81,7 @@ async function toScanJobView(row: {
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
-}): Promise<SecurityScanJobView> {
+}, reports: SecurityScanJobView['reports'] = []): Promise<SecurityScanJobView> {
   const resourceIds = parseIdList(row.resourceIds);
   const toolIds = parseIdList(row.toolIds);
   const { resourceNames, toolNames } = await resolveJobLabels(resourceIds, toolIds);
@@ -67,6 +96,7 @@ async function toScanJobView(row: {
     message: row.message,
     error: row.error,
     reportCount: row.reportCount,
+    reports,
     pairTotal: row.pairTotal,
     reportMode: (row.reportMode === 'merged' ? 'merged' : 'separate') as SecurityReportMode,
     createdAt: row.createdAt.toISOString(),
@@ -132,14 +162,15 @@ export async function createSecurityScanJob(input: {
     },
   });
 
-  return toScanJobView(row);
+  return toScanJobView(row, []);
 }
 
 export async function getSecurityScanJob(id: string): Promise<SecurityScanJobView | null> {
   await assertSecurityModuleEnabled();
   const row = await scanJobs().findUnique({ where: { id } });
   if (!row) return null;
-  return toScanJobView(row);
+  const reportsByJob = await loadJobReports([row.id]);
+  return toScanJobView(row, reportsByJob.get(row.id) ?? []);
 }
 
 export async function listSecurityScanJobs(limit = 20): Promise<SecurityScanJobView[]> {
@@ -149,6 +180,8 @@ export async function listSecurityScanJobs(limit = 20): Promise<SecurityScanJobV
     take: limit,
   });
   if (!rows.length) return [];
+
+  const reportsByJob = await loadJobReports(rows.map((row) => row.id));
 
   const allResourceIds = Array.from(
     new Set(rows.flatMap((row) => parseIdList(row.resourceIds)))
@@ -175,6 +208,7 @@ export async function listSecurityScanJobs(limit = 20): Promise<SecurityScanJobV
       message: row.message,
       error: row.error,
       reportCount: row.reportCount,
+      reports: reportsByJob.get(row.id) ?? [],
       pairTotal: row.pairTotal,
       reportMode: (row.reportMode === 'merged' ? 'merged' : 'separate') as SecurityReportMode,
       createdAt: row.createdAt.toISOString(),
@@ -191,7 +225,43 @@ export async function getActiveSecurityScanJob(): Promise<SecurityScanJobView | 
     orderBy: { createdAt: 'desc' },
   });
   if (!row) return null;
-  return toScanJobView(row);
+  const reportsByJob = await loadJobReports([row.id]);
+  return toScanJobView(row, reportsByJob.get(row.id) ?? []);
+}
+
+export async function cancelSecurityScanJob(id: string): Promise<SecurityScanJobView> {
+  await assertSecurityModuleEnabled();
+  const row = await scanJobs().findUnique({ where: { id } });
+  if (!row) throw new Error('Scan job not found');
+  if (row.status !== 'running' && row.status !== 'queued') {
+    throw new Error('Only active scans can be stopped');
+  }
+
+  requestScanJobCancel(id);
+
+  if (row.status === 'queued' && !runningJobIds.has(id)) {
+    await scanJobs().update({
+      where: { id },
+      data: {
+        status: 'cancelled',
+        message: 'Cancelled by user',
+        completedAt: new Date(),
+        error: null,
+      },
+    });
+    clearScanJobCancel(id);
+  } else {
+    await scanJobs().update({
+      where: { id },
+      data: {
+        message: 'Stopping scan…',
+      },
+    });
+  }
+
+  const updated = await getSecurityScanJob(id);
+  if (!updated) throw new Error('Scan job not found');
+  return updated;
 }
 
 export async function deleteSecurityScanJob(id: string): Promise<void> {
@@ -199,7 +269,7 @@ export async function deleteSecurityScanJob(id: string): Promise<void> {
   const row = await scanJobs().findUnique({ where: { id } });
   if (!row) throw new Error('Scan job not found');
   if (row.status === 'running' || row.status === 'queued') {
-    throw new Error('Cannot delete a scan that is still in progress');
+    throw new Error('Cannot delete a scan that is still in progress. Stop it first.');
   }
   await scanJobs().delete({ where: { id } });
 }
@@ -209,7 +279,21 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
 
   const job = await scanJobs().findUnique({ where: { id: jobId } });
   if (!job) return;
-  if (job.status === 'completed' || job.status === 'failed') return;
+  if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return;
+
+  if (isScanJobCancelRequested(jobId)) {
+    await scanJobs().update({
+      where: { id: jobId },
+      data: {
+        status: 'cancelled',
+        message: 'Cancelled by user',
+        completedAt: new Date(),
+        error: null,
+      },
+    });
+    clearScanJobCancel(jobId);
+    return;
+  }
 
   runningJobIds.add(jobId);
   lastProgressPersist.delete(jobId);
@@ -251,19 +335,32 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Scan failed';
-    await scanJobs().update({
-      where: { id: jobId },
-      data: {
-        status: 'failed',
-        error: message,
-        message: 'Scan failed',
-        completedAt: new Date(),
-      },
-    });
+    if (err instanceof ScanCancelledError) {
+      await scanJobs().update({
+        where: { id: jobId },
+        data: {
+          status: 'cancelled',
+          message: 'Cancelled by user',
+          completedAt: new Date(),
+          error: null,
+        },
+      });
+    } else {
+      const message = err instanceof Error ? err.message : 'Scan failed';
+      await scanJobs().update({
+        where: { id: jobId },
+        data: {
+          status: 'failed',
+          error: message,
+          message: 'Scan failed',
+          completedAt: new Date(),
+        },
+      });
+    }
   } finally {
     runningJobIds.delete(jobId);
     lastProgressPersist.delete(jobId);
+    clearScanJobCancel(jobId);
   }
 }
 

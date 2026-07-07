@@ -1,5 +1,11 @@
-export type SecurityScanJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type SecurityScanJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type SecurityReportMode = 'separate' | 'merged';
+
+export interface SecurityScanJobReportView {
+  id: string;
+  title: string;
+  toolName: string;
+}
 
 export interface SecurityScanJobView {
   id: string;
@@ -12,6 +18,7 @@ export interface SecurityScanJobView {
   message: string | null;
   error: string | null;
   reportCount: number;
+  reports: SecurityScanJobReportView[];
   pairTotal: number;
   reportMode: SecurityReportMode;
   createdAt: string;

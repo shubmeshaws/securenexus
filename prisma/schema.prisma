@@ -260,7 +260,7 @@ model SecurityScanJob {
   id          String   @id @default(cuid())
   resourceIds Json
   toolIds     Json
-  status      String   @default("queued") // queued | running | completed | failed
+  status      String   @default("queued") // queued | running | completed | failed | cancelled
   progress    Int      @default(0)
   message     String?
   error       String?

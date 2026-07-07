@@ -39,6 +39,7 @@ import { getInstallCommandsByOs, getInstallCommandsForOs, isServerOsType } from 
 import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
+import { isScanJobCancelRequested, ScanCancelledError } from './security-scan-cancel';
 import {
   cloneSecurityResourceRepo,
   getSecurityResourceCloneStatus,
@@ -1239,6 +1240,10 @@ export async function runSecurityScans(
 
   const scanResults: SecurityScanPairResult[] = [];
   for (let index = 0; index < pairs.length; index++) {
+    if (options?.scanJobId && isScanJobCancelRequested(options.scanJobId)) {
+      throw new ScanCancelledError();
+    }
+
     const pair = pairs[index];
     const tool = getSecurityToolById(pair.toolId);
     const resource = resources.find((row) => row.id === pair.resourceId);

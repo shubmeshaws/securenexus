@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
+import { CircleStop, Eye, Loader2, RotateCw, ScanSearch, Trash2 } from '@/lib/icons';
 import { ScanMultiSelect } from '@/components/pod-scheduler/scan-multi-select';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
@@ -18,10 +18,17 @@ import {
   resolveScanPairs,
   type SecurityToolCategory,
 } from '@/lib/security-tools';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
-import type { SecurityReportMode, SecurityScanJobView } from '@/lib/security-scan-types';
+import type { SecurityReportMode, SecurityScanJobReportView, SecurityScanJobView } from '@/lib/security-scan-types';
 import {
   SCAN_JOB_POLL_MS,
+  cancelSecurityScanJobClient,
   deleteSecurityScanJobClient,
   fetchActiveSecurityScanJob,
   fetchSecurityScanJobs,
@@ -75,6 +82,9 @@ function jobStatusBadge(status: SecurityScanJobView['status']) {
   if (status === 'failed') {
     return <Badge variant="failed" className="py-0 text-[9px]">Failed</Badge>;
   }
+  if (status === 'cancelled') {
+    return <Badge variant="outline" className="py-0 text-[9px] text-muted-foreground">Cancelled</Badge>;
+  }
   if (status === 'running') {
     return (
       <Badge variant="progressing" className="gap-1 py-0 text-[9px]">
@@ -91,6 +101,7 @@ const JOB_STATUS_ACCENT: Record<SecurityScanJobView['status'], string> = {
   running: 'bg-sky-500',
   completed: 'bg-emerald-500',
   failed: 'bg-red-500',
+  cancelled: 'bg-muted-foreground/50',
 };
 
 function RecentScanJobCard({
@@ -98,15 +109,21 @@ function RecentScanJobCard({
   isScanning,
   onRerun,
   onDelete,
+  onCancel,
+  onViewReport,
   rerunPending,
   deletePending,
+  cancelPending,
 }: {
   job: SecurityScanJobView;
   isScanning: boolean;
   onRerun: () => void;
   onDelete: () => void;
+  onCancel: () => void;
+  onViewReport: () => void;
   rerunPending: boolean;
   deletePending: boolean;
+  cancelPending: boolean;
 }) {
   const active = isScanJobActive(job);
   const targetLabel = job.resourceNames.join(', ') || '—';
@@ -161,6 +178,24 @@ function RecentScanJobCard({
         ) : null}
 
         <div className="flex shrink-0 items-center gap-1">
+          {active ? (
+            <SecurityIconButton
+              icon={CircleStop}
+              label="Stop scan"
+              tone="danger"
+              disabled={cancelPending}
+              loading={cancelPending}
+              onClick={onCancel}
+            />
+          ) : null}
+          {job.status === 'completed' && job.reports.length > 0 ? (
+            <SecurityIconButton
+              icon={Eye}
+              label="View report"
+              tone="emerald"
+              onClick={onViewReport}
+            />
+          ) : null}
           <SecurityIconButton
             icon={RotateCw}
             label="Scan again"
@@ -234,6 +269,8 @@ export function SecurityScanPanel({
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
   const [reportMode, setReportMode] = useState<SecurityReportMode>('separate');
   const [scanJobToDelete, setScanJobToDelete] = useState<SecurityScanJobView | null>(null);
+  const [previewReportId, setPreviewReportId] = useState<string | null>(null);
+  const [reportPickerJob, setReportPickerJob] = useState<SecurityScanJobView | null>(null);
   const resumeChecked = useRef(false);
 
   const enabledResources = useMemo(
@@ -326,10 +363,36 @@ export function SecurityScanPanel({
       queryClient.invalidateQueries({ queryKey: ['security-reports'] });
       queryClient.invalidateQueries({ queryKey: ['security-dashboard'] });
     }
-    if (activeJob.status === 'failed') {
+    if (activeJob.status === 'failed' || activeJob.status === 'cancelled') {
       persistActiveScanJobId(null);
     }
   }, [activeJob, queryClient]);
+
+  const { data: previewHtml, isLoading: previewLoading } = useQuery({
+    queryKey: ['security-report-preview', previewReportId],
+    queryFn: async () => {
+      const res = await fetch(`/api/security/reports/${previewReportId}/download?format=html`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to load report');
+      return res.text();
+    },
+    enabled: Boolean(previewReportId),
+  });
+
+  function openJobReports(job: SecurityScanJobView) {
+    if (!job.reports.length) return;
+    if (job.reports.length === 1) {
+      setPreviewReportId(job.reports[0].id);
+      return;
+    }
+    setReportPickerJob(job);
+  }
+
+  function openReport(report: SecurityScanJobReportView) {
+    setReportPickerJob(null);
+    setPreviewReportId(report.id);
+  }
 
   useEffect(() => {
     if (!selectedResources.length) return;
@@ -369,6 +432,13 @@ export function SecurityScanPanel({
     mutationFn: (jobId: string) => deleteSecurityScanJobClient(jobId),
     onSuccess: () => {
       setScanJobToDelete(null);
+      queryClient.invalidateQueries({ queryKey: ['security-scan-jobs'] });
+    },
+  });
+
+  const cancelJob = useMutation({
+    mutationFn: (jobId: string) => cancelSecurityScanJobClient(jobId),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['security-scan-jobs'] });
     },
   });
@@ -573,8 +643,11 @@ export function SecurityScanPanel({
                     isScanning={isScanning}
                     rerunPending={rerunJob.isPending}
                     deletePending={deleteJob.isPending && scanJobToDelete?.id === job.id}
+                    cancelPending={cancelJob.isPending && cancelJob.variables === job.id}
                     onRerun={() => rerunJob.mutate(job.id)}
                     onDelete={() => setScanJobToDelete(job)}
+                    onCancel={() => cancelJob.mutate(job.id)}
+                    onViewReport={() => openJobReports(job)}
                   />
                 ))}
               </div>
@@ -583,6 +656,11 @@ export function SecurityScanPanel({
             {deleteJob.isError ? (
               <p className="text-[11px] text-red-600">
                 {deleteJob.error instanceof Error ? deleteJob.error.message : 'Delete failed'}
+              </p>
+            ) : null}
+            {cancelJob.isError ? (
+              <p className="text-[11px] text-red-600">
+                {cancelJob.error instanceof Error ? cancelJob.error.message : 'Stop failed'}
               </p>
             ) : null}
             {rerunJob.isError ? (
@@ -618,6 +696,51 @@ export function SecurityScanPanel({
       onConfirm={() => scanJobToDelete && deleteJob.mutate(scanJobToDelete.id)}
       loading={deleteJob.isPending}
     />
+
+    <Dialog open={reportPickerJob !== null} onOpenChange={(open) => !open && setReportPickerJob(null)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>View report</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-2">
+          {reportPickerJob?.reports.map((report) => (
+            <button
+              key={report.id}
+              type="button"
+              onClick={() => openReport(report)}
+              className="flex w-full items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-left transition-colors hover:bg-muted/50"
+            >
+              <Eye className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">{report.title}</p>
+                <p className="text-[11px] text-muted-foreground">{report.toolName}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={Boolean(previewReportId)} onOpenChange={(open) => !open && setPreviewReportId(null)}>
+      <DialogContent className="flex h-[92vh] w-[96vw] max-w-[96vw] flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b border-border px-6 py-4">
+          <DialogTitle>Report preview</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-hidden bg-muted/30 p-3">
+          {previewLoading ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <iframe
+              title="Security report preview"
+              srcDoc={previewHtml ?? ''}
+              className="h-full w-full rounded-lg border border-border bg-white"
+            />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
     </>
   );
 }

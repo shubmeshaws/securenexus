@@ -97,6 +97,25 @@ export async function startSecurityScanJob(input: {
   return body.job;
 }
 
+export async function cancelSecurityScanJobClient(jobId: string): Promise<SecurityScanJobView> {
+  const res = await authFetch(`/api/security/scans/jobs/${jobId}/cancel`, { method: 'POST' });
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: unknown;
+    message?: string;
+    job?: SecurityScanJobView;
+  };
+
+  if (!res.ok) {
+    throw new Error(formatApiError(body, res.status));
+  }
+
+  if (!body.job) throw new Error('Scan job was not returned by the server');
+  if (!isScanJobActive(body.job)) {
+    persistActiveScanJobId(null);
+  }
+  return body.job;
+}
+
 export async function deleteSecurityScanJobClient(jobId: string): Promise<void> {
   const res = await authFetch(`/api/security/scans/jobs/${jobId}`, { method: 'DELETE' });
   if (!res.ok) {
@@ -139,7 +158,7 @@ export async function waitForSecurityScanJob(
     const job = await fetchSecurityScanJob(jobId);
     onUpdate(job);
 
-    if (job.status === 'completed' || job.status === 'failed') {
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
       if (job.status === 'failed') {
         throw new Error(job.error ?? 'Scan failed');
       }
