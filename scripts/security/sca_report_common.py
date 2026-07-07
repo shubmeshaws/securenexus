@@ -1,0 +1,498 @@
+"""Shared SecureNexus SCA HTML report layout for dependency scanners."""
+
+import csv
+import json
+from datetime import datetime, timezone
+from html import escape
+from pathlib import Path
+
+
+def normalize_severity(severity: str) -> str:
+    sev = (severity or "unknown").capitalize()
+    if sev == "Moderate":
+        return "Medium"
+    return sev
+
+
+def severity_class(severity: str) -> str:
+    return {
+        "Critical": "sev-critical",
+        "High": "sev-high",
+        "Medium": "sev-medium",
+        "Moderate": "sev-medium",
+        "Low": "sev-low",
+        "Info": "sev-low",
+        "Warning": "sev-warning",
+    }.get(normalize_severity(severity), "sev-low")
+
+
+def aggregate_issue_counts(rows: list[dict]) -> dict[str, int]:
+    counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Warning": 0}
+    for row in rows:
+        bucket = normalize_severity(row.get("severity", ""))
+        if bucket == "Info":
+            bucket = "Low"
+        counts[bucket] = counts.get(bucket, 0) + 1
+    return counts
+
+
+def build_key_observations(rows: list[dict], repo: str, tool_hint: str) -> list[str]:
+    if not rows:
+        return ["No vulnerable dependencies detected in this scan."]
+
+    observations: list[str] = []
+    critical_high = [r for r in rows if r["severity"] in ("Critical", "High")]
+    medium_rows = [r for r in rows if r["severity"] == "Medium"]
+    fixable = [r for r in rows if r.get("fix_ver") not in ("—", "", None)]
+
+    if critical_high:
+        observations.append(
+            f"{len(critical_high)} critical/high severity vulnerabilit"
+            f"{'y' if len(critical_high) == 1 else 'ies'} in {repo} require immediate remediation."
+        )
+    if fixable:
+        observations.append(
+            f"{len(fixable)} package{'s' if len(fixable) != 1 else ''} have a recommended fix version."
+        )
+
+    pkg_counts: dict[str, int] = {}
+    for row in rows:
+        pkg_counts[row["package"]] = pkg_counts.get(row["package"], 0) + 1
+    for name, count in sorted(pkg_counts.items(), key=lambda item: -item[1])[:2]:
+        if count > 1:
+            observations.append(f'Package "{name}" appears {count} times in the vulnerability report.')
+
+    if medium_rows and len(observations) < 4:
+        observations.append(
+            f"{len(medium_rows)} medium-severity dependenc"
+            f"{'y' if len(medium_rows) == 1 else 'ies'} should be scheduled for upgrade."
+        )
+
+    if not observations:
+        observations.append(
+            f"Review {len(rows)} vulnerable dependenc{'y' if len(rows) == 1 else 'ies'} "
+            f"in the SCA summary table below ({tool_hint})."
+        )
+
+    return observations[:6]
+
+
+SECURENEXUS_BRAND_HTML = """
+      <div class="securenexus-brand">
+        <div class="securenexus-logo" aria-label="SecureNexus">
+          <span class="logo-secure">SECURE</span><span class="logo-nexus">NEXUS</span>
+        </div>
+        <div class="logo-byline">By DevOps Team</div>
+      </div>"""
+
+
+def report_styles() -> str:
+    return """
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #eef2f7;
+      color: #1e293b;
+      margin: 0;
+      line-height: 1.5;
+    }
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 24px 40px;
+    }
+    .report-header {
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #dbe3ee;
+      border-radius: 16px;
+      padding: 28px 32px;
+      margin-bottom: 24px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+    .report-header-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+    .securenexus-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .securenexus-logo {
+      display: inline-flex;
+      align-items: baseline;
+      font-size: 38px;
+      font-weight: 800;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .logo-secure {
+      color: #0f172a;
+      letter-spacing: 0.03em;
+    }
+    .logo-nexus {
+      background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: #2563eb;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: 0.03em;
+    }
+    .logo-byline {
+      margin: 8px 0 0;
+      padding-left: 1px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #64748b;
+      letter-spacing: 0;
+      text-align: left;
+    }
+    .scan-badge {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .report-title {
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.15;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .report-subtitle {
+      margin: 0 0 20px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #475569;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .meta-item {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .meta-label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+    .meta-value {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .report-body {
+      background: #f8fafc;
+      border: 1px solid #dbe3ee;
+      border-radius: 16px;
+      padding: 24px;
+    }
+    h2 {
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0 0 12px;
+      color: #0f172a;
+    }
+    h2:not(:first-child) { margin-top: 32px; }
+    h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 24px 0 10px;
+      color: #0f172a;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      background: #fff;
+      margin-bottom: 8px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      vertical-align: middle;
+      text-align: center;
+    }
+    th {
+      background: #4472c4;
+      color: #fff;
+      font-weight: 600;
+    }
+    .text-left { text-align: left; }
+    .summary-table th, .summary-table td { font-size: 15px; font-weight: 600; }
+    .cell-total { background: #dbeafe; color: #1d4ed8; }
+    .cell-critical-high { background: #fee2e2; color: #b91c1c; }
+    .cell-medium { background: #fef3c7; color: #b45309; }
+    .cell-low-info { background: #dcfce7; color: #15803d; }
+    td.col-critical { background: #fef2f2; color: #b91c1c; font-weight: 600; }
+    td.col-high { background: #fff1f2; color: #be123c; font-weight: 600; }
+    .repo-table th { background: #4472c4; color: #fff; }
+    .row-alt td { background: #eff6ff; }
+    .observations {
+      background: #fff;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-top: 8px;
+    }
+    .observations ul { margin: 0; padding-left: 20px; }
+    .observations li { margin-bottom: 8px; }
+    .detail-table th, .detail-table td { text-align: left; vertical-align: top; }
+    .detail-table tr:nth-child(even) td { background: #f8fafc; }
+    code {
+      color: #334155;
+      font-size: 13px;
+      word-break: break-all;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 12px;
+      color: #fff;
+    }
+    .sev-critical { background: #7f1d1d; color: #ffffff; }
+    .sev-high { background: #991b1b; color: #ffffff; }
+    .sev-medium { background: #9a3412; color: #ffffff; }
+    .sev-warning { background: #a16207; color: #ffffff; }
+    .sev-low { background: #dcfce7; color: #15803d; }
+    .report-footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    """
+
+
+def build_report_header(
+    tool_name: str,
+    resource_name: str,
+    target_url: str,
+    generated: str,
+    scanner_version: str,
+    version_label: str = "Scanner Version",
+) -> str:
+    extra_meta = ""
+    if scanner_version:
+        extra_meta = f"""
+      <div class="meta-item">
+        <span class="meta-label">{escape(version_label)}</span>
+        <span class="meta-value">{escape(scanner_version)}</span>
+      </div>"""
+
+    return f"""
+  <header class="report-header">
+    <div class="report-header-top">
+      {SECURENEXUS_BRAND_HTML}
+      <div class="scan-badge">SCA</div>
+    </div>
+    <h1 class="report-title">{escape(tool_name)} · {escape(resource_name)}</h1>
+    <p class="report-subtitle">Software Composition Analysis Report</p>
+    <div class="meta-grid">
+      <div class="meta-item">
+        <span class="meta-label">Tool</span>
+        <span class="meta-value">{escape(tool_name)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Repository</span>
+        <span class="meta-value">{escape(target_url or resource_name)}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Generated</span>
+        <span class="meta-value">{generated}</span>
+      </div>
+      {extra_meta}
+    </div>
+  </header>"""
+
+
+def build_sca_html(
+    rows: list[dict],
+    display_name: str,
+    tool_name: str,
+    target_url: str,
+    scanner_version: str,
+    version_label: str = "Scanner Version",
+) -> str:
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    repo = display_name
+    doc_title = f"SCA Report · {tool_name} · {repo} | SecureNexus"
+    counts = aggregate_issue_counts(rows)
+    total = len(rows)
+    critical_high = counts["Critical"] + counts["High"]
+    low_info = counts["Low"] + counts["Warning"]
+    observations = build_key_observations(rows, repo, tool_name)
+    header = build_report_header(
+        tool_name, repo, target_url, generated, scanner_version, version_label
+    )
+
+    body_rows = []
+    for row in rows:
+        body_rows.append(
+            f"""<tr>
+  <td>{escape(row['id'])}</td>
+  <td><code>{escape(row['package'])}</code></td>
+  <td>{escape(row['current_ver'])}</td>
+  <td>{escape(row['fix_ver'])}</td>
+  <td><span class="badge {severity_class(row['severity'])}">{escape(row['severity'])}</span></td>
+  <td>{escape(row['cve'])}</td>
+  <td>{escape(row['vulnerability'])}</td>
+  <td>{escape(row['action'])}</td>
+</tr>"""
+        )
+
+    if not body_rows:
+        body_rows.append(
+            '<tr><td colspan="8" style="text-align:center;padding:24px;">No vulnerabilities found</td></tr>'
+        )
+
+    observation_items = "".join(f"<li>{escape(item)}</li>" for item in observations)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{escape(doc_title)}</title>
+  <style>{report_styles()}</style>
+</head>
+<body>
+  <div class="page">
+    {header}
+    <div class="report-body">
+
+  <h2>Issue Summary</h2>
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Total Issues</th>
+        <th>Critical / High</th>
+        <th>Medium</th>
+        <th>Low / Info</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="cell-total">{total}</td>
+        <td class="cell-critical-high">{critical_high}</td>
+        <td class="cell-medium">{counts['Medium']}</td>
+        <td class="cell-low-info">{low_info}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Issues by Repository</h2>
+  <table class="repo-table">
+    <thead>
+      <tr>
+        <th class="text-left">Repository</th>
+        <th class="col-critical">Critical</th>
+        <th class="col-high">High</th>
+        <th>Medium</th>
+        <th>Low</th>
+        <th>Warning</th>
+        <th>Tool</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="row-alt">
+        <td class="text-left">{escape(repo)}</td>
+        <td class="col-critical">{counts['Critical']}</td>
+        <td class="col-high">{counts['High']}</td>
+        <td>{counts['Medium']}</td>
+        <td>{counts['Low']}</td>
+        <td>{counts['Warning']}</td>
+        <td>{escape(tool_name)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Key Observations</h3>
+  <div class="observations">
+    <ul>
+      {observation_items}
+    </ul>
+  </div>
+
+  <h2>3.1 SCA Summary Table</h2>
+  <table class="detail-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Package</th>
+        <th>Current Ver.</th>
+        <th>Fix Ver.</th>
+        <th>Severity</th>
+        <th>CVE</th>
+        <th>Vulnerability</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+{chr(10).join(body_rows)}
+    </tbody>
+  </table>
+    </div>
+    <p class="report-footer">SecureNexus Security · Generated by {escape(tool_name)}</p>
+  </div>
+</body>
+</html>
+"""
+
+
+def write_csv(path: Path, rows: list[dict]) -> None:
+    fields = ["id", "package", "current_ver", "fix_ver", "severity", "cve", "vulnerability", "action"]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_report_bundle(
+    out_dir: Path,
+    prefix: str,
+    rows: list[dict],
+    display_name: str,
+    tool_name: str,
+    target_url: str,
+    scanner_version: str,
+    raw_payload: dict,
+    version_label: str = "Scanner Version",
+) -> tuple[Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{prefix}_sca_summary.html"
+    csv_path = out_dir / f"{prefix}_sca_summary.csv"
+    json_path = out_dir / f"{prefix}_sca_summary.json"
+
+    html_path.write_text(
+        build_sca_html(rows, display_name, tool_name, target_url, scanner_version, version_label),
+        encoding="utf-8",
+    )
+    write_csv(csv_path, rows)
+    json_path.write_text(
+        json.dumps({"findings": rows, "raw": raw_payload}, indent=2),
+        encoding="utf-8",
+    )
+    return html_path, json_path

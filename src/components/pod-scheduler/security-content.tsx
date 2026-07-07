@@ -687,7 +687,7 @@ export function SecurityContent() {
         <div className="space-y-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
             <strong className="font-medium text-foreground">Live scan tools install automatically on first enable.</strong>{' '}
-            Semgrep, npm audit, Gitleaks, OWASP ZAP, Snyk (SCA), and Snyk Code (SAST) install on the SecureNexus server when you click Install
+            Semgrep, npm audit, pip-audit, govulncheck, Gitleaks, OWASP ZAP, Snyk (SCA), and Snyk Code (SAST) install on the SecureNexus server when you click Install
             &amp; enable — no manual terminal steps. Other tools use sample reports until integrated.
           </div>
           {toolsLoading && !toolSettings.length ? (

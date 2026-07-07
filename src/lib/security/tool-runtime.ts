@@ -15,6 +15,8 @@ import {
 import { resolveGitleaksDownloadUrl } from './gitleaks-install';
 import { isGitleaksAvailable } from './gitleaks-runner';
 import { isNpmAuditAvailable } from './npm-audit-runner';
+import { isPipAuditAvailable } from './pip-audit-runner';
+import { isGoAvailable, isGovulncheckAvailable } from './govulncheck-runner';
 import { isSemgrepAvailable } from './semgrep-runner';
 import { isSnykAvailable, isSnykRuntimeReady, installSnykToHtml, installSnykCli } from './snyk-runner';
 import { isSnykToolId, SNYK_TOOL_IDS } from './snyk-shared';
@@ -30,8 +32,17 @@ const execFileAsync = promisify(execFile);
 const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const LOCAL_BIN = path.join(process.cwd(), '.securenexus', 'bin');
 const SEMGREP_VENV_DIR = path.join(process.cwd(), '.securenexus', 'venv-semgrep');
+const PIP_AUDIT_VENV_DIR = path.join(process.cwd(), '.securenexus', 'venv-pip-audit');
 
-export const RUNTIME_SECURITY_TOOL_IDS = ['semgrep', 'npm-audit', 'gitleaks', 'zap', 'snyk'] as const;
+export const RUNTIME_SECURITY_TOOL_IDS = [
+  'semgrep',
+  'npm-audit',
+  'pip-audit',
+  'govulncheck',
+  'gitleaks',
+  'zap',
+  'snyk',
+] as const;
 export type RuntimeSecurityToolId = (typeof RUNTIME_SECURITY_TOOL_IDS)[number];
 
 export type { ServerOsType } from './tool-install-specs';
@@ -72,6 +83,14 @@ const RUNTIME_SPECS: Record<RuntimeSecurityToolId, Omit<ToolRuntimeSpec, 'toolId
   'npm-audit': {
     name: 'npm audit',
     summary: 'Node.js and npm are required for live dependency scans on this server.',
+  },
+  'pip-audit': {
+    name: 'pip-audit',
+    summary: 'Python 3 and pip-audit are required for live Python SCA scans on this server.',
+  },
+  govulncheck: {
+    name: 'govulncheck',
+    summary: 'Go and govulncheck are required for live Go module vulnerability scans on this server.',
   },
   gitleaks: {
     name: 'Gitleaks',
@@ -285,6 +304,14 @@ async function readToolVersion(toolId: RuntimeSecurityToolId): Promise<string | 
       const out = await runCommand('npm', ['--version'], env);
       return out.trim() || null;
     }
+    if (toolId === 'pip-audit') {
+      const out = await runCommand('pip-audit', ['--version'], env);
+      return out.split('\n')[0]?.trim() || null;
+    }
+    if (toolId === 'govulncheck') {
+      const out = await runCommand('govulncheck', ['-version'], env);
+      return out.split('\n')[0]?.trim() || null;
+    }
     if (toolId === 'gitleaks') {
       const out = await runCommand('gitleaks', ['version'], env);
       return out.trim() || null;
@@ -310,6 +337,8 @@ export async function checkToolRuntimeAvailable(toolId: string): Promise<boolean
   if (!isRuntimeSecurityTool(toolId)) return true;
   if (toolId === 'semgrep') return isSemgrepAvailable();
   if (toolId === 'npm-audit') return isNpmAuditAvailable();
+  if (toolId === 'pip-audit') return isPipAuditAvailable();
+  if (toolId === 'govulncheck') return isGovulncheckAvailable();
   if (toolId === 'gitleaks') return isGitleaksAvailable();
   if (toolId === 'zap') return isZapAvailable();
   if (toolId === 'snyk' || toolId === 'snyk-code') return isSnykRuntimeReady();
@@ -419,6 +448,101 @@ async function installNpmAuditRuntime(osType: ServerOsType): Promise<void> {
   }
 
   throw new Error('Node.js/npm could not be installed automatically. Run the manual commands shown in the dialog.');
+}
+
+async function linkLocalBinary(name: string, sourcePath: string): Promise<void> {
+  const binDir = await ensureLocalBin();
+  const linkTarget = path.join(binDir, name);
+  await fs.rm(linkTarget, { force: true }).catch(() => undefined);
+  try {
+    await fs.symlink(sourcePath, linkTarget);
+  } catch {
+    await fs.copyFile(sourcePath, linkTarget);
+    await fs.chmod(linkTarget, 0o755);
+  }
+}
+
+async function installPipAuditRuntime(
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  if (await isPipAuditAvailable()) return;
+
+  onProgress?.('Ensuring Python 3 and venv support…');
+  await ensurePythonVenvSupport(osType);
+  await fs.mkdir(path.dirname(PIP_AUDIT_VENV_DIR), { recursive: true });
+
+  if (!(await pathExists(PIP_AUDIT_VENV_DIR))) {
+    onProgress?.('Creating pip-audit virtual environment…');
+    await runCommand('python3', ['-m', 'venv', PIP_AUDIT_VENV_DIR]);
+  }
+
+  const pip = path.join(PIP_AUDIT_VENV_DIR, 'bin', 'pip');
+  onProgress?.('Installing pip-audit…');
+  await runCommand(pip, ['install', '--upgrade', 'pip']);
+  await runCommand(pip, ['install', 'pip-audit']);
+
+  const pipAuditBin = path.join(PIP_AUDIT_VENV_DIR, 'bin', 'pip-audit');
+  if (!(await pathExists(pipAuditBin))) {
+    throw new Error('pip-audit was installed in a virtual environment but the binary was not found.');
+  }
+
+  await linkLocalBinary('pip-audit', pipAuditBin);
+
+  if (!(await isPipAuditAvailable())) {
+    throw new Error('pip-audit installation finished but pip-audit is not available on PATH.');
+  }
+}
+
+async function installGoRuntime(osType: ServerOsType, onProgress?: (message: string) => void): Promise<void> {
+  if (await isGoAvailable()) return;
+
+  if (osType === 'macos') {
+    onProgress?.('Installing Go via Homebrew…');
+    await installWithBrew('go');
+    if (await isGoAvailable()) return;
+  }
+
+  if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
+    onProgress?.('Installing Go via apt…');
+    await runShell(aptInstall('golang-go'));
+    if (await isGoAvailable()) return;
+  }
+
+  if (osType === 'linux') {
+    onProgress?.('Installing Go via yum/dnf…');
+    await runShell('sudo dnf install -y golang || sudo yum install -y golang');
+    if (await isGoAvailable()) return;
+  }
+
+  if (osType === 'macos' && (await hasCommand('brew'))) {
+    await installWithBrew('go');
+    if (await isGoAvailable()) return;
+  }
+
+  throw new Error('Go could not be installed automatically on this server.');
+}
+
+async function installGovulncheckRuntime(
+  osType: ServerOsType,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  if (await isGovulncheckAvailable()) return;
+
+  await installGoRuntime(osType, onProgress);
+  const binDir = await ensureLocalBin();
+
+  onProgress?.('Installing govulncheck…');
+  const env = {
+    ...toolPathEnv(),
+    GOBIN: binDir,
+    GO111MODULE: 'on',
+  };
+  await runCommand('go', ['install', 'golang.org/x/vuln/cmd/govulncheck@latest'], env);
+
+  if (!(await isGovulncheckAvailable())) {
+    throw new Error('govulncheck installation finished but govulncheck is not available on PATH.');
+  }
 }
 
 async function installSnyk(
@@ -584,6 +708,12 @@ export async function installToolRuntime(
   } else if (toolId === 'npm-audit') {
     progress('Installing Node.js and npm…');
     await installNpmAuditRuntime(osType);
+  } else if (toolId === 'pip-audit') {
+    progress('Installing pip-audit…');
+    await installPipAuditRuntime(osType, progress);
+  } else if (toolId === 'govulncheck') {
+    progress('Installing Go and govulncheck…');
+    await installGovulncheckRuntime(osType, progress);
   } else if (toolId === 'gitleaks') {
     progress('Installing Gitleaks…');
     await installGitleaks(osType);

@@ -18,6 +18,8 @@ import { sanitizePostgresText } from './utils';
 import type { SecurityReportMode } from './security-scan-types';
 import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
+import { runPipAuditScan } from './security/pip-audit-runner';
+import { runGovulncheckScan } from './security/govulncheck-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
 import { runZapScan } from './security/zap-runner';
 import { runSnykScaScan, runSnykCodeScan, isSnykAuthenticated, readSnykWhoami } from './security/snyk-runner';
@@ -956,6 +958,28 @@ async function executeSecurityScanPair(input: {
   } else if (tool.id === 'npm-audit') {
     stageProgress(5, `Starting npm audit for ${resourceView.name}…`);
     const auditResult = await runNpmAuditScan({
+      resource: resourceView,
+      onProgress: runnerProgress,
+    });
+    summary = auditResult.summary;
+    htmlContent = auditResult.htmlContent;
+    highCount = auditResult.highCount;
+    mediumCount = auditResult.mediumCount;
+    lowCount = auditResult.lowCount;
+  } else if (tool.id === 'pip-audit') {
+    stageProgress(5, `Starting pip-audit for ${resourceView.name}…`);
+    const auditResult = await runPipAuditScan({
+      resource: resourceView,
+      onProgress: runnerProgress,
+    });
+    summary = auditResult.summary;
+    htmlContent = auditResult.htmlContent;
+    highCount = auditResult.highCount;
+    mediumCount = auditResult.mediumCount;
+    lowCount = auditResult.lowCount;
+  } else if (tool.id === 'govulncheck') {
+    stageProgress(5, `Starting govulncheck for ${resourceView.name}…`);
+    const auditResult = await runGovulncheckScan({
       resource: resourceView,
       onProgress: runnerProgress,
     });

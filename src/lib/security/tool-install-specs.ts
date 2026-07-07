@@ -19,7 +19,14 @@ export const SERVER_OS_OPTIONS: { id: ServerOsType; label: string; description: 
   },
 ];
 
-export type RuntimeInstallToolId = 'semgrep' | 'npm-audit' | 'gitleaks' | 'zap' | 'snyk';
+export type RuntimeInstallToolId =
+  | 'semgrep'
+  | 'npm-audit'
+  | 'pip-audit'
+  | 'govulncheck'
+  | 'gitleaks'
+  | 'zap'
+  | 'snyk';
 
 const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string[]>> = {
   semgrep: {
@@ -42,6 +49,34 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
     macos: ['brew install node'],
     ubuntu: ['sudo apt update', 'sudo apt install -y nodejs npm'],
     linux: ['sudo yum install -y nodejs npm || sudo dnf install -y nodejs npm'],
+  },
+  'pip-audit': {
+    macos: [
+      'SecureNexus installs pip-audit in a local Python virtual environment',
+      'Requires Python 3 — installed automatically if missing',
+    ],
+    ubuntu: [
+      'SecureNexus installs python3-venv and pip-audit automatically (uses sudo for apt)',
+      'Scans requirements.txt, pyproject.toml, Pipfile, or setup.py at repo root',
+    ],
+    linux: [
+      'SecureNexus installs Python 3 and pip-audit in .securenexus/venv-pip-audit',
+      'Scans requirements.txt, pyproject.toml, Pipfile, or setup.py at repo root',
+    ],
+  },
+  govulncheck: {
+    macos: [
+      'SecureNexus installs Go and govulncheck automatically',
+      'govulncheck scans Go modules listed in go.mod',
+    ],
+    ubuntu: [
+      'SecureNexus installs golang-go via apt and govulncheck into .securenexus/bin',
+      'Requires go.mod at the repository root',
+    ],
+    linux: [
+      'SecureNexus installs Go and govulncheck into .securenexus/bin',
+      'Requires go.mod at the repository root',
+    ],
   },
   gitleaks: {
     macos: ['brew install gitleaks'],

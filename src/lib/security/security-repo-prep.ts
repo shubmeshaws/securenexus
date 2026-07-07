@@ -380,3 +380,28 @@ export async function findNpmProjectRoot(repoPath: string): Promise<string | nul
   }
   return null;
 }
+
+const PYTHON_PROJECT_MARKERS = [
+  'requirements.txt',
+  'requirements.in',
+  'pyproject.toml',
+  'Pipfile',
+  'setup.py',
+  'setup.cfg',
+] as const;
+
+export async function findPythonProjectRoot(repoPath: string): Promise<string | null> {
+  for (const marker of PYTHON_PROJECT_MARKERS) {
+    if (await pathExists(path.join(repoPath, marker))) {
+      return repoPath;
+    }
+  }
+  return null;
+}
+
+export async function findGoProjectRoot(repoPath: string): Promise<string | null> {
+  if (await pathExists(path.join(repoPath, 'go.mod'))) {
+    return repoPath;
+  }
+  return null;
+}
