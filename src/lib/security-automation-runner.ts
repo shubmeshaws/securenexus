@@ -11,6 +11,7 @@ import {
   executeSecurityScanJob,
 } from './security-scan-job-service';
 import { uploadAutomationReportsToS3 } from './security-automation-s3-upload';
+import { sendAutomationTeamsNotification } from './security-automation-teams';
 import { assertSecurityModuleEnabled } from './security-service';
 
 const RUNNER_GLOBAL_KEY = '__secureNexusSecurityAutomationRunnerStarted__';
@@ -43,6 +44,17 @@ async function deliverAutomationResults(
   automation: {
     id: string;
     name: string;
+    teamsEnabled: boolean;
+    teamsWebhookUrl: string | null;
+    scanCategories: unknown;
+    scheduleFrequency?: string | null;
+    scheduleTime: string;
+    scheduleDays: unknown;
+    scheduleDayOfMonth?: number | null;
+    scheduleMonth?: number | null;
+    scheduleStartDate?: string | null;
+    timezone: string;
+    resourceIds: unknown;
     s3Enabled: boolean;
     s3Bucket: string | null;
     s3Region: string | null;
@@ -50,34 +62,52 @@ async function deliverAutomationResults(
     awsCredentialId: string | null;
   },
   jobId: string,
-  completedAt: Date
+  completedAt: Date,
+  scanStatus: 'completed' | 'failed',
+  scanError: string | null
 ): Promise<string | null> {
-  if (!automation.s3Enabled) return null;
+  const errors: string[] = [];
 
-  try {
-    if (!automation.s3Bucket?.trim() || !automation.awsCredentialId) {
-      throw new Error('S3 bucket or AWS credentials are not configured');
+  if (scanStatus === 'completed' && automation.s3Enabled) {
+    try {
+      if (!automation.s3Bucket?.trim() || !automation.awsCredentialId) {
+        throw new Error('S3 bucket or AWS credentials are not configured');
+      }
+
+      const result = await uploadAutomationReportsToS3({
+        automationName: automation.name,
+        s3Bucket: automation.s3Bucket,
+        s3Region: automation.s3Region,
+        s3Prefix: automation.s3Prefix,
+        awsCredentialId: automation.awsCredentialId,
+        scanJobId: jobId,
+        completedAt,
+      });
+
+      console.log(
+        `[SecurityAutomation] Uploaded ${result.uploaded} file(s) to s3://${automation.s3Bucket}/${result.keys[0]?.split('/').slice(0, -1).join('/') ?? ''}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'S3 upload failed';
+      console.error(`[SecurityAutomation] S3 upload failed for ${automation.id}:`, err);
+      errors.push(message);
     }
-
-    const result = await uploadAutomationReportsToS3({
-      automationName: automation.name,
-      s3Bucket: automation.s3Bucket,
-      s3Region: automation.s3Region,
-      s3Prefix: automation.s3Prefix,
-      awsCredentialId: automation.awsCredentialId,
-      scanJobId: jobId,
-      completedAt,
-    });
-
-    console.log(
-      `[SecurityAutomation] Uploaded ${result.uploaded} file(s) to s3://${automation.s3Bucket}/${result.keys[0]?.split('/').slice(0, -1).join('/') ?? ''}`
-    );
-    return null;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'S3 upload failed';
-    console.error(`[SecurityAutomation] S3 upload failed for ${automation.id}:`, err);
-    return message;
   }
+
+  if (automation.teamsEnabled) {
+    const teamsError = await sendAutomationTeamsNotification({
+      automation,
+      jobId,
+      scanStatus,
+      scanError,
+    });
+    if (teamsError) {
+      console.error(`[SecurityAutomation] Teams notification failed for ${automation.id}:`, teamsError);
+      errors.push(teamsError);
+    }
+  }
+
+  return errors.length ? errors.join(' · ') : null;
 }
 
 async function finalizeAutomationRun(
@@ -123,11 +153,13 @@ async function syncAutomationFromScanJob(automationId: string, jobId: string): P
   if (job.status === 'queued' || job.status === 'running') return;
 
   let deliveryError: string | null = null;
-  if (job.status === 'completed' && automation) {
+  if (automation) {
     deliveryError = await deliverAutomationResults(
       automation,
       jobId,
-      job.completedAt ?? new Date()
+      job.completedAt ?? new Date(),
+      job.status === 'completed' ? 'completed' : 'failed',
+      job.error
     );
   }
 
@@ -176,15 +208,14 @@ async function executeAutomation(automationId: string): Promise<void> {
 
     const finished = await prisma.securityScanJob.findUnique({ where: { id: job.id } });
     const scanStatus = finished?.status === 'completed' ? 'completed' : 'failed';
-    let deliveryError: string | null = null;
 
-    if (scanStatus === 'completed') {
-      deliveryError = await deliverAutomationResults(
-        automation,
-        job.id,
-        finished?.completedAt ?? new Date()
-      );
-    }
+    const deliveryError = await deliverAutomationResults(
+      automation,
+      job.id,
+      finished?.completedAt ?? new Date(),
+      scanStatus,
+      finished?.error ?? null
+    );
 
     const combinedError =
       [finished?.error, deliveryError].filter((value): value is string => Boolean(value)).join(' · ') ||
