@@ -4,7 +4,9 @@ import {
   automationScheduleRowFromRecord,
   formatAutomationScheduleSummary,
 } from '@/lib/security-automation-schedule';
+import { getAppUrl } from '@/lib/google-auth';
 import {
+  buildS3ConsoleBucketUrl,
   buildS3ConsoleFolderUrl,
   groupS3ReportLinks,
 } from '@/lib/security-automation-s3-upload';
@@ -27,7 +29,9 @@ export interface SecurityScanTeamsInput {
   mediumCount: number;
   lowCount: number;
   reportLinks: Array<{ title: string; htmlUrl: string; csvUrl: string; pdfUrl: string }>;
+  appReportLinks: Array<{ title: string; htmlUrl: string }>;
   s3Bucket?: string | null;
+  s3BucketUrl?: string | null;
   s3FolderUrl?: string | null;
   error?: string | null;
 }
@@ -255,7 +259,30 @@ export function buildSecurityScanTeamsCard(input: SecurityScanTeamsInput) {
     ],
   });
 
-  if (!failed && input.reportLinks.length > 0) {
+  if (!failed && input.appReportLinks.length > 0) {
+    body.push({
+      type: 'Container',
+      style: 'accent',
+      spacing: 'Medium',
+      items: [
+        sectionLabel('Report URLs (SecureNexus)'),
+        ...input.appReportLinks.map((report) => ({
+          type: 'ActionSet',
+          spacing: 'Small',
+          actions: [
+            {
+              type: 'Action.OpenUrl',
+              title: `${report.title} · HTML`,
+              url: report.htmlUrl,
+              style: 'positive',
+            },
+          ],
+        })),
+      ],
+    });
+  }
+
+  if (!failed && (input.reportLinks.length > 0 || input.s3BucketUrl)) {
     const reportActions: Record<string, unknown>[] = [];
 
     for (const report of input.reportLinks) {
@@ -283,42 +310,53 @@ export function buildSecurityScanTeamsCard(input: SecurityScanTeamsInput) {
       });
     }
 
-    body.push(
-      {
-        type: 'Container',
-        style: 'good',
-        spacing: 'Medium',
-        items: [
-          sectionLabel('Report URLs (S3)'),
-          ...(input.s3Bucket
-            ? [
-                {
-                  type: 'TextBlock',
-                  text: `Bucket: ${input.s3Bucket}`,
-                  isSubtle: true,
-                  spacing: 'Small',
-                  size: 'Small',
-                },
-              ]
-            : []),
-          ...reportActions,
-          ...(input.s3FolderUrl
-            ? [
-                {
-                  type: 'ActionSet',
-                  actions: [
-                    {
-                      type: 'Action.OpenUrl',
-                      title: 'Open S3 folder in AWS Console',
-                      url: input.s3FolderUrl,
-                    },
-                  ],
-                },
-              ]
-            : []),
+    const s3Items: Record<string, unknown>[] = [sectionLabel('Report URLs (S3)')];
+
+    if (input.s3Bucket) {
+      s3Items.push({
+        type: 'TextBlock',
+        text: `Bucket: ${input.s3Bucket}`,
+        isSubtle: true,
+        spacing: 'Small',
+        size: 'Small',
+      });
+    }
+
+    if (input.s3BucketUrl) {
+      s3Items.push({
+        type: 'ActionSet',
+        spacing: 'Small',
+        actions: [
+          {
+            type: 'Action.OpenUrl',
+            title: 'Open S3 bucket',
+            url: input.s3BucketUrl,
+          },
         ],
-      }
-    );
+      });
+    }
+
+    s3Items.push(...reportActions);
+
+    if (input.s3FolderUrl) {
+      s3Items.push({
+        type: 'ActionSet',
+        actions: [
+          {
+            type: 'Action.OpenUrl',
+            title: 'Open S3 folder in AWS Console',
+            url: input.s3FolderUrl,
+          },
+        ],
+      });
+    }
+
+    body.push({
+      type: 'Container',
+      style: 'good',
+      spacing: 'Medium',
+      items: s3Items,
+    });
   }
 
   body.push({
@@ -455,6 +493,13 @@ export async function sendAutomationTeamsNotification(input: {
     s3Bucket && s3FolderPrefix
       ? buildS3ConsoleFolderUrl(s3Bucket, s3Region, s3FolderPrefix)
       : null;
+  const s3BucketUrl = s3Bucket ? buildS3ConsoleBucketUrl(s3Bucket, s3Region) : null;
+
+  const appUrl = getAppUrl().replace(/\/$/, '');
+  const appReportLinks = reports.map((report) => ({
+    title: report.title,
+    htmlUrl: `${appUrl}/api/security/reports/${report.id}/download?format=html`,
+  }));
 
   const card = buildSecurityScanTeamsCard({
     title: input.automation.name,
@@ -467,7 +512,9 @@ export async function sendAutomationTeamsNotification(input: {
     mediumCount,
     lowCount,
     reportLinks,
+    appReportLinks,
     s3Bucket,
+    s3BucketUrl,
     s3FolderUrl,
     error: input.scanError,
   });
@@ -542,8 +589,15 @@ export async function sendAutomationTeamsTestNotification(input: {
     highCount: 2,
     mediumCount: 5,
     lowCount: 3,
+    appReportLinks: [
+      {
+        title: 'SAST Report',
+        htmlUrl: `${getAppUrl().replace(/\/$/, '')}/api/security/reports/sample/download?format=html`,
+      },
+    ],
     reportLinks: sampleLinks,
     s3Bucket: bucket,
+    s3BucketUrl: buildS3ConsoleBucketUrl(bucket, region),
     s3FolderUrl: buildS3ConsoleFolderUrl(bucket, region, folder),
   });
 

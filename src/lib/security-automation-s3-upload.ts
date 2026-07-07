@@ -96,6 +96,14 @@ export function buildS3ObjectUrl(
   return `https://${bucket}.s3.${resolvedRegion}.amazonaws.com/${encodedKey}`;
 }
 
+export function buildS3ConsoleBucketUrl(
+  bucket: string,
+  region: string | null | undefined
+): string {
+  const resolvedRegion = region?.trim() || 'us-east-1';
+  return `https://s3.console.aws.amazon.com/s3/buckets/${encodeURIComponent(bucket)}?region=${encodeURIComponent(resolvedRegion)}`;
+}
+
 export function buildS3ConsoleFolderUrl(
   bucket: string,
   region: string | null | undefined,

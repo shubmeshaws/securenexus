@@ -150,7 +150,8 @@ function TeamsNotificationPreview({
   repositories,
   urls,
   status,
-  reportLinks,
+  appReportLinks,
+  s3ReportLinks,
   scheduleSummary,
   s3Bucket,
 }: {
@@ -159,7 +160,8 @@ function TeamsNotificationPreview({
   repositories: string[];
   urls: string[];
   status: 'Success' | 'Failed';
-  reportLinks: Array<{ title: string; htmlUrl: string }>;
+  appReportLinks: Array<{ title: string; htmlUrl: string }>;
+  s3ReportLinks: Array<{ title: string; htmlUrl: string }>;
   scheduleSummary: string;
   s3Bucket?: string;
 }) {
@@ -204,14 +206,31 @@ function TeamsNotificationPreview({
           <PreviewRow label="Status" value="Scan did not complete" accent="text-red-600" />
         )}
         <PreviewRow label="Scheduled" value={scheduleSummary} />
-        {reportLinks.length ? (
+        {appReportLinks.length ? (
+          <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-violet-100 px-4 py-2.5 text-xs dark:border-border">
+            <span className="font-medium text-violet-600 dark:text-violet-300">Report URLs (SecureNexus)</span>
+            <div className="space-y-1">
+              {appReportLinks.map((link) => (
+                <a
+                  key={link.htmlUrl}
+                  href={link.htmlUrl}
+                  className="block break-all text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
+                  onClick={(event) => event.preventDefault()}
+                >
+                  {link.title} · HTML
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {s3ReportLinks.length ? (
           <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-violet-100 px-4 py-2.5 text-xs dark:border-border">
             <span className="font-medium text-emerald-700 dark:text-emerald-300">Report URLs (S3)</span>
             <div className="space-y-1">
               {s3Bucket ? (
                 <p className="text-[10px] text-muted-foreground">Bucket: {s3Bucket}</p>
               ) : null}
-              {reportLinks.map((link) => (
+              {s3ReportLinks.map((link) => (
                 <a
                   key={link.htmlUrl}
                   href={link.htmlUrl}
@@ -401,7 +420,19 @@ export function SecurityAutomationPanel({
     [selectedResources]
   );
 
-  const previewReportLinks = useMemo(() => {
+  const previewAppReportLinks = useMemo(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://securenexus.example';
+    const reports =
+      draft.toolIds.length > 0
+        ? draft.toolIds.map((toolId) => SECURITY_TOOLS.find((t) => t.id === toolId)?.name ?? toolId)
+        : ['SAST Report'];
+    return reports.map((title, index) => ({
+      title,
+      htmlUrl: `${origin}/api/security/reports/sample-${index + 1}/download?format=html`,
+    }));
+  }, [draft.toolIds]);
+
+  const previewS3ReportLinks = useMemo(() => {
     const bucket = draft.s3Bucket.trim() || 'my-security-reports';
     const region = draft.s3Region.trim() || 'us-east-1';
     const folder = `security-reports/${draft.name || 'automation'}/2026-07-07-16-52`;
@@ -1153,7 +1184,8 @@ export function SecurityAutomationPanel({
               repositories={previewRepositories}
               urls={previewUrls}
               status={previewStatus}
-              reportLinks={draft.s3Enabled ? previewReportLinks : []}
+              appReportLinks={previewAppReportLinks}
+              s3ReportLinks={draft.s3Enabled ? previewS3ReportLinks : []}
               scheduleSummary={draftScheduleSummary}
               s3Bucket={draft.s3Enabled ? draft.s3Bucket || 'my-security-reports' : undefined}
             />
