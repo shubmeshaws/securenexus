@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import { listSecurityToolSettings, setSecurityToolEnabled, updateSecurityToolScanOptions } from '@/lib/security-service';
 import { z } from 'zod';
 import { parseGitleaksScanOptions } from '@/lib/security/gitleaks-options';
@@ -62,4 +63,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return methodNotAllowed(res, ['GET', 'PUT']);
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityTools')(handler);

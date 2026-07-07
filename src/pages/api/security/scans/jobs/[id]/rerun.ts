@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import {
   getActiveSecurityScanJob,
   rerunSecurityScanJob,
@@ -27,4 +28,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   }
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityScan')(handler);

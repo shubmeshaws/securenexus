@@ -15,6 +15,13 @@ const permissionsSchema = z.object({
   liveScheduleStop: z.boolean(),
   instantSchedule: z.boolean(),
   scheduleAccessMode: z.enum(['all', 'selected']),
+  securityEnabled: z.boolean(),
+  securityDashboard: z.boolean(),
+  securityResources: z.boolean(),
+  securityTools: z.boolean(),
+  securityScan: z.boolean(),
+  securityAutomation: z.boolean(),
+  securityReports: z.boolean(),
 });
 
 const updateUserSchema = z.object({

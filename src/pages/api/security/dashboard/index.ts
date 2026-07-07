@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import { getSecurityDashboardStats } from '@/lib/security-service';
 
 async function getHandler(_req: AuthenticatedRequest, res: NextApiResponse) {
@@ -17,4 +18,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return methodNotAllowed(res, ['GET']);
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityDashboard')(handler);

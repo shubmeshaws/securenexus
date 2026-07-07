@@ -59,6 +59,9 @@ export interface ToolRuntimeStatus {
   installCommandsByOs: Record<ServerOsType, string[]> | null;
 }
 
+const RUNTIME_STATUS_CACHE_TTL_MS = 60_000;
+const runtimeStatusCache = new Map<string, { at: number; value: ToolRuntimeStatus }>();
+
 const RUNTIME_SPECS: Record<RuntimeSecurityToolId, Omit<ToolRuntimeSpec, 'toolId'>> = {
   semgrep: {
     name: 'Semgrep',
@@ -302,6 +305,12 @@ export async function getToolRuntimeStatus(
   installedAt: Date | null | undefined,
   installedOs: string | null | undefined
 ): Promise<ToolRuntimeStatus> {
+  const cacheKey = `${toolId}:${installedAt?.toISOString() ?? ''}:${installedOs ?? ''}`;
+  const cached = runtimeStatusCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < RUNTIME_STATUS_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
   const runtimeRequired = isRuntimeSecurityTool(toolId);
   const spec = getToolRuntimeSpec(toolId);
   const runtimeAvailable = runtimeRequired ? await checkToolRuntimeAvailable(toolId) : true;
@@ -309,7 +318,7 @@ export async function getToolRuntimeStatus(
   const os =
     installedOs && isServerOsType(installedOs) ? installedOs : null;
 
-  return {
+  const value: ToolRuntimeStatus = {
     toolId,
     runtimeRequired,
     runtimeAvailable,
@@ -320,6 +329,19 @@ export async function getToolRuntimeStatus(
     installCommands: os ? getInstallCommandsForOs(toolId, os) : [],
     installCommandsByOs: runtimeRequired ? getInstallCommandsByOs(toolId) : null,
   };
+
+  runtimeStatusCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+export function invalidateToolRuntimeCache(toolId?: string): void {
+  if (!toolId) {
+    runtimeStatusCache.clear();
+    return;
+  }
+  for (const key of Array.from(runtimeStatusCache.keys())) {
+    if (key.startsWith(`${toolId}:`)) runtimeStatusCache.delete(key);
+  }
 }
 
 async function installWithBrew(packageName: string): Promise<void> {
@@ -518,6 +540,7 @@ export async function installToolRuntime(
   }
 
   const version = await readToolVersion(toolId);
+  invalidateToolRuntimeCache(toolId);
   return {
     version,
     message: `${getToolRuntimeSpec(toolId)?.name ?? toolId} installed successfully on ${osType}${version ? ` (${version})` : ''}.`,

@@ -5,6 +5,8 @@ import { buildSecurityReportHtml, countFindingsBySeverity, countScaDependenciesB
 import { buildMergedSecurityReportHtml } from './security-report-merge';
 import {
   aggregateDashboardFromReports,
+  isCombinedSecurityReportTitle,
+  selectLatestScanReports,
   type SecurityDashboardEnvironmentFinding,
   type SecurityDashboardRepoFinding,
   type SecurityDashboardUrlFinding,
@@ -40,6 +42,54 @@ import {
   removeSecurityResourceClone,
   type SecurityResourceCloneStatus,
 } from './security/security-repo-prep';
+
+const SECURITY_DASHBOARD_CACHE_TTL_MS = 60_000;
+let securityDashboardCache: { at: number; data: SecurityDashboardStats } | null = null;
+let toolSettingsSeeded = false;
+
+const SECURITY_REPORT_LIST_SELECT = {
+  id: true,
+  resourceId: true,
+  toolId: true,
+  title: true,
+  status: true,
+  summary: true,
+  highCount: true,
+  mediumCount: true,
+  lowCount: true,
+  createdAt: true,
+  resource: { select: { name: true } },
+  scanJob: { select: { toolIds: true } },
+} as const;
+
+const SECURITY_DASHBOARD_REPORT_SELECT = {
+  id: true,
+  resourceId: true,
+  toolId: true,
+  scanJobId: true,
+  title: true,
+  status: true,
+  summary: true,
+  highCount: true,
+  mediumCount: true,
+  lowCount: true,
+  createdAt: true,
+  resource: {
+    select: {
+      id: true,
+      type: true,
+      name: true,
+      repoUrl: true,
+      defaultBranch: true,
+      targetUrl: true,
+    },
+  },
+  scanJob: { select: { toolIds: true } },
+} as const;
+
+export function invalidateSecurityDashboardCache(): void {
+  securityDashboardCache = null;
+}
 
 export type { ScanProgressCallback, ScanProgressUpdate } from './security-scan-progress';
 export type { SecurityResourceCloneStatus } from './security/security-repo-prep';
@@ -396,9 +446,15 @@ export async function deleteSecurityReport(id: string): Promise<void> {
   const row = await prisma.securityReport.findUnique({ where: { id } });
   if (!row) throw new Error('Report not found');
   await prisma.securityReport.delete({ where: { id } });
+  invalidateSecurityDashboardCache();
 }
 
 async function ensureToolSettingsSeeded(): Promise<void> {
+  if (toolSettingsSeeded) {
+    const count = await prisma.securityToolSetting.count();
+    if (count >= SECURITY_TOOLS.length) return;
+  }
+
   for (const tool of SECURITY_TOOLS) {
     await prisma.securityToolSetting.upsert({
       where: { toolId: tool.id },
@@ -412,6 +468,7 @@ async function ensureToolSettingsSeeded(): Promise<void> {
       update: {},
     });
   }
+  toolSettingsSeeded = true;
 }
 
 async function scheduleReportPdfRuntimeIfNeeded(): Promise<void> {
@@ -660,10 +717,7 @@ export async function listSecurityReports(): Promise<SecurityReportView[]> {
   await assertSecurityModuleEnabled();
   const rows = await prisma.securityReport.findMany({
     orderBy: { createdAt: 'desc' },
-    include: {
-      resource: { select: { name: true } },
-      scanJob: { select: { toolIds: true } },
-    },
+    select: SECURITY_REPORT_LIST_SELECT,
     take: 200,
   });
   return rows.map((row) => toSecurityReportView(row));
@@ -806,6 +860,7 @@ async function saveSecurityScanReport(
     include: { resource: { select: { name: true } }, scanJob: { select: { toolIds: true } } },
   });
 
+  invalidateSecurityDashboardCache();
   return toSecurityReportView(row, result.toolName);
 }
 
@@ -855,6 +910,7 @@ async function saveMergedSecurityScanReport(
     include: { resource: { select: { name: true } }, scanJob: { select: { toolIds: true } } },
   });
 
+  invalidateSecurityDashboardCache();
   return toSecurityReportView(row);
 }
 
@@ -1031,34 +1087,39 @@ export async function runSecurityScans(
 export async function getSecurityDashboardStats(): Promise<SecurityDashboardStats> {
   await assertSecurityModuleEnabled();
 
-  const [resources, toolSettings, reports, combinedHtmlRows] = await Promise.all([
+  if (
+    securityDashboardCache &&
+    Date.now() - securityDashboardCache.at < SECURITY_DASHBOARD_CACHE_TTL_MS
+  ) {
+    return securityDashboardCache.data;
+  }
+
+  const [resources, enabledToolsCount, reports] = await Promise.all([
     prisma.securityResource.findMany(),
-    listSecurityToolSettings(),
+    prisma.securityToolSetting.count({ where: { enabled: true } }),
     prisma.securityReport.findMany({
       orderBy: { createdAt: 'desc' },
-      include: {
-        resource: {
-          select: {
-            id: true,
-            type: true,
-            name: true,
-            repoUrl: true,
-            defaultBranch: true,
-            targetUrl: true,
-          },
-        },
-        scanJob: { select: { toolIds: true } },
-      },
+      select: SECURITY_DASHBOARD_REPORT_SELECT,
       take: 500,
-    }),
-    prisma.securityReport.findMany({
-      where: { title: { contains: 'Combined security scan', mode: 'insensitive' } },
-      select: { id: true, htmlContent: true },
-      take: 100,
     }),
   ]);
 
-  const combinedHtmlById = new Map(combinedHtmlRows.map((row) => [row.id, row.htmlContent]));
+  const latestReports = selectLatestScanReports(reports);
+  const combinedIds = latestReports
+    .filter((row) => isCombinedSecurityReportTitle(row.title))
+    .map((row) => row.id);
+
+  const combinedHtmlById = new Map<string, string>();
+  if (combinedIds.length) {
+    const htmlRows = await prisma.securityReport.findMany({
+      where: { id: { in: combinedIds } },
+      select: { id: true, htmlContent: true },
+    });
+    for (const row of htmlRows) {
+      combinedHtmlById.set(row.id, row.htmlContent);
+    }
+  }
+
   const reportsWithHtml = reports.map((row) => ({
     ...row,
     htmlContent: combinedHtmlById.get(row.id),
@@ -1077,12 +1138,12 @@ export async function getSecurityDashboardStats(): Promise<SecurityDashboardStat
 
   const recentScans = reports.slice(0, 8).map((row) => toSecurityReportView(row));
 
-  return {
+  const data: SecurityDashboardStats = {
     totals: {
       scans: reports.length,
       resources: resources.length,
       enabledResources: resources.filter((row) => row.enabled).length,
-      enabledTools: toolSettings.filter((row) => row.enabled).length,
+      enabledTools: enabledToolsCount,
       high: aggregated.high,
       medium: aggregated.medium,
       low: aggregated.low,
@@ -1104,6 +1165,9 @@ export async function getSecurityDashboardStats(): Promise<SecurityDashboardStat
     },
     recentScans,
   };
+
+  securityDashboardCache = { at: Date.now(), data };
+  return data;
 }
 
 export async function getSecurityReportHtml(id: string): Promise<{ title: string; html: string }> {

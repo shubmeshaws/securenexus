@@ -1,6 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { z } from 'zod';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import { sendAutomationTeamsTestNotification } from '@/lib/security-automation-teams';
 
 const bodySchema = z.object({
@@ -30,4 +31,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return methodNotAllowed(res, ['POST']);
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityAutomation')(handler);

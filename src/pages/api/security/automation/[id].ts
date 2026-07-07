@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import {
   deleteSecurityAutomation,
   updateSecurityAutomation,
@@ -42,4 +43,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return methodNotAllowed(res, ['PUT', 'DELETE']);
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityAutomation')(handler);

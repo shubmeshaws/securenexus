@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { usePathname, useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api-client';
-import { canAccessRoute, isAdminRole, resolveUserPermissions, type UserPermissions } from '@/lib/permissions';
+import { canAccessRoute, hasSecurityAccess, isAdminRole, resolveUserPermissions, type UserPermissions } from '@/lib/permissions';
 import type { UserScheduleAccess } from '@/lib/api-client';
 import { AccessPendingBanner } from '@/components/auth/access-pending-banner';
 
@@ -95,16 +95,20 @@ export function AccessGate({ children }: { children: ReactNode }) {
 
     if (pathname.startsWith('/security')) {
       if (publicSettings === undefined) return;
-      if (!isAdminRole(session.role) || !publicSettings.securityModuleEnabled) {
+      if (!publicSettings.securityModuleEnabled) {
+        router.replace('/dashboard');
+        return;
+      }
+      if (!hasSecurityAccess(session.role, session.permissions)) {
         router.replace('/dashboard');
         return;
       }
     }
 
-    if (!canAccessRoute(session.role, pathname)) {
+    if (!canAccessRoute(session.role, pathname, session.permissions)) {
       router.replace('/dashboard');
     }
-  }, [session?.active, session?.role, pathname, router, publicSettings]);
+  }, [session?.active, session?.role, session?.permissions, pathname, router, publicSettings]);
 
   if (session && !session.active) {
     return <AccessPendingBanner />;

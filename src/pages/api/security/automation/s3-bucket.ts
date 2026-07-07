@@ -1,6 +1,7 @@
 import type { NextApiResponse } from 'next';
 import { z } from 'zod';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import { ensureSecurityS3Bucket } from '@/lib/security-s3-bucket';
 
 const bodySchema = z.object({
@@ -27,4 +28,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return methodNotAllowed(res, ['POST']);
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityAutomation')(handler);

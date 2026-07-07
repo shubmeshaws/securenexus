@@ -198,6 +198,13 @@ export interface AdminUser {
     liveScheduleStop: boolean;
     instantSchedule: boolean;
     scheduleAccessMode: 'all' | 'selected';
+    securityEnabled: boolean;
+    securityDashboard: boolean;
+    securityResources: boolean;
+    securityTools: boolean;
+    securityScan: boolean;
+    securityAutomation: boolean;
+    securityReports: boolean;
   };
 }
 

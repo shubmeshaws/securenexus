@@ -1,6 +1,6 @@
 export type AppRole = 'admin' | 'analyst' | 'viewer';
 
-export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin', '/security'] as const;
+export const ADMIN_ONLY_ROUTES = ['/clusters', '/activity', '/alerts', '/admin'] as const;
 
 export const VIEWER_ROUTES = ['/dashboard', '/schedules', '/active-schedules', '/contact'] as const;
 
@@ -14,12 +14,17 @@ import {
   isAdminRole,
   resolveUserPermissions,
   hasPermission,
+  hasSecurityAccess,
 } from '@/lib/user-permissions';
-export { isAdminRole, resolveUserPermissions, hasPermission };
+export { isAdminRole, resolveUserPermissions, hasPermission, hasSecurityAccess };
 export type { UserPermissions } from '@/lib/user-permissions';
 
-export function canAccessRoute(role: string, pathname: string): boolean {
+export function canAccessRoute(role: string, pathname: string, permissions?: unknown): boolean {
   if (isAdminRole(role)) return true;
+
+  if (pathname === '/security' || pathname.startsWith('/security/')) {
+    return hasSecurityAccess(role, permissions);
+  }
 
   if (role === 'viewer') {
     return VIEWER_ROUTES.some(
@@ -32,7 +37,7 @@ export function canAccessRoute(role: string, pathname: string): boolean {
   );
 }
 
-export function getVisibleNavHrefs(role: string, active: boolean): string[] {
+export function getVisibleNavHrefs(role: string, active: boolean, permissions?: unknown): string[] {
   const all = [
     '/dashboard',
     '/infrastructure',
@@ -47,5 +52,5 @@ export function getVisibleNavHrefs(role: string, active: boolean): string[] {
     '/admin',
   ];
   if (!active) return all;
-  return all.filter((href) => canAccessRoute(role, href));
+  return all.filter((href) => canAccessRoute(role, href, permissions));
 }

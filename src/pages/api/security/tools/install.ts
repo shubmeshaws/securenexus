@@ -1,5 +1,6 @@
 import type { NextApiResponse } from 'next';
-import { requireAdmin, methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { methodNotAllowed, type AuthenticatedRequest } from '@/lib/auth';
+import { requireSecurityTab } from '@/lib/security-permission-auth';
 import {
   getToolInstallJob,
   startToolInstallJob,
@@ -44,4 +45,4 @@ async function handler(req: AuthenticatedRequest, res: NextApiResponse) {
   return res.status(202).json(getToolInstallJob());
 }
 
-export default requireAdmin(handler);
+export default requireSecurityTab('securityTools')(handler);

@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { useSidebar } from './sidebar-context';
 import { useSession } from '@/components/auth/session-context';
-import { canAccessRoute, isAdminRole } from '@/lib/permissions';
+import { canAccessRoute, hasSecurityAccess } from '@/lib/permissions';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Icons.pages.dashboard },
@@ -40,13 +40,14 @@ export function AppSidebar() {
 
   const visibleNavItems = navItems.filter((item) => {
     if ('adminSecurity' in item && item.adminSecurity) {
-      if (!session || !isAdminRole(session.role)) return false;
+      if (!session) return false;
       if (publicSettingsLoading) return false;
       if (!publicSettings?.securityModuleEnabled) return false;
+      if (!hasSecurityAccess(session.role, session.permissions)) return false;
     }
     if (!session) return true;
     if (!session.active) return true;
-    return canAccessRoute(session.role, item.href);
+    return canAccessRoute(session.role, item.href, session.permissions);
   });
 
   const { data: liveData } = useQuery({

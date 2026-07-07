@@ -19,6 +19,8 @@ import {
   EMPTY_PERMISSIONS,
   FULL_PERMISSIONS,
   PERMISSION_LABELS,
+  SECURITY_PERMISSION_LABELS,
+  type SecurityTabPermission,
   type ScheduleAccessMode,
   type UserPermissions,
 } from '@/lib/user-permissions';
@@ -56,6 +58,15 @@ export function UserAccessDialog({
     enabled: open && !isAdmin,
   });
 
+  const { data: adminSettingsData } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () =>
+      apiFetch<{ settings: { securityModuleEnabled: boolean } }>('/api/admin/settings'),
+    enabled: open,
+    staleTime: 30_000,
+  });
+  const securityModuleEnabled = adminSettingsData?.settings.securityModuleEnabled ?? false;
+
   useEffect(() => {
     if (!user) return;
     setDraft(
@@ -68,6 +79,13 @@ export function UserAccessDialog({
             liveScheduleStop: user.permissions?.liveScheduleStop ?? false,
             instantSchedule: user.permissions?.instantSchedule ?? false,
             scheduleAccessMode: user.permissions?.scheduleAccessMode ?? 'all',
+            securityEnabled: user.permissions?.securityEnabled ?? false,
+            securityDashboard: user.permissions?.securityDashboard ?? false,
+            securityResources: user.permissions?.securityResources ?? false,
+            securityTools: user.permissions?.securityTools ?? false,
+            securityScan: user.permissions?.securityScan ?? false,
+            securityAutomation: user.permissions?.securityAutomation ?? false,
+            securityReports: user.permissions?.securityReports ?? false,
           }
     );
     setSelectedScheduleIds(user.scheduleIds ?? []);
@@ -137,7 +155,8 @@ export function UserAccessDialog({
             {user ? (
               <>
                 Choose what <span className="font-medium text-foreground">{user.displayName}</span>{' '}
-                can do on Schedules and which workloads they can access.
+                can do on Schedules
+                {securityModuleEnabled ? ', Security tabs,' : ''} and which workloads they can access.
               </>
             ) : (
               'Configure user permissions.'
@@ -189,6 +208,61 @@ export function UserAccessDialog({
               aria-label={PERMISSION_LABELS.instantSchedule}
             />
           </div>
+
+          {securityModuleEnabled ? (
+            <>
+              <p className="pt-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Security module
+              </p>
+              <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3">
+                <span className="text-sm text-foreground">{PERMISSION_LABELS.securityEnabled}</span>
+                <Switch
+                  checked={draft.securityEnabled}
+                  onCheckedChange={(checked) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      securityEnabled: checked,
+                      ...(checked
+                        ? {}
+                        : {
+                            securityDashboard: false,
+                            securityResources: false,
+                            securityTools: false,
+                            securityScan: false,
+                            securityAutomation: false,
+                            securityReports: false,
+                          }),
+                    }))
+                  }
+                  disabled={isAdmin || saving}
+                  aria-label={PERMISSION_LABELS.securityEnabled}
+                />
+              </div>
+              {(
+                [
+                  'securityDashboard',
+                  'securityResources',
+                  'securityTools',
+                  'securityScan',
+                  'securityAutomation',
+                  'securityReports',
+                ] as SecurityTabPermission[]
+              ).map((key) => (
+                <div
+                  key={key}
+                  className="flex items-center justify-between rounded-xl border border-border px-4 py-3"
+                >
+                  <span className="text-sm text-foreground">{SECURITY_PERMISSION_LABELS[key]}</span>
+                  <Switch
+                    checked={draft[key]}
+                    onCheckedChange={(checked) => toggle(key, checked)}
+                    disabled={isAdmin || saving || !draft.securityEnabled}
+                    aria-label={SECURITY_PERMISSION_LABELS[key]}
+                  />
+                </div>
+              ))}
+            </>
+          ) : null}
 
           <p className="pt-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             Schedule scope
@@ -302,14 +376,26 @@ export function UserAccessDialog({
             Cancel
           </Button>
           <Button
-            onClick={() =>
-              user &&
+            onClick={() => {
+              if (!user) return;
+              const permissions = securityModuleEnabled
+                ? draft
+                : {
+                    ...draft,
+                    securityEnabled: user.permissions?.securityEnabled ?? false,
+                    securityDashboard: user.permissions?.securityDashboard ?? false,
+                    securityResources: user.permissions?.securityResources ?? false,
+                    securityTools: user.permissions?.securityTools ?? false,
+                    securityScan: user.permissions?.securityScan ?? false,
+                    securityAutomation: user.permissions?.securityAutomation ?? false,
+                    securityReports: user.permissions?.securityReports ?? false,
+                  };
               onSave(user.id, {
-                permissions: draft,
+                permissions,
                 scheduleIds:
                   draft.scheduleAccessMode === 'selected' ? selectedScheduleIds : [],
-              })
-            }
+              });
+            }}
             disabled={
               !user ||
               isAdmin ||

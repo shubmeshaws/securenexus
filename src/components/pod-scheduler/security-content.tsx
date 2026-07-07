@@ -35,6 +35,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { useSession } from '@/components/auth/session-context';
+import { hasSecurityTabAccess } from '@/lib/user-permissions';
+import { SECURITY_SECTIONS, type SecuritySectionId } from '@/lib/security-access';
 import {
   SECURITY_TOOL_CATEGORIES,
   SECURITY_TOOLS,
@@ -63,7 +66,7 @@ import {
 import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
 import type { SecurityResourceSyncJobState } from '@/lib/security-service';
 
-type SecuritySection = 'resources' | 'tools' | 'scan' | 'dashboard' | 'reports' | 'automation';
+type SecuritySection = SecuritySectionId;
 
 const TOOL_INSTALL_POLL_MS = 2000;
 const TOOL_INSTALL_TIMEOUT_MS = 25 * 60 * 1000;
@@ -112,6 +115,7 @@ async function pollResourceSync(
 
 export function SecurityContent() {
   const queryClient = useQueryClient();
+  const session = useSession();
   const [section, setSection] = useState<SecuritySection>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<'repository' | 'target_url'>('repository');
@@ -142,19 +146,45 @@ export function SecurityContent() {
     setSelectedInstallOs(installDialog.setting.installedOs ?? null);
   }, [installDialog]);
 
+  const allowedSections = useMemo(
+    () =>
+      SECURITY_SECTIONS.filter((tab) =>
+        hasSecurityTabAccess(session?.role ?? 'viewer', session?.permissions, tab.permission)
+      ),
+    [session?.permissions, session?.role]
+  );
+
+  useEffect(() => {
+    if (!allowedSections.length) return;
+    if (!allowedSections.some((tab) => tab.id === section)) {
+      setSection(allowedSections[0].id);
+    }
+  }, [allowedSections, section]);
+
+  const needsResources =
+    section === 'resources' || section === 'scan' || section === 'automation';
+  const needsTools = section === 'tools' || section === 'scan' || section === 'automation';
+  const needsReports = section === 'reports';
+
   const { data: resourcesData, isLoading: resourcesLoading } = useQuery({
     queryKey: ['security-resources'],
     queryFn: () => apiFetch<{ resources: SecurityResourceView[] }>('/api/security/resources'),
+    enabled: needsResources,
+    staleTime: 120_000,
   });
 
   const { data: toolsData, isLoading: toolsLoading } = useQuery({
     queryKey: ['security-tools'],
     queryFn: () => apiFetch<{ tools: SecurityToolSettingView[] }>('/api/security/tools'),
+    enabled: needsTools,
+    staleTime: 120_000,
   });
 
   const { data: reportsData, isLoading: reportsLoading } = useQuery({
     queryKey: ['security-reports'],
     queryFn: () => apiFetch<{ reports: SecurityReportView[] }>('/api/security/reports'),
+    enabled: needsReports,
+    staleTime: 120_000,
   });
 
   const resources = resourcesData?.resources ?? [];
@@ -391,14 +421,19 @@ export function SecurityContent() {
     },
   });
 
-  const sections: { id: SecuritySection; label: string }[] = [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'resources', label: 'Add Resource' },
-    { id: 'tools', label: 'Tools' },
-    { id: 'scan', label: 'Scan' },
-    { id: 'automation', label: 'Automation' },
-    { id: 'reports', label: 'Reports' },
-  ];
+  const sections = allowedSections;
+
+  if (!sections.length) {
+    return (
+      <div className="rounded-xl border border-border bg-card/60 p-8 text-center">
+        <p className="text-sm font-medium text-foreground">Security access not configured</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Ask an admin to enable Security module access and tabs for your account in Admin Panel →
+          Users → Page access.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">

@@ -148,7 +148,40 @@ export async function listSecurityScanJobs(limit = 20): Promise<SecurityScanJobV
     orderBy: { createdAt: 'desc' },
     take: limit,
   });
-  return Promise.all(rows.map((row) => toScanJobView(row)));
+  if (!rows.length) return [];
+
+  const allResourceIds = Array.from(
+    new Set(rows.flatMap((row) => parseIdList(row.resourceIds)))
+  );
+  const resources = allResourceIds.length
+    ? await prisma.securityResource.findMany({
+        where: { id: { in: allResourceIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const resourceNameById = new Map(resources.map((row) => [row.id, row.name]));
+
+  return rows.map((row) => {
+    const resourceIds = parseIdList(row.resourceIds);
+    const toolIds = parseIdList(row.toolIds);
+    return {
+      id: row.id,
+      resourceIds,
+      toolIds,
+      resourceNames: resourceIds.map((id) => resourceNameById.get(id) ?? id),
+      toolNames: toolIds.map((id) => getSecurityToolById(id)?.name ?? id),
+      status: row.status as SecurityScanJobStatus,
+      progress: row.progress,
+      message: row.message,
+      error: row.error,
+      reportCount: row.reportCount,
+      pairTotal: row.pairTotal,
+      reportMode: (row.reportMode === 'merged' ? 'merged' : 'separate') as SecurityReportMode,
+      createdAt: row.createdAt.toISOString(),
+      startedAt: row.startedAt?.toISOString() ?? null,
+      completedAt: row.completedAt?.toISOString() ?? null,
+    };
+  });
 }
 
 export async function getActiveSecurityScanJob(): Promise<SecurityScanJobView | null> {

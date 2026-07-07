@@ -192,7 +192,9 @@ export function SecurityDashboardPanel() {
   const { data, isLoading } = useQuery({
     queryKey: ['security-dashboard'],
     queryFn: () => apiFetch<{ dashboard: SecurityDashboardStats }>('/api/security/dashboard'),
-    refetchInterval: 60_000,
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+    refetchIntervalInBackground: false,
   });
 
   const dashboard = data?.dashboard;

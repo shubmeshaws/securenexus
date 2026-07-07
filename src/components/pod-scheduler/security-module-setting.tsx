@@ -54,7 +54,7 @@ export function SecurityModuleSettingCard() {
             )}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Shows the Security section in the sidebar for admins — resources, scanner tools, and
+            Shows the Security section in the sidebar for authorized users — resources, scanner tools, and
             reports. Saves immediately when toggled.
           </p>
         </div>
