@@ -283,8 +283,12 @@ model SecurityAutomation {
   id                String    @id @default(cuid())
   name              String
   enabled           Boolean   @default(true)
+  scheduleFrequency String    @default("weekly") // daily | weekly | monthly | quarterly | semiannual | yearly | once
   scheduleTime      String
   scheduleDays      Json
+  scheduleDayOfMonth Int?
+  scheduleMonth     Int?
+  scheduleStartDate String?   // YYYY-MM-DD
   timezone          String    @default("UTC")
   resourceIds       Json
   scanCategories    Json
@@ -293,6 +297,7 @@ model SecurityAutomation {
   s3Bucket          String?
   s3Region          String?
   s3Prefix          String?
+  awsCredentialId   String?
   s3AccessKeyId     String?
   s3SecretAccessKey String?
   teamsEnabled      Boolean   @default(false)
@@ -305,6 +310,7 @@ model SecurityAutomation {
 
   @@index([enabled])
   @@index([nextRunAt])
+  @@index([awsCredentialId])
 }
 
 model EnvironmentMetrics {

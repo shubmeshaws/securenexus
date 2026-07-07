@@ -19,7 +19,23 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
+import { ScanMultiSelect } from '@/components/pod-scheduler/scan-multi-select';
+import { cn } from '@/lib/utils';
+import type { SecurityAutomationView } from '@/lib/security-automation-service';
+import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
+import {
+  AUTOMATION_SCHEDULE_FREQUENCIES,
+  formatAutomationScheduleSummary,
+  validateAutomationSchedule,
+  type AutomationScheduleFrequency,
+} from '@/lib/security-automation-schedule';
+import type { AwsCredentialView } from '@/lib/aws-credential-store';
+import {
+  SECURITY_TOOL_CATEGORIES,
+  SECURITY_TOOLS,
+  compatibleToolsForResources,
+  type SecurityToolCategory,
+} from '@/lib/security-tools';
 import {
   Select,
   SelectContent,
@@ -27,15 +43,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
-import type { SecurityAutomationView } from '@/lib/security-automation-service';
-import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
-import {
-  SECURITY_TOOL_CATEGORIES,
-  SECURITY_TOOLS,
-  compatibleToolsForResources,
-  type SecurityToolCategory,
-} from '@/lib/security-tools';
 
 const WEEKDAYS: { value: number; label: string; short: string }[] = [
   { value: 0, label: 'Sunday', short: 'Sun' },
@@ -49,11 +56,30 @@ const WEEKDAYS: { value: number; label: string; short: string }[] = [
 
 const TIMEZONE_OPTIONS = ['UTC', 'Asia/Kolkata', 'America/New_York', 'Europe/London', 'Asia/Singapore'];
 
+const MONTH_OPTIONS = [
+  { value: 1, label: 'January' },
+  { value: 2, label: 'February' },
+  { value: 3, label: 'March' },
+  { value: 4, label: 'April' },
+  { value: 5, label: 'May' },
+  { value: 6, label: 'June' },
+  { value: 7, label: 'July' },
+  { value: 8, label: 'August' },
+  { value: 9, label: 'September' },
+  { value: 10, label: 'October' },
+  { value: 11, label: 'November' },
+  { value: 12, label: 'December' },
+];
+
 type AutomationDraft = {
   name: string;
   enabled: boolean;
+  scheduleFrequency: AutomationScheduleFrequency;
   scheduleTime: string;
   scheduleDays: number[];
+  scheduleDayOfMonth: number | null;
+  scheduleMonth: number | null;
+  scheduleStartDate: string;
   timezone: string;
   resourceIds: string[];
   scanCategories: SecurityToolCategory[];
@@ -62,8 +88,7 @@ type AutomationDraft = {
   s3Bucket: string;
   s3Region: string;
   s3Prefix: string;
-  s3AccessKeyId: string;
-  s3SecretAccessKey: string;
+  awsCredentialId: string;
   teamsEnabled: boolean;
   teamsWebhookUrl: string;
 };
@@ -72,8 +97,12 @@ function emptyDraft(): AutomationDraft {
   return {
     name: '',
     enabled: true,
+    scheduleFrequency: 'weekly',
     scheduleTime: '02:00',
     scheduleDays: [1, 2, 3, 4, 5],
+    scheduleDayOfMonth: 1,
+    scheduleMonth: 1,
+    scheduleStartDate: '',
     timezone: 'UTC',
     resourceIds: [],
     scanCategories: [],
@@ -82,8 +111,7 @@ function emptyDraft(): AutomationDraft {
     s3Bucket: '',
     s3Region: '',
     s3Prefix: 'security-reports/',
-    s3AccessKeyId: '',
-    s3SecretAccessKey: '',
+    awsCredentialId: '',
     teamsEnabled: false,
     teamsWebhookUrl: '',
   };
@@ -93,8 +121,12 @@ function draftFromAutomation(row: SecurityAutomationView): AutomationDraft {
   return {
     name: row.name,
     enabled: row.enabled,
+    scheduleFrequency: row.scheduleFrequency,
     scheduleTime: row.scheduleTime,
     scheduleDays: row.scheduleDays,
+    scheduleDayOfMonth: row.scheduleDayOfMonth,
+    scheduleMonth: row.scheduleMonth,
+    scheduleStartDate: row.scheduleStartDate ?? '',
     timezone: row.timezone,
     resourceIds: row.resourceIds,
     scanCategories: row.scanCategories,
@@ -103,8 +135,7 @@ function draftFromAutomation(row: SecurityAutomationView): AutomationDraft {
     s3Bucket: row.s3Bucket ?? '',
     s3Region: row.s3Region ?? '',
     s3Prefix: row.s3Prefix ?? '',
-    s3AccessKeyId: row.s3AccessKeyId ?? '',
-    s3SecretAccessKey: '',
+    awsCredentialId: row.awsCredentialId ?? '',
     teamsEnabled: row.teamsEnabled,
     teamsWebhookUrl: row.teamsWebhookUrl ?? '',
   };
@@ -116,12 +147,14 @@ function TeamsNotificationPreview({
   repoUrls,
   status,
   reportUrls,
+  scheduleSummary,
 }: {
   title: string;
   scanTypes: string[];
   repoUrls: string[];
   status: 'Success' | 'Failed';
   reportUrls: string[];
+  scheduleSummary: string;
 }) {
   return (
     <div className="overflow-hidden rounded-xl border border-[#e1dfdd] bg-[#f3f2f1] shadow-sm dark:border-border dark:bg-card">
@@ -147,7 +180,7 @@ function TeamsNotificationPreview({
           },
           {
             label: 'Scheduled',
-            value: new Date().toLocaleString(),
+            value: scheduleSummary,
           },
         ].map((row) => (
           <div
@@ -209,11 +242,27 @@ export function SecurityAutomationPanel({
     queryFn: () => apiFetch<{ automations: SecurityAutomationView[] }>('/api/security/automation'),
   });
 
+  const { data: awsCredsData } = useQuery({
+    queryKey: ['aws-credentials-picker'],
+    queryFn: () => apiFetch<{ credentials: AwsCredentialView[] }>('/api/aws-credentials'),
+  });
+
   const automations = data?.automations ?? [];
+  const awsCredentials = awsCredsData?.credentials ?? [];
 
   const enabledResources = useMemo(
     () => resources.filter((row) => row.enabled),
     [resources]
+  );
+
+  const resourceOptions = useMemo(
+    () => enabledResources.map((row) => row.id),
+    [enabledResources]
+  );
+
+  const resourceById = useMemo(
+    () => new Map(enabledResources.map((row) => [row.id, row])),
+    [enabledResources]
   );
 
   const enabledToolIds = useMemo(
@@ -262,15 +311,55 @@ export function SecurityAutomationPanel({
     );
   }, [draft.toolIds]);
 
+  const draftScheduleSummary = useMemo(
+    () =>
+      formatAutomationScheduleSummary({
+        scheduleFrequency: draft.scheduleFrequency,
+        scheduleTime: draft.scheduleTime,
+        scheduleDays: draft.scheduleDays,
+        scheduleDayOfMonth: draft.scheduleDayOfMonth,
+        scheduleMonth: draft.scheduleMonth,
+        scheduleStartDate: draft.scheduleStartDate || null,
+        timezone: draft.timezone,
+      }),
+    [draft]
+  );
+
+  const scheduleError = useMemo(
+    () =>
+      validateAutomationSchedule({
+        scheduleFrequency: draft.scheduleFrequency,
+        scheduleTime: draft.scheduleTime,
+        scheduleDays: draft.scheduleDays,
+        scheduleDayOfMonth: draft.scheduleDayOfMonth,
+        scheduleMonth: draft.scheduleMonth,
+        scheduleStartDate: draft.scheduleStartDate || null,
+        timezone: draft.timezone,
+      }),
+    [draft]
+  );
+
   const saveAutomation = useMutation({
     mutationFn: async () => {
       const body = {
-        ...draft,
+        name: draft.name.trim(),
+        enabled: draft.enabled,
+        scheduleFrequency: draft.scheduleFrequency,
+        scheduleTime: draft.scheduleTime,
+        scheduleDays: draft.scheduleDays,
+        scheduleDayOfMonth: draft.scheduleDayOfMonth,
+        scheduleMonth: draft.scheduleMonth,
+        scheduleStartDate: draft.scheduleStartDate || null,
+        timezone: draft.timezone,
+        resourceIds: draft.resourceIds,
+        scanCategories: draft.scanCategories,
+        toolIds: draft.toolIds,
+        s3Enabled: draft.s3Enabled,
         s3Bucket: draft.s3Bucket || undefined,
         s3Region: draft.s3Region || undefined,
         s3Prefix: draft.s3Prefix || undefined,
-        s3AccessKeyId: draft.s3AccessKeyId || undefined,
-        s3SecretAccessKey: draft.s3SecretAccessKey || undefined,
+        awsCredentialId: draft.awsCredentialId || null,
+        teamsEnabled: draft.teamsEnabled,
         teamsWebhookUrl: draft.teamsWebhookUrl || undefined,
       };
 
@@ -343,11 +432,8 @@ export function SecurityAutomationPanel({
     });
   }
 
-  function toggleResource(id: string) {
+  function handleResourceChange(resourceIds: string[]) {
     setDraft((prev) => {
-      const resourceIds = prev.resourceIds.includes(id)
-        ? prev.resourceIds.filter((rid) => rid !== id)
-        : [...prev.resourceIds, id];
       const selected = enabledResources.filter((row) => resourceIds.includes(row.id));
       const allowedTools = new Set(
         compatibleToolsForResources(selected, enabledToolIds, prev.scanCategories).map(
@@ -373,10 +459,23 @@ export function SecurityAutomationPanel({
 
   const canSave =
     draft.name.trim() &&
-    draft.scheduleDays.length > 0 &&
+    !scheduleError &&
     draft.resourceIds.length > 0 &&
     draft.scanCategories.length > 0 &&
-    draft.toolIds.length > 0;
+    draft.toolIds.length > 0 &&
+    (!draft.s3Enabled || (draft.s3Bucket.trim() && draft.awsCredentialId));
+
+  const showWeekdays = draft.scheduleFrequency === 'weekly';
+  const showDayOfMonth =
+    draft.scheduleFrequency === 'monthly' ||
+    draft.scheduleFrequency === 'quarterly' ||
+    draft.scheduleFrequency === 'semiannual' ||
+    draft.scheduleFrequency === 'yearly';
+  const showMonth = draft.scheduleFrequency === 'yearly';
+  const showStartDate =
+    draft.scheduleFrequency === 'once' ||
+    draft.scheduleFrequency === 'quarterly' ||
+    draft.scheduleFrequency === 'semiannual';
 
   if (loading || isLoading) {
     return (
@@ -428,6 +527,93 @@ export function SecurityAutomationPanel({
                   placeholder="Nightly SAST + SCA"
                 />
               </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label className="text-[11px]">Schedule frequency</Label>
+                <Select
+                  value={draft.scheduleFrequency}
+                  onValueChange={(scheduleFrequency) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      scheduleFrequency: scheduleFrequency as AutomationScheduleFrequency,
+                    }))
+                  }
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AUTOMATION_SCHEDULE_FREQUENCIES.map((freq) => (
+                      <SelectItem key={freq.id} value={freq.id}>
+                        {freq.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground">
+                  {
+                    AUTOMATION_SCHEDULE_FREQUENCIES.find((row) => row.id === draft.scheduleFrequency)
+                      ?.description
+                  }
+                </p>
+              </div>
+              {showStartDate ? (
+                <div className="space-y-1.5">
+                  <Label className="text-[11px]">
+                    {draft.scheduleFrequency === 'once' ? 'Run date' : 'Anchor start date'}
+                  </Label>
+                  <Input
+                    type="date"
+                    value={draft.scheduleStartDate}
+                    onChange={(e) =>
+                      setDraft((prev) => ({ ...prev, scheduleStartDate: e.target.value }))
+                    }
+                  />
+                </div>
+              ) : null}
+              {showMonth ? (
+                <div className="space-y-1.5">
+                  <Label className="text-[11px]">Month</Label>
+                  <Select
+                    value={String(draft.scheduleMonth ?? 1)}
+                    onValueChange={(value) =>
+                      setDraft((prev) => ({ ...prev, scheduleMonth: Number(value) }))
+                    }
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MONTH_OPTIONS.map((month) => (
+                        <SelectItem key={month.value} value={String(month.value)}>
+                          {month.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              {showDayOfMonth ? (
+                <div className="space-y-1.5">
+                  <Label className="text-[11px]">Day of month</Label>
+                  <Select
+                    value={String(draft.scheduleDayOfMonth ?? 1)}
+                    onValueChange={(value) =>
+                      setDraft((prev) => ({ ...prev, scheduleDayOfMonth: Number(value) }))
+                    }
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                        <SelectItem key={day} value={String(day)}>
+                          {day}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
               <div className="space-y-1.5">
                 <Label className="text-[11px]">Schedule time</Label>
                 <Input
@@ -456,54 +642,50 @@ export function SecurityAutomationPanel({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-[11px]">Run on days</Label>
-              <div className="flex flex-wrap gap-2">
-                {WEEKDAYS.map((day) => (
-                  <button
-                    key={day.value}
-                    type="button"
-                    onClick={() => toggleDay(day.value)}
-                    className={cn(
-                      'rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors',
-                      draft.scheduleDays.includes(day.value)
-                        ? 'border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300'
-                        : 'border-border text-muted-foreground hover:bg-muted/50'
-                    )}
-                  >
-                    {day.short}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-[11px]">Repositories to scan</Label>
-              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
-                {enabledResources.length === 0 ? (
-                  <p className="px-2 py-3 text-xs text-muted-foreground">No enabled resources.</p>
-                ) : (
-                  enabledResources.map((row) => (
-                    <label
-                      key={row.id}
-                      className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50"
+            {showWeekdays ? (
+              <div className="space-y-2">
+                <Label className="text-[11px]">Run on days</Label>
+                <div className="flex flex-wrap gap-2">
+                  {WEEKDAYS.map((day) => (
+                    <button
+                      key={day.value}
+                      type="button"
+                      onClick={() => toggleDay(day.value)}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors',
+                        draft.scheduleDays.includes(day.value)
+                          ? 'border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                          : 'border-border text-muted-foreground hover:bg-muted/50'
+                      )}
                     >
-                      <Checkbox
-                        className="mt-0.5"
-                        checked={draft.resourceIds.includes(row.id)}
-                        onCheckedChange={() => toggleResource(row.id)}
-                      />
-                      <span>
-                        <span className="font-medium">{row.name}</span>
-                        <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
-                          {row.repoUrl ?? row.targetUrl ?? '—'}
-                        </span>
-                      </span>
-                    </label>
-                  ))
-                )}
+                      {day.short}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : null}
+
+            <p className="rounded-lg border border-dashed border-border/80 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+              {draftScheduleSummary}
+            </p>
+            {scheduleError ? (
+              <p className="text-[11px] text-red-600">{scheduleError}</p>
+            ) : null}
+
+            <ScanMultiSelect
+              label="Repositories to scan"
+              description="Select one or more repositories or targets."
+              options={resourceOptions}
+              selected={draft.resourceIds}
+              onChange={handleResourceChange}
+              getLabel={(id) => resourceById.get(id)?.name ?? id}
+              getMeta={(id) => {
+                const row = resourceById.get(id);
+                return row?.repoUrl ?? row?.targetUrl ?? undefined;
+              }}
+              placeholder="Select repositories…"
+              disabled={enabledResources.length === 0}
+            />
 
             <div className="space-y-2">
               <Label className="text-[11px]">Scan types</Label>
@@ -566,6 +748,39 @@ export function SecurityAutomationPanel({
               </div>
               {draft.s3Enabled ? (
                 <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label className="text-[10px]">AWS credentials</Label>
+                    {awsCredentials.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground">
+                        No AWS credentials found. Add them in Admin Panel → Settings → AWS
+                        Credentials.
+                      </p>
+                    ) : (
+                      <Select
+                        value={draft.awsCredentialId || undefined}
+                        onValueChange={(awsCredentialId) => {
+                          const cred = awsCredentials.find((row) => row.id === awsCredentialId);
+                          setDraft((prev) => ({
+                            ...prev,
+                            awsCredentialId,
+                            s3Region: prev.s3Region || cred?.defaultRegion || '',
+                          }));
+                        }}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue placeholder="Select AWS credentials…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {awsCredentials.map((cred) => (
+                            <SelectItem key={cred.id} value={cred.id}>
+                              {cred.name}
+                              {cred.awsAccountId ? ` · ${cred.awsAccountId}` : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
                   <div className="space-y-1.5">
                     <Label className="text-[10px]">Bucket</Label>
                     <Input
@@ -588,26 +803,6 @@ export function SecurityAutomationPanel({
                       value={draft.s3Prefix}
                       onChange={(e) => setDraft((prev) => ({ ...prev, s3Prefix: e.target.value }))}
                       placeholder="security-reports/"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-[10px]">Access key ID</Label>
-                    <Input
-                      value={draft.s3AccessKeyId}
-                      onChange={(e) =>
-                        setDraft((prev) => ({ ...prev, s3AccessKeyId: e.target.value }))
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-[10px]">Secret access key</Label>
-                    <Input
-                      type="password"
-                      value={draft.s3SecretAccessKey}
-                      onChange={(e) =>
-                        setDraft((prev) => ({ ...prev, s3SecretAccessKey: e.target.value }))
-                      }
-                      placeholder={editingId ? 'Leave blank to keep existing' : ''}
                     />
                   </div>
                 </div>
@@ -697,6 +892,7 @@ export function SecurityAutomationPanel({
               repoUrls={previewRepoUrls}
               status={previewStatus}
               reportUrls={previewReportUrls}
+              scheduleSummary={draftScheduleSummary}
             />
           </div>
         </div>
@@ -716,12 +912,9 @@ export function SecurityAutomationPanel({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-foreground">{row.name}</p>
                   <p className="text-[11px] text-muted-foreground">
-                    {row.scheduleTime} {row.timezone} ·{' '}
-                    {row.scheduleDays
-                      .map((d) => WEEKDAYS.find((day) => day.value === d)?.short ?? d)
-                      .join(', ')}{' '}
-                    · {row.resourceIds.length} repo{row.resourceIds.length === 1 ? '' : 's'} ·{' '}
-                    {row.toolIds.length} tool{row.toolIds.length === 1 ? '' : 's'}
+                    {row.scheduleSummary} · {row.resourceIds.length} repo
+                    {row.resourceIds.length === 1 ? '' : 's'} · {row.toolIds.length} tool
+                    {row.toolIds.length === 1 ? '' : 's'}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

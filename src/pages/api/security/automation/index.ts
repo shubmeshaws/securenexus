@@ -4,26 +4,8 @@ import {
   createSecurityAutomation,
   listSecurityAutomations,
 } from '@/lib/security-automation-service';
+import { automationBodySchema } from '@/lib/security-automation-api-schema';
 import { z } from 'zod';
-
-const automationBodySchema = z.object({
-  name: z.string().min(1),
-  enabled: z.boolean().optional(),
-  scheduleTime: z.string().min(1),
-  scheduleDays: z.array(z.number().int().min(0).max(6)),
-  timezone: z.string().optional(),
-  resourceIds: z.array(z.string()),
-  scanCategories: z.array(z.enum(['sast', 'sca', 'dast', 'iac', 'secrets'])),
-  toolIds: z.array(z.string()),
-  s3Enabled: z.boolean().optional(),
-  s3Bucket: z.string().optional(),
-  s3Region: z.string().optional(),
-  s3Prefix: z.string().optional(),
-  s3AccessKeyId: z.string().optional(),
-  s3SecretAccessKey: z.string().optional(),
-  teamsEnabled: z.boolean().optional(),
-  teamsWebhookUrl: z.string().optional(),
-});
 
 async function getHandler(_req: AuthenticatedRequest, res: NextApiResponse) {
   try {
@@ -42,6 +24,11 @@ async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
   try {
     const automation = await createSecurityAutomation({
       ...parsed.data,
+      scheduleFrequency: parsed.data.scheduleFrequency ?? 'weekly',
+      scheduleDayOfMonth: parsed.data.scheduleDayOfMonth ?? null,
+      scheduleMonth: parsed.data.scheduleMonth ?? null,
+      scheduleStartDate: parsed.data.scheduleStartDate ?? null,
+      awsCredentialId: parsed.data.awsCredentialId ?? null,
       createdBy: req.user?.email,
     });
     return res.status(201).json({ automation });
