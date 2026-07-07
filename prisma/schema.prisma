@@ -302,6 +302,9 @@ model SecurityAutomation {
   s3SecretAccessKey String?
   teamsEnabled      Boolean   @default(false)
   teamsWebhookUrl   String?
+  lastRunStatus     String?   // running | completed | failed
+  lastRunError      String?
+  activeScanJobId   String?
   lastRunAt         DateTime?
   nextRunAt         DateTime?
   createdBy         String?

@@ -8,18 +8,16 @@ import {
   Loader2,
   MessageSquare,
   PlusCircle,
-  Trash2,
   Webhook,
 } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
 import { GlassPanel, PanelHeader } from '@/components/pod-scheduler/ui-primitives';
-import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import { ScanMultiSelect } from '@/components/pod-scheduler/scan-multi-select';
+import { SecurityAutomationSavedList } from '@/components/pod-scheduler/security-automation-saved-list';
 import { cn } from '@/lib/utils';
 import type { SecurityAutomationView } from '@/lib/security-automation-service';
 import type { SecurityResourceView, SecurityToolSettingView } from '@/lib/security-service';
@@ -244,6 +242,10 @@ export function SecurityAutomationPanel({
   const { data, isLoading } = useQuery({
     queryKey: ['security-automation'],
     queryFn: () => apiFetch<{ automations: SecurityAutomationView[] }>('/api/security/automation'),
+    refetchInterval: (query) => {
+      const rows = query.state.data?.automations ?? [];
+      return rows.some((row) => row.runStatus === 'running') ? 3000 : false;
+    },
   });
 
   const { data: awsCredsData } = useQuery({
@@ -973,65 +975,19 @@ export function SecurityAutomationPanel({
 
       <GlassPanel className="p-5">
         <h3 className="mb-3 text-sm font-semibold text-foreground">Saved automations</h3>
-        {automations.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No automations configured yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {automations.map((row) => (
-              <div
-                key={row.id}
-                className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground">{row.name}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {row.scheduleSummary} · {row.resourceIds.length} repo
-                    {row.resourceIds.length === 1 ? '' : 's'} · {row.toolIds.length} tool
-                    {row.toolIds.length === 1 ? '' : 's'}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {row.s3Enabled ? (
-                    <Badge variant="outline" className="text-[9px]">
-                      S3
-                    </Badge>
-                  ) : null}
-                  {row.teamsEnabled ? (
-                    <Badge variant="outline" className="text-[9px]">
-                      Teams
-                    </Badge>
-                  ) : null}
-                  <Switch
-                    checked={row.enabled}
-                    disabled={toggleAutomation.isPending}
-                    onCheckedChange={(enabled) =>
-                      toggleAutomation.mutate({ id: row.id, enabled })
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-[11px]"
-                    onClick={() => {
-                      setEditingId(row.id);
-                      setS3BucketStatus(null);
-                      setDraft(draftFromAutomation(row));
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <SecurityIconButton
-                    icon={Trash2}
-                    label="Delete automation"
-                    tone="danger"
-                    loading={deleteAutomation.isPending}
-                    onClick={() => deleteAutomation.mutate(row.id)}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        <SecurityAutomationSavedList
+          automations={automations}
+          resources={resources}
+          togglePending={toggleAutomation.isPending}
+          deletePending={deleteAutomation.isPending}
+          onToggle={(id, enabled) => toggleAutomation.mutate({ id, enabled })}
+          onEdit={(row) => {
+            setEditingId(row.id);
+            setS3BucketStatus(null);
+            setDraft(draftFromAutomation(row));
+          }}
+          onDelete={(id) => deleteAutomation.mutate(id)}
+        />
       </GlassPanel>
     </div>
   );

@@ -7,10 +7,12 @@ export async function register() {
     const { initResourceAuditJob } = await import('./lib/jobs/resourceAuditJob');
     const { initGitSyncJob } = await import('./lib/jobs/gitSyncJob');
     const { initNodeCountJob } = await import('./lib/jobs/nodeCountJob');
+    const { initSecurityAutomationRunner } = await import('./lib/security-automation-runner');
     initScheduler();
     initResourceAuditJob();
     initGitSyncJob();
     initNodeCountJob();
+    initSecurityAutomationRunner();
     console.log('[SecureNexus] Background jobs registered — logs appear here and in `pm2 logs securenexus`');
   }
 }

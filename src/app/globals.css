@@ -652,4 +652,19 @@
     33% { transform: translate(20px, -15px) scale(1.05); }
     66% { transform: translate(-15px, 10px) scale(0.95); }
   }
+
+  @keyframes automationRunBlink {
+    0%, 100% {
+      background-color: rgb(234 179 8 / 0.18);
+      border-color: rgb(234 179 8 / 0.45);
+    }
+    50% {
+      background-color: rgb(250 204 21 / 0.38);
+      border-color: rgb(234 179 8 / 0.75);
+    }
+  }
+
+  .automation-running-blink {
+    animation: automationRunBlink 1.2s ease-in-out infinite;
+  }
 }

@@ -2,11 +2,20 @@ import prisma from './prisma';
 import { assertSecurityModuleEnabled } from './security-service';
 import type { SecurityToolCategory } from './security-tools';
 import {
+  automationScheduleRowFromRecord,
+  computeAutomationNextRun,
   formatAutomationScheduleSummary,
   normalizeScheduleFrequency,
   validateAutomationSchedule,
   type AutomationScheduleFrequency,
 } from './security-automation-schedule';
+
+export type SecurityAutomationRunStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'disabled';
 
 export interface SecurityAutomationView {
   id: string;
@@ -31,6 +40,10 @@ export interface SecurityAutomationView {
   s3SecretConfigured: boolean;
   teamsEnabled: boolean;
   teamsWebhookUrl: string | null;
+  runStatus: SecurityAutomationRunStatus;
+  lastRunStatus: string | null;
+  lastRunError: string | null;
+  activeScanJobId: string | null;
   lastRunAt: string | null;
   nextRunAt: string | null;
   createdBy: string | null;
@@ -46,6 +59,18 @@ function parseStringArray(value: unknown): string[] {
 function parseNumberArray(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is number => typeof item === 'number');
+}
+
+function resolveRunStatus(row: {
+  enabled: boolean;
+  lastRunStatus?: string | null;
+  activeScanJobId?: string | null;
+}): SecurityAutomationRunStatus {
+  if (row.lastRunStatus === 'running' || row.activeScanJobId) return 'running';
+  if (!row.enabled) return 'disabled';
+  if (row.lastRunStatus === 'completed') return 'completed';
+  if (row.lastRunStatus === 'failed') return 'failed';
+  return 'idle';
 }
 
 function toAutomationView(row: {
@@ -71,6 +96,9 @@ function toAutomationView(row: {
   s3SecretAccessKey: string | null;
   teamsEnabled: boolean;
   teamsWebhookUrl: string | null;
+  lastRunStatus?: string | null;
+  lastRunError?: string | null;
+  activeScanJobId?: string | null;
   lastRunAt: Date | null;
   nextRunAt: Date | null;
   createdBy: string | null;
@@ -114,6 +142,10 @@ function toAutomationView(row: {
     s3SecretConfigured: Boolean(row.awsCredentialId || row.s3SecretAccessKey),
     teamsEnabled: row.teamsEnabled,
     teamsWebhookUrl: row.teamsWebhookUrl,
+    runStatus: resolveRunStatus(row),
+    lastRunStatus: row.lastRunStatus ?? null,
+    lastRunError: row.lastRunError ?? null,
+    activeScanJobId: row.activeScanJobId ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     createdBy: row.createdBy,
@@ -170,6 +202,21 @@ function assertValidAutomationInput(input: AutomationWriteInput): void {
   }
 }
 
+function nextRunForInput(input: AutomationWriteInput): Date | null {
+  return computeAutomationNextRun(
+    automationScheduleRowFromRecord({
+      enabled: input.enabled ?? true,
+      scheduleFrequency: input.scheduleFrequency,
+      scheduleTime: input.scheduleTime,
+      scheduleDays: input.scheduleDays,
+      scheduleDayOfMonth: input.scheduleDayOfMonth ?? null,
+      scheduleMonth: input.scheduleMonth ?? null,
+      scheduleStartDate: input.scheduleStartDate ?? null,
+      timezone: input.timezone?.trim() || 'UTC',
+    })
+  );
+}
+
 function buildAutomationData(input: AutomationWriteInput) {
   return {
     name: input.name.trim(),
@@ -212,7 +259,10 @@ export async function createSecurityAutomation(
   assertValidAutomationInput(input);
 
   const row = await prisma.securityAutomation.create({
-    data: buildAutomationData(input),
+    data: {
+      ...buildAutomationData(input),
+      nextRunAt: nextRunForInput(input),
+    },
   });
 
   return toAutomationView(row);
@@ -289,6 +339,7 @@ export async function updateSecurityAutomation(
       s3SecretAccessKey: null,
       teamsEnabled: merged.teamsEnabled ?? false,
       teamsWebhookUrl: merged.teamsWebhookUrl?.trim() || null,
+      nextRunAt: nextRunForInput(merged),
     },
   });
 
