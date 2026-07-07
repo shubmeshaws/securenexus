@@ -81,33 +81,105 @@ function sanitizePipAuditError(message: string): string {
     .slice(0, 800);
 }
 
-async function resolvePipAuditArgs(projectRoot: string): Promise<string[]> {
-  const args = ['--format=json', '--progress-spinner=off', '--desc=on'];
-  if (await pathExists(path.join(projectRoot, 'requirements.txt'))) {
-    return [...args, '-r', 'requirements.txt'];
-  }
-  if (await pathExists(path.join(projectRoot, 'requirements.in'))) {
-    return [...args, '-r', 'requirements.in'];
-  }
-  return [...args, projectRoot];
+/**
+ * Cap native build parallelism. If pip-audit ever has to build a source
+ * distribution (e.g. pandas/numpy C extensions when no matching wheel exists),
+ * these limit the compiler/ninja/cmake job count to a single core so the scan
+ * cannot saturate every CPU or OOM-crash the meson build.
+ */
+function buildLimitedEnv(): NodeJS.ProcessEnv {
+  return {
+    ...toolPathEnv(),
+    MAKEFLAGS: '-j1',
+    MAX_JOBS: '1',
+    CMAKE_BUILD_PARALLEL_LEVEL: '1',
+    NPY_NUM_BUILD_JOBS: '1',
+    NINJAFLAGS: '-j1',
+    OMP_NUM_THREADS: '1',
+    // Prefer already-built wheels; avoid compiling from source where possible.
+    PIP_ONLY_BINARY: ':all:',
+    PIP_PREFER_BINARY: '1',
+  };
 }
 
-async function runPipAuditJson(projectRoot: string): Promise<string> {
-  const args = await resolvePipAuditArgs(projectRoot);
-  try {
-    const { stdout } = await execFileAsync('pip-audit', args, {
-      cwd: projectRoot,
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: PIP_AUDIT_TIMEOUT_MS,
-      env: toolPathEnv(),
-    });
-    return stdout;
-  } catch (err: unknown) {
-    const execErr = err as { stdout?: string; code?: number | string; stderr?: string };
-    if (typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
-      return execErr.stdout;
+async function collectRequirementFiles(projectRoot: string): Promise<string[]> {
+  const candidates = ['requirements.txt', 'requirements.in', 'requirements-dev.txt'];
+  const found: string[] = [];
+  for (const file of candidates) {
+    if (await pathExists(path.join(projectRoot, file))) {
+      found.push(file);
     }
-    const detail = [execErr.stderr, execErr.stdout].filter(Boolean).join('\n').trim();
+  }
+  return found;
+}
+
+const BASE_PIP_AUDIT_ARGS = ['--format=json', '--progress-spinner=off', '--desc=on'];
+
+async function runPipAudit(projectRoot: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('pip-audit', [...BASE_PIP_AUDIT_ARGS, ...args], {
+    cwd: projectRoot,
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: PIP_AUDIT_TIMEOUT_MS,
+    env: buildLimitedEnv(),
+  });
+  return stdout;
+}
+
+function extractStdout(err: unknown): string | null {
+  const execErr = err as { stdout?: string };
+  return typeof execErr.stdout === 'string' && execErr.stdout.trim() ? execErr.stdout : null;
+}
+
+/**
+ * Audit strategy, cheapest first:
+ * 1. `-r <file> --no-deps` — audits ONLY the versions written in the
+ *    requirements file. No dependency resolution, no downloads, no builds.
+ *    This is the low-CPU path and works whenever versions are pinned.
+ * 2. `-r <file>` — full resolution (may download wheels) with build parallelism
+ *    capped, used only when the requirements aren't pinned.
+ * 3. project dir — last resort for pyproject.toml/Pipfile/setup.py, also capped.
+ */
+async function runPipAuditJson(projectRoot: string): Promise<string> {
+  const requirementFiles = await collectRequirementFiles(projectRoot);
+
+  if (requirementFiles.length) {
+    const fileArgs = requirementFiles.flatMap((file) => ['-r', file]);
+
+    try {
+      return await runPipAudit(projectRoot, [...fileArgs, '--no-deps']);
+    } catch (noDepsErr) {
+      const salvaged = extractStdout(noDepsErr);
+      if (salvaged) return salvaged;
+
+      // --no-deps only works with fully pinned requirements. Fall back to a
+      // resolved audit, but with build parallelism capped so it can't melt the CPU.
+      try {
+        return await runPipAudit(projectRoot, fileArgs);
+      } catch (resolveErr) {
+        const resolved = extractStdout(resolveErr);
+        if (resolved) return resolved;
+        const detail = [
+          (resolveErr as { stderr?: string }).stderr,
+          (resolveErr as { stdout?: string }).stdout,
+        ]
+          .filter(Boolean)
+          .join('\n')
+          .trim();
+        throw new Error(detail || 'pip-audit scan failed');
+      }
+    }
+  }
+
+  // No requirements file — audit the project definition (pyproject.toml, etc.).
+  try {
+    return await runPipAudit(projectRoot, [projectRoot]);
+  } catch (err) {
+    const salvaged = extractStdout(err);
+    if (salvaged) return salvaged;
+    const detail = [(err as { stderr?: string }).stderr, (err as { stdout?: string }).stdout]
+      .filter(Boolean)
+      .join('\n')
+      .trim();
     throw new Error(detail || 'pip-audit scan failed');
   }
 }
@@ -138,7 +210,7 @@ export async function runPipAuditScan(input: {
       );
     }
 
-    progress?.(35, 'Running pip-audit…');
+    progress?.(35, 'Running pip-audit (build-limited)…');
     const auditRaw = await runPipAuditJson(projectRoot);
     const parsed = JSON.parse(auditRaw) as { dependencies?: unknown[] } | unknown[];
     const hasDeps = Array.isArray(parsed)
@@ -226,6 +298,12 @@ export async function runPipAuditScan(input: {
 
     if (/git clone|unable to access|403|401/i.test(message)) {
       throw new Error(sanitized);
+    }
+
+    if (/meson|subprocess-exited-with-error|Preparing metadata|Building wheel|internal pip failure/i.test(message)) {
+      throw new Error(
+        `pip-audit could not resolve ${input.resource.name} without building a dependency from source (this is CPU-heavy). Pin dependency versions in requirements.txt so pip-audit can scan them directly without building. Details: ${sanitizePipAuditError(message)}`
+      );
     }
 
     throw new Error(sanitizePipAuditError(message));
