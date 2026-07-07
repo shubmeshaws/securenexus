@@ -11,6 +11,11 @@ import type { SecurityResourceView } from '@/lib/security-service';
 import { resolveZapInstallDir, getZapVersion, isZapAvailable } from './zap-install';
 import { parseZapHtmlSeverityCounts, readZapReportFile } from './zap-report-parse';
 import { detectZapScanFailure, interpretReachabilityStatus } from './zap-scan-diagnostics';
+import { withZapScanLock } from './zap-scan-lock';
+import {
+  cleanupStaleZapEnvironment,
+  isZapHomeDirectoryInUseError,
+} from './zap-process-cleanup';
 
 const execFileAsync = promisify(execFile);
 const ZAP_SCAN_TIMEOUT_MS = 60 * 60 * 1000;
@@ -33,9 +38,42 @@ async function runShell(command: string, env?: NodeJS.ProcessEnv): Promise<strin
   const { stdout, stderr } = await execFileAsync('sh', ['-c', command], {
     timeout: ZAP_SCAN_TIMEOUT_MS,
     maxBuffer: 100 * 1024 * 1024,
-    env: { ...process.env, ...env },
+    env: env ? { ...process.env, ...env } : process.env,
   });
   return `${stdout}\n${stderr}`.trim();
+}
+
+async function runZapScanCommand(
+  scanCommand: string,
+  zapHomeDir: string,
+  isolatedHomeDir: string
+): Promise<string> {
+  const scanEnv: NodeJS.ProcessEnv = { ...process.env, HOME: isolatedHomeDir };
+  delete scanEnv.ZAP_HOME;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await cleanupStaleZapEnvironment([zapHomeDir, path.join(isolatedHomeDir, '.ZAP')]);
+
+    try {
+      return await runShell(scanCommand, scanEnv);
+    } catch (err) {
+      const combined = [
+        err instanceof Error ? err.message : String(err),
+        (err as { stdout?: string }).stdout ?? '',
+        (err as { stderr?: string }).stderr ?? '',
+      ].join('\n');
+
+      if (attempt === 0 && isZapHomeDirectoryInUseError(combined)) {
+        await cleanupStaleZapEnvironment([zapHomeDir, path.join(isolatedHomeDir, '.ZAP')]);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw new Error('OWASP ZAP scan failed after automatic cleanup retries.');
 }
 
 function sanitizeZapError(message: string): string {
@@ -90,6 +128,10 @@ export async function runZapScan(input: {
     }
 
     outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sn-zap-'));
+    const isolatedHomeDir = path.join(outputDir, 'zap-user-home');
+    const zapHomeDir = path.join(outputDir, 'zap-home');
+    await fs.mkdir(isolatedHomeDir, { recursive: true });
+    await fs.mkdir(zapHomeDir, { recursive: true });
     const htmlReportPath = path.join(outputDir, 'zap-report.html');
 
     progress?.(12, 'Checking target reachability from this server…');
@@ -97,12 +139,12 @@ export async function runZapScan(input: {
 
     progress?.(20, `Running OWASP ZAP scan on ${targetUrl}…`);
 
-    // Exact user command — run from ZAP install dir:
-    // ./zap.sh -cmd -quickurl <url> -quickout <report.html> -quickprogress
+    // Use a unique -dir per scan so concurrent or back-to-back runs do not fight over ~/.ZAP/.
     const scanCommand = [
       `cd ${shellQuote(zapDir)}`,
       '&&',
       './zap.sh -cmd',
+      `-dir ${shellQuote(zapHomeDir)}`,
       `-quickurl ${shellQuote(targetUrl)}`,
       `-quickout ${shellQuote(htmlReportPath)}`,
       '-quickprogress',
@@ -111,7 +153,9 @@ export async function runZapScan(input: {
     let scanOutput = '';
     let scanError: Error | null = null;
     try {
-      scanOutput = await runShell(scanCommand, { ...process.env, ZAP_HOME: zapDir });
+      scanOutput = await withZapScanLock(() =>
+        runZapScanCommand(scanCommand, zapHomeDir, isolatedHomeDir)
+      );
     } catch (err) {
       scanError = err instanceof Error ? err : new Error(String(err));
       const combined = `${scanError.message}\n${(err as { stdout?: string; stderr?: string }).stdout ?? ''}\n${(err as { stdout?: string; stderr?: string }).stderr ?? ''}`;
@@ -179,6 +223,12 @@ export async function runZapScan(input: {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'OWASP ZAP scan failed';
+
+    if (/home directory is already in use/i.test(message)) {
+      throw new Error(
+        'OWASP ZAP could not start after SecureNexus automatically cleared stale processes and lock files. Retry the scan in a few minutes.'
+      );
+    }
 
     if (/not installed|not on PATH|before running DAST|did not create a report/i.test(message)) {
       throw new Error(message);

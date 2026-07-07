@@ -13,6 +13,10 @@ export async function register() {
     initGitSyncJob();
     initNodeCountJob();
     initSecurityAutomationRunner();
+    const { cleanupStaleZapEnvironment } = await import('./lib/security/zap-process-cleanup');
+    cleanupStaleZapEnvironment().catch((err) => {
+      console.warn('[SecureNexus] ZAP startup cleanup skipped:', err);
+    });
     console.log('[SecureNexus] Background jobs registered — logs appear here and in `pm2 logs securenexus`');
   }
 }
