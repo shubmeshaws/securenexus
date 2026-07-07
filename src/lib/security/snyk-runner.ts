@@ -7,6 +7,10 @@ import { toolPathEnv } from '@/lib/security/tool-path-env';
 const execFileAsync = promisify(execFile);
 
 const SNYK_CONFIG_ROOT = path.join(process.cwd(), '.securenexus', 'snyk-config');
+// Legacy token flow prints an app.snyk.io/login?token=... URL and polls for
+// completion (no localhost callback). OAuth flow uses a 127.0.0.1:8080 callback
+// which only works when the browser runs on the same host as the CLI.
+const LOGIN_URL_PATTERN = /https:\/\/[^\s]*snyk\.io\/login\?token=[^\s]+/;
 const OAUTH_URL_PATTERN = /https:\/\/app\.snyk\.io\/oauth2\/authorize[^\s]+/;
 
 export function snykEnv(): NodeJS.ProcessEnv {
@@ -100,8 +104,10 @@ export async function authenticateSnykWithToken(token: string): Promise<string> 
 }
 
 export function extractSnykOAuthUrl(output: string): string | null {
-  const match = output.match(OAUTH_URL_PATTERN);
-  return match?.[0] ?? null;
+  const loginMatch = output.match(LOGIN_URL_PATTERN);
+  if (loginMatch?.[0]) return loginMatch[0];
+  const oauthMatch = output.match(OAUTH_URL_PATTERN);
+  return oauthMatch?.[0] ?? null;
 }
 
 export type SnykAuthStartResult = {
@@ -115,7 +121,7 @@ export async function startSnykBrowserAuth(
   await ensureSnykConfigDir();
 
   return new Promise((resolve, reject) => {
-    const child = spawn('snyk', ['auth'], {
+    const child = spawn('snyk', ['auth', '--auth-type=token'], {
       env: snykEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
