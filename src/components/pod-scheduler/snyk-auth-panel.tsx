@@ -5,7 +5,7 @@ import { Loader2 } from '@/lib/icons';
 import { apiFetch } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { SNYK_TOKEN_SETTINGS_URL } from '@/lib/security/snyk-runner';
+import { SNYK_TOKEN_SETTINGS_URL } from '@/lib/security/snyk-constants';
 
 type SnykAuthResponse = {
   authenticated: boolean;

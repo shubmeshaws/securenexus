@@ -8,7 +8,7 @@ import {
   refreshSnykAuthStatus,
   startSnykBrowserAuthJob,
 } from '@/lib/security/snyk-auth-job';
-import { SNYK_TOKEN_SETTINGS_URL } from '@/lib/security/snyk-runner';
+import { SNYK_TOKEN_SETTINGS_URL } from '@/lib/security/snyk-constants';
 import { invalidateToolRuntimeCache } from '@/lib/security/tool-runtime';
 import { z } from 'zod';
 

@@ -9,9 +9,6 @@ const execFileAsync = promisify(execFile);
 const SNYK_CONFIG_ROOT = path.join(process.cwd(), '.securenexus', 'snyk-config');
 const OAUTH_URL_PATTERN = /https:\/\/app\.snyk\.io\/oauth2\/authorize[^\s]+/;
 
-export const SNYK_AUTH_DOCS_URL = 'https://docs.snyk.io/snyk-cli/authenticate-to-use-the-cli';
-export const SNYK_TOKEN_SETTINGS_URL = 'https://app.snyk.io/account';
-
 export function snykEnv(): NodeJS.ProcessEnv {
   return {
     ...toolPathEnv(),
