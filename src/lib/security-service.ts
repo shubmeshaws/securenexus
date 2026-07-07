@@ -20,6 +20,7 @@ import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
 import { runZapScan } from './security/zap-runner';
+import { runSnykScan } from './security/snyk-runner';
 import {
   DEFAULT_GITLEAKS_SCAN_OPTIONS,
   parseGitleaksScanOptions,
@@ -949,6 +950,17 @@ async function executeSecurityScanPair(input: {
     highCount = zapResult.highCount;
     mediumCount = zapResult.mediumCount;
     lowCount = zapResult.lowCount;
+  } else if (tool.id === 'snyk') {
+    stageProgress(5, `Starting Snyk scan for ${resourceView.name}…`);
+    const snykResult = await runSnykScan({
+      resource: resourceView,
+      onProgress: runnerProgress,
+    });
+    summary = snykResult.summary;
+    htmlContent = snykResult.htmlContent;
+    highCount = snykResult.highCount;
+    mediumCount = snykResult.mediumCount;
+    lowCount = snykResult.lowCount;
   } else {
     stageProgress(15, `Generating ${tool.name} report…`);
     summary = `Security assessment report for ${resourceView.name} using ${tool.name}. Review findings and remediate high-severity items first.`;
