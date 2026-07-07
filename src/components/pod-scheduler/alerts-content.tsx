@@ -48,6 +48,7 @@ const EVENT_LABELS: Record<ActivityAction, string> = {
   'infra-startup': 'Infrastructure start',
   'resource-change': 'Resource increase detected',
   'alert-broadcast': 'Admin broadcast',
+  'security-scan': 'Security scan report',
 };
 
 interface AlertSettings {

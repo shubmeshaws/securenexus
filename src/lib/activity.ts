@@ -17,7 +17,8 @@ export type ActivityAction =
   | 'infra-shutdown'
   | 'infra-startup'
   | 'resource-change'
-  | 'alert-broadcast';
+  | 'alert-broadcast'
+  | 'security-scan';
 
 export interface LogActivityParams {
   action: ActivityAction;

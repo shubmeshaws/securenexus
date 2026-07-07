@@ -30,6 +30,7 @@ const ACTION_META: Record<
   'infra-startup': { emoji: '🚀', label: 'Infrastructure Started', accentColor: 'Good', containerStyle: 'good' },
   'resource-change': { emoji: '📈', label: 'Resource Increase Detected', accentColor: 'Attention', containerStyle: 'attention' },
   'alert-broadcast': { emoji: '📢', label: 'Team Announcement', accentColor: 'Accent', containerStyle: 'accent' },
+  'security-scan': { emoji: '🛡️', label: 'Security Scan Report', accentColor: 'Accent', containerStyle: 'accent' },
 };
 
 function statusColor(status: 'success' | 'failed'): string {
@@ -280,32 +281,83 @@ export function buildResourceChangeTeamsCard(input: ResourceChangeTeamsInput) {
   };
 }
 
+function stripNulls<T extends Record<string, unknown>>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function extractAdaptiveCard(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const attachments = payload.attachments;
+  if (Array.isArray(attachments)) {
+    const first = attachments[0] as { content?: unknown } | undefined;
+    if (first?.content && typeof first.content === 'object') {
+      return first.content as Record<string, unknown>;
+    }
+  }
+  if (payload.type === 'AdaptiveCard') return payload;
+  return null;
+}
+
+async function postTeamsWebhook(
+  webhookUrl: string,
+  body: unknown
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const res = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text().catch(() => '');
+  const ok = res.ok || res.status === 202 || text.trim() === '1';
+  return { ok, status: res.status, text };
+}
+
 export async function sendTeamsWebhook(
   webhookUrl: string,
   payload: TeamsAlertPayload | Record<string, unknown>
 ): Promise<{ ok: boolean; message: string }> {
-  const body =
-    'action' in payload && payload.action
-      ? buildTeamsAdaptiveCard(payload as TeamsAlertPayload)
-      : (payload as Record<string, unknown>);
-
   try {
-    const res = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
+    const primary =
+      'action' in payload && payload.action
+        ? buildTeamsAdaptiveCard(payload as TeamsAlertPayload)
+        : (payload as Record<string, unknown>);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      return { ok: false, message: `Teams webhook failed (${res.status}): ${text.slice(0, 200)}` };
+    const attempts: unknown[] = [stripNulls(primary as Record<string, unknown>)];
+
+    const card = extractAdaptiveCard(primary as Record<string, unknown>);
+    if (card) {
+      attempts.push(
+        stripNulls({
+          type: 'message',
+          attachments: [
+            {
+              contentType: 'application/vnd.microsoft.card.adaptive',
+              content: card,
+            },
+          ],
+        })
+      );
+      attempts.push(stripNulls(card));
     }
-    return { ok: true, message: 'Teams notification sent' };
-  } catch (err) {
+
+    let lastStatus = 0;
+    let lastText = '';
+
+    for (const body of attempts) {
+      const result = await postTeamsWebhook(webhookUrl, body);
+      if (result.ok) {
+        return { ok: true, message: 'Teams notification sent' };
+      }
+      lastStatus = result.status;
+      lastText = result.text;
+    }
+
     return {
       ok: false,
-      message: err instanceof Error ? err.message : 'Teams webhook request failed',
+      message: `Teams webhook failed (${lastStatus}): ${lastText.slice(0, 300) || 'empty response'}`,
     };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Teams webhook request failed';
+    return { ok: false, message };
   }
 }

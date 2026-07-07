@@ -29,105 +29,12 @@ function buildFindingsLabel(
   return `${high} High · ${medium} Medium · ${low} Low`;
 }
 
-export function buildSecurityAutomationTeamsMessage(input: {
-  title: string;
-  scanTypes: string[];
-  repoUrls: string[];
-  status: 'success' | 'failed';
-  findingsLabel: string;
-  scheduleSummary: string;
-  reportUrls: string[];
-  errorMessage?: string | null;
-}) {
-  const facts: { title: string; value: string }[] = [
-    {
-      title: 'Type of Reports',
-      value: input.scanTypes.length ? input.scanTypes.join(', ') : '—',
-    },
-    {
-      title: 'Repository',
-      value: input.repoUrls.length ? input.repoUrls.join('\n') : '—',
-    },
-    {
-      title: 'Status',
-      value: input.status === 'success' ? 'Success' : 'Failed',
-    },
-    {
-      title: 'Findings',
-      value: input.findingsLabel,
-    },
-    {
-      title: 'Scheduled',
-      value: input.scheduleSummary,
-    },
-  ];
-
-  const body: Record<string, unknown>[] = [
-    {
-      type: 'TextBlock',
-      text: input.title,
-      weight: 'Bolder',
-      size: 'Large',
-      wrap: true,
-    },
-    {
-      type: 'TextBlock',
-      text: 'SecureNexus Security Automation',
-      isSubtle: true,
-      spacing: 'None',
-      size: 'Small',
-    },
-    {
-      type: 'FactSet',
-      spacing: 'Medium',
-      facts,
-    },
-  ];
-
-  if (input.reportUrls.length > 0) {
-    body.push({
-      type: 'TextBlock',
-      text: 'Report URL',
-      weight: 'Bolder',
-      spacing: 'Medium',
-    });
-    for (const url of input.reportUrls) {
-      body.push({
-        type: 'TextBlock',
-        text: url,
-        wrap: true,
-        color: 'Accent',
-        spacing: 'Small',
-      });
-    }
-  }
-
-  if (input.errorMessage) {
-    body.push({
-      type: 'TextBlock',
-      text: input.errorMessage,
-      color: 'Attention',
-      wrap: true,
-      spacing: 'Medium',
-    });
-  }
-
-  return {
-    type: 'message',
-    summary: `${input.title} — ${input.status === 'success' ? 'Success' : 'Failed'}`,
-    attachments: [
-      {
-        contentType: 'application/vnd.microsoft.card.adaptive',
-        contentUrl: null,
-        content: {
-          $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
-          type: 'AdaptiveCard',
-          version: '1.5',
-          body,
-        },
-      },
-    ],
-  };
+export async function resolveAutomationTeamsWebhookUrl(
+  teamsWebhookUrl: string | null | undefined
+): Promise<string | null> {
+  const direct = teamsWebhookUrl?.trim();
+  if (direct) return direct;
+  return (await getTeamsWebhookUrl()) ?? process.env.ALERTS_TEAMS_WEBHOOK_URL ?? null;
 }
 
 export async function sendAutomationTeamsNotification(input: {
@@ -145,16 +52,13 @@ export async function sendAutomationTeamsNotification(input: {
     timezone: string;
     resourceIds: unknown;
   };
-  jobId: string;
+  jobId: string | null;
   scanStatus: 'completed' | 'failed';
   scanError: string | null;
 }): Promise<string | null> {
   if (!input.automation.teamsEnabled) return null;
 
-  let webhookUrl = input.automation.teamsWebhookUrl?.trim() || '';
-  if (!webhookUrl) {
-    webhookUrl = (await getTeamsWebhookUrl()) ?? '';
-  }
+  const webhookUrl = await resolveAutomationTeamsWebhookUrl(input.automation.teamsWebhookUrl);
   if (!webhookUrl) {
     return 'Teams webhook URL is not configured for this automation';
   }
@@ -167,17 +71,19 @@ export async function sendAutomationTeamsNotification(input: {
       })
     : [];
 
-  const reports = await prisma.securityReport.findMany({
-    where: { scanJobId: input.jobId },
-    orderBy: { createdAt: 'asc' },
-    select: {
-      id: true,
-      title: true,
-      highCount: true,
-      mediumCount: true,
-      lowCount: true,
-    },
-  });
+  const reports = input.jobId
+    ? await prisma.securityReport.findMany({
+        where: { scanJobId: input.jobId },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          title: true,
+          highCount: true,
+          mediumCount: true,
+          lowCount: true,
+        },
+      })
+    : [];
 
   const scanCategories = parseStringArray(input.automation.scanCategories);
   const scanTypes = scanCategories.map(
@@ -199,28 +105,81 @@ export async function sendAutomationTeamsNotification(input: {
     timezone: input.automation.timezone,
   });
 
+  const scheduleSummary = formatAutomationScheduleSummary(schedule);
+  const failed = input.scanStatus !== 'completed';
+  const findingsLabel = buildFindingsLabel(reports, failed);
   const appUrl = getAppUrl().replace(/\/$/, '');
   const reportUrls = reports.map(
     (report) => `${appUrl}/api/security/reports/${report.id}/download?format=html`
   );
 
-  const failed = input.scanStatus !== 'completed';
-  const payload = buildSecurityAutomationTeamsMessage({
+  const messageParts = [
+    `Type of reports: ${scanTypes.length ? scanTypes.join(', ') : '—'}`,
+    `Repositories:\n${repoUrls.length ? repoUrls.join('\n') : '—'}`,
+    `Findings: ${findingsLabel}`,
+    `Scheduled: ${scheduleSummary}`,
+  ];
+
+  if (!failed && reportUrls.length > 0) {
+    messageParts.push(`Report URLs:\n${reportUrls.join('\n')}`);
+  }
+  if (failed && input.scanError) {
+    messageParts.push(`Error: ${input.scanError}`);
+  }
+
+  const result = await sendTeamsWebhook(webhookUrl, {
     title: input.automation.name,
-    scanTypes,
-    repoUrls,
+    message: messageParts.join('\n\n'),
+    action: 'security-scan',
+    cluster: 'Security Automation',
+    namespace: scanTypes.join(', ') || 'Security',
+    appName: repoUrls[0] ?? input.automation.name,
+    triggeredBy: 'Security Automation',
     status: failed ? 'failed' : 'success',
-    findingsLabel: buildFindingsLabel(reports, failed),
-    scheduleSummary: formatAutomationScheduleSummary(schedule),
-    reportUrls: failed ? [] : reportUrls,
-    errorMessage: failed ? input.scanError : null,
   });
 
-  const result = await sendTeamsWebhook(webhookUrl, payload);
   if (!result.ok) {
+    console.error(
+      `[SecurityAutomation] Teams notification failed for "${input.automation.name}": ${result.message}`
+    );
     return result.message;
   }
 
   console.log(`[SecurityAutomation] Teams notification sent for "${input.automation.name}"`);
   return null;
+}
+
+export async function sendAutomationTeamsTestNotification(input: {
+  name?: string;
+  teamsWebhookUrl?: string | null;
+  scanCategories?: string[];
+  resourceIds?: string[];
+}): Promise<{ ok: boolean; message: string }> {
+  const webhookUrl = await resolveAutomationTeamsWebhookUrl(input.teamsWebhookUrl ?? null);
+  if (!webhookUrl) {
+    return { ok: false, message: 'Teams webhook URL is not configured' };
+  }
+
+  const error = await sendAutomationTeamsNotification({
+    automation: {
+      name: input.name || 'Security Scan Test',
+      teamsEnabled: true,
+      teamsWebhookUrl: webhookUrl,
+      scanCategories: input.scanCategories ?? ['sast', 'sca'],
+      scheduleFrequency: 'once',
+      scheduleTime: '12:00',
+      scheduleDays: [],
+      scheduleDayOfMonth: null,
+      scheduleMonth: null,
+      scheduleStartDate: new Date().toISOString().slice(0, 10),
+      timezone: 'UTC',
+      resourceIds: input.resourceIds ?? [],
+    },
+    jobId: null,
+    scanStatus: 'completed',
+    scanError: null,
+  });
+
+  if (error) return { ok: false, message: error };
+  return { ok: true, message: 'Test Teams notification sent' };
 }

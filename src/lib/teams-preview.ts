@@ -15,6 +15,7 @@ export const TEAMS_ACTION_META: Record<
   'infra-shutdown': { emoji: '🛑', label: 'Infrastructure Stopped', accentClass: 'text-orange-600', headerBg: 'bg-orange-500/10' },
   'infra-startup': { emoji: '🚀', label: 'Infrastructure Started', accentClass: 'text-emerald-600', headerBg: 'bg-emerald-500/10' },
   'alert-broadcast': { emoji: '📢', label: 'Team Announcement', accentClass: 'text-violet-600', headerBg: 'bg-violet-500/10' },
+  'security-scan': { emoji: '🛡️', label: 'Security Scan Report', accentClass: 'text-violet-600', headerBg: 'bg-violet-500/10' },
 };
 
 export function getTeamsPreviewMeta(action: string, title?: string) {

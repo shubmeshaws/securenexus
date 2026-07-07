@@ -243,6 +243,10 @@ export function SecurityAutomationPanel({
     status: 'created' | 'already_exists';
     message: string;
   } | null>(null);
+  const [teamsTestStatus, setTeamsTestStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['security-automation'],
@@ -451,6 +455,22 @@ export function SecurityAutomationPanel({
         body: JSON.stringify({ enabled }),
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-automation'] }),
+  });
+
+  const testTeamsNotification = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; message: string }>('/api/security/automation/test-teams', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: draft.name || 'Security Scan Test',
+          teamsWebhookUrl: draft.teamsWebhookUrl || undefined,
+          scanCategories: draft.scanCategories,
+          resourceIds: draft.resourceIds,
+        }),
+      }),
+    onSuccess: (result) => setTeamsTestStatus(result),
+    onError: (err: Error) =>
+      setTeamsTestStatus({ ok: false, message: err.message || 'Teams test failed' }),
   });
 
   function toggleDay(day: number) {
@@ -960,11 +980,39 @@ export function SecurityAutomationPanel({
                   <Label className="text-[10px]">Incoming webhook URL</Label>
                   <Input
                     value={draft.teamsWebhookUrl}
-                    onChange={(e) =>
-                      setDraft((prev) => ({ ...prev, teamsWebhookUrl: e.target.value }))
-                    }
-                    placeholder="https://outlook.office.com/webhook/..."
+                    onChange={(e) => {
+                      setTeamsTestStatus(null);
+                      setDraft((prev) => ({ ...prev, teamsWebhookUrl: e.target.value }));
+                    }}
+                    placeholder="Leave empty to use global webhook from Alerts page"
                   />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5"
+                      disabled={testTeamsNotification.isPending}
+                      onClick={() => testTeamsNotification.mutate()}
+                    >
+                      {testTeamsNotification.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MessageSquare className="h-3.5 w-3.5" />
+                      )}
+                      Send test notification
+                    </Button>
+                    {teamsTestStatus ? (
+                      <p
+                        className={cn(
+                          'text-[10px]',
+                          teamsTestStatus.ok ? 'text-emerald-600' : 'text-red-600'
+                        )}
+                      >
+                        {teamsTestStatus.message}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
             </div>
