@@ -16,7 +16,7 @@ import { resolveGitleaksDownloadUrl } from './gitleaks-install';
 import { isGitleaksAvailable } from './gitleaks-runner';
 import { isNpmAuditAvailable } from './npm-audit-runner';
 import { isSemgrepAvailable } from './semgrep-runner';
-import { isSnykAvailable, isSnykRuntimeReady, installSnykToHtml } from './snyk-runner';
+import { isSnykAvailable, isSnykRuntimeReady, installSnykToHtml, installSnykCli } from './snyk-runner';
 import { isSnykToolId, SNYK_TOOL_IDS } from './snyk-shared';
 import { toolPathEnv } from './tool-path-env';
 import {
@@ -433,7 +433,7 @@ async function installSnyk(
   if (!(await isSnykAvailable())) {
     onProgress?.('Installing Snyk CLI via npm…');
     try {
-      await runCommand('npm', ['install', 'snyk', '-g'], toolPathEnv());
+      await installSnykCli(onProgress);
     } catch {
       if (osType === 'macos') {
         throw new Error('Snyk could not be installed via npm. Ensure npm is on PATH and try again.');

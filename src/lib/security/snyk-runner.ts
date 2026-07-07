@@ -51,18 +51,59 @@ export async function isSnykAvailable(): Promise<boolean> {
   }
 }
 
+// User-writable npm prefix for when a global (`-g`) install hits EACCES because
+// the app user can't write to /usr/lib/node_modules. Binaries land in
+// `.securenexus/bin`, which is already on the tool PATH (see tool-path-env.ts).
+const LOCAL_NPM_PREFIX = path.join(process.cwd(), '.securenexus');
+
+function isPermissionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return /EACCES|permission denied|operation was rejected|EPERM|need sudo|as root/i.test(message);
+}
+
+async function npmInstallGlobalOrLocal(
+  packageName: string,
+  onProgress?: (message: string) => void
+): Promise<void> {
+  try {
+    await execFileAsync('npm', ['install', packageName, '-g'], {
+      timeout: 180_000,
+      env: snykEnv(),
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return;
+  } catch (err) {
+    if (!isPermissionError(err)) throw err;
+  }
+
+  onProgress?.(`Global install needs root — installing ${packageName} into .securenexus instead…`);
+  await fs.mkdir(LOCAL_NPM_PREFIX, { recursive: true });
+  await execFileAsync('npm', ['install', packageName, '-g', '--prefix', LOCAL_NPM_PREFIX], {
+    timeout: 180_000,
+    env: snykEnv(),
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
+
 export async function installSnykToHtml(
   onProgress?: (message: string) => void
 ): Promise<void> {
   if (await isSnykToHtmlAvailable()) return;
   onProgress?.('Installing snyk-to-html via npm…');
-  await execFileAsync('npm', ['install', 'snyk-to-html', '-g'], {
-    timeout: 120_000,
-    env: snykEnv(),
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  await npmInstallGlobalOrLocal('snyk-to-html', onProgress);
   if (!(await isSnykToHtmlAvailable())) {
     throw new Error('snyk-to-html was installed but is not available on PATH.');
+  }
+}
+
+export async function installSnykCli(
+  onProgress?: (message: string) => void
+): Promise<void> {
+  if (await isSnykAvailable()) return;
+  onProgress?.('Installing Snyk CLI via npm…');
+  await npmInstallGlobalOrLocal('snyk', onProgress);
+  if (!(await isSnykAvailable())) {
+    throw new Error('Snyk CLI was installed but is not available on PATH.');
   }
 }
 
