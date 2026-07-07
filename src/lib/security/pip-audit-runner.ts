@@ -115,6 +115,64 @@ async function collectRequirementFiles(projectRoot: string): Promise<string[]> {
 
 const BASE_PIP_AUDIT_ARGS = ['--format=json', '--progress-spinner=off', '--desc=on'];
 
+const PINNED_REQUIREMENT_RE =
+  /^\s*([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]+\])?)\s*==\s*([^\s;#\\]+)/;
+
+interface PinnedRequirements {
+  filePath: string | null;
+  pinnedCount: number;
+  skippedCount: number;
+}
+
+/**
+ * Build a requirements file containing ONLY exactly-pinned entries
+ * (`name==version`), stripping markers, hashes, URLs, and unpinned lines.
+ *
+ * This lets us run `pip-audit --no-deps` against a guaranteed-pinned file so
+ * pip-audit never invokes pip's resolver/installer — which is what triggers
+ * source builds (pandas/numpy) and Python-version mismatches like
+ * `pandas==2.1.4` not existing for Python 3.14.
+ */
+async function writePinnedRequirements(
+  projectRoot: string,
+  requirementFiles: string[],
+  outFile: string
+): Promise<PinnedRequirements> {
+  const pinned = new Map<string, string>();
+  let skipped = 0;
+
+  for (const file of requirementFiles) {
+    let content: string;
+    try {
+      content = await fs.readFile(path.join(projectRoot, file), 'utf-8');
+    } catch {
+      continue;
+    }
+
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith('-')) continue;
+
+      const match = PINNED_REQUIREMENT_RE.exec(line);
+      if (match) {
+        const name = match[1];
+        const version = match[2];
+        pinned.set(name.toLowerCase(), `${name}==${version}`);
+      } else {
+        skipped += 1;
+      }
+    }
+  }
+
+  if (pinned.size === 0) {
+    return { filePath: null, pinnedCount: 0, skippedCount: skipped };
+  }
+
+  const body = `${Array.from(pinned.values()).join('\n')}\n`;
+  await fs.writeFile(outFile, body, 'utf-8');
+  return { filePath: outFile, pinnedCount: pinned.size, skippedCount: skipped };
+}
+
 async function runPipAudit(projectRoot: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('pip-audit', [...BASE_PIP_AUDIT_ARGS, ...args], {
     cwd: projectRoot,
@@ -130,57 +188,73 @@ function extractStdout(err: unknown): string | null {
   return typeof execErr.stdout === 'string' && execErr.stdout.trim() ? execErr.stdout : null;
 }
 
+function execErrorDetail(err: unknown): string {
+  return [(err as { stderr?: string }).stderr, (err as { stdout?: string }).stdout]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+export interface PipAuditRunResult {
+  raw: string;
+  pinnedCount: number;
+  skippedCount: number;
+  mode: 'pinned' | 'project';
+}
+
 /**
- * Audit strategy, cheapest first:
- * 1. `-r <file> --no-deps` — audits ONLY the versions written in the
- *    requirements file. No dependency resolution, no downloads, no builds.
- *    This is the low-CPU path and works whenever versions are pinned.
- * 2. `-r <file>` — full resolution (may download wheels) with build parallelism
- *    capped, used only when the requirements aren't pinned.
- * 3. project dir — last resort for pyproject.toml/Pipfile/setup.py, also capped.
+ * Audit strategy designed to avoid pip's resolver/installer entirely:
+ *
+ * 1. If requirement files exist, extract only exactly-pinned entries into a temp
+ *    file and run `pip-audit -r <pinned> --no-deps`. No resolution, no downloads,
+ *    no source builds, and immune to interpreter-version wheel mismatches.
+ * 2. If nothing is pinned but a project definition exists (pyproject.toml,
+ *    Pipfile, setup.py), fall back to a build-parallelism-capped project audit.
  */
-async function runPipAuditJson(projectRoot: string): Promise<string> {
+async function runPipAuditJson(
+  projectRoot: string,
+  outputDir: string
+): Promise<PipAuditRunResult> {
   const requirementFiles = await collectRequirementFiles(projectRoot);
 
   if (requirementFiles.length) {
-    const fileArgs = requirementFiles.flatMap((file) => ['-r', file]);
+    await fs.mkdir(outputDir, { recursive: true });
+    const pinnedFile = path.join(outputDir, 'pinned-requirements.txt');
+    const pinned = await writePinnedRequirements(projectRoot, requirementFiles, pinnedFile);
 
-    try {
-      return await runPipAudit(projectRoot, [...fileArgs, '--no-deps']);
-    } catch (noDepsErr) {
-      const salvaged = extractStdout(noDepsErr);
-      if (salvaged) return salvaged;
-
-      // --no-deps only works with fully pinned requirements. Fall back to a
-      // resolved audit, but with build parallelism capped so it can't melt the CPU.
+    if (pinned.filePath) {
       try {
-        return await runPipAudit(projectRoot, fileArgs);
-      } catch (resolveErr) {
-        const resolved = extractStdout(resolveErr);
-        if (resolved) return resolved;
-        const detail = [
-          (resolveErr as { stderr?: string }).stderr,
-          (resolveErr as { stdout?: string }).stdout,
-        ]
-          .filter(Boolean)
-          .join('\n')
-          .trim();
-        throw new Error(detail || 'pip-audit scan failed');
+        const raw = await runPipAudit(projectRoot, ['-r', pinned.filePath, '--no-deps']);
+        return {
+          raw,
+          pinnedCount: pinned.pinnedCount,
+          skippedCount: pinned.skippedCount,
+          mode: 'pinned',
+        };
+      } catch (err) {
+        const salvaged = extractStdout(err);
+        if (salvaged) {
+          return {
+            raw: salvaged,
+            pinnedCount: pinned.pinnedCount,
+            skippedCount: pinned.skippedCount,
+            mode: 'pinned',
+          };
+        }
+        throw new Error(execErrorDetail(err) || 'pip-audit scan failed');
       }
     }
+
+    // No pinned entries found — fall through to a project audit if possible.
   }
 
-  // No requirements file — audit the project definition (pyproject.toml, etc.).
   try {
-    return await runPipAudit(projectRoot, [projectRoot]);
+    const raw = await runPipAudit(projectRoot, [projectRoot]);
+    return { raw, pinnedCount: 0, skippedCount: 0, mode: 'project' };
   } catch (err) {
     const salvaged = extractStdout(err);
-    if (salvaged) return salvaged;
-    const detail = [(err as { stderr?: string }).stderr, (err as { stdout?: string }).stdout]
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-    throw new Error(detail || 'pip-audit scan failed');
+    if (salvaged) return { raw: salvaged, pinnedCount: 0, skippedCount: 0, mode: 'project' };
+    throw new Error(execErrorDetail(err) || 'pip-audit scan failed');
   }
 }
 
@@ -210,8 +284,10 @@ export async function runPipAuditScan(input: {
       );
     }
 
-    progress?.(35, 'Running pip-audit (build-limited)…');
-    const auditRaw = await runPipAuditJson(projectRoot);
+    progress?.(35, 'Running pip-audit (pinned, build-limited)…');
+    await fs.mkdir(outputDir, { recursive: true });
+    const auditRun = await runPipAuditJson(projectRoot, outputDir);
+    const auditRaw = auditRun.raw;
     const parsed = JSON.parse(auditRaw) as { dependencies?: unknown[] } | unknown[];
     const hasDeps = Array.isArray(parsed)
       ? parsed.length > 0
@@ -219,7 +295,6 @@ export async function runPipAuditScan(input: {
 
     const pipAuditVersion = await getPipAuditVersion();
     const auditJsonPath = path.join(outputDir, 'pip-audit-report.json');
-    await fs.mkdir(outputDir, { recursive: true });
     await fs.writeFile(auditJsonPath, auditRaw, 'utf-8');
 
     progress?.(72, 'Generating SCA summary report…');
@@ -261,10 +336,14 @@ export async function runPipAuditScan(input: {
     const rows = reportJson.findings ?? [];
     const counts = countSeverities(rows);
     const dependencyCount = rows.length;
+    const skippedNote =
+      auditRun.mode === 'pinned' && auditRun.skippedCount > 0
+        ? ` ${auditRun.skippedCount} unpinned entr${auditRun.skippedCount === 1 ? 'y was' : 'ies were'} skipped (pin them with == to include).`
+        : '';
     const summary =
       !hasDeps && dependencyCount === 0
-        ? `pip-audit completed for ${input.resource.name} — no vulnerable Python dependencies detected.`
-        : `pip-audit completed for ${input.resource.name} — ${dependencyCount} vulnerable package${dependencyCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
+        ? `pip-audit completed for ${input.resource.name} — no vulnerable Python dependencies detected.${skippedNote}`
+        : `pip-audit completed for ${input.resource.name} — ${dependencyCount} vulnerable package${dependencyCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).${skippedNote}`;
 
     return {
       htmlContent,
