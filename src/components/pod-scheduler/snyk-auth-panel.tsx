@@ -132,9 +132,10 @@ export function SnykAuthPanel({
   return (
     <div className="mt-2 space-y-2.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2.5 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
       <p>
-        <strong className="font-medium">Authentication required.</strong> SecureNexus stores Snyk
-        credentials on the server under <code className="font-mono">.securenexus/snyk-config</code>.
-        The recommended way on a remote server is to paste a Snyk API token.
+        <strong className="font-medium">Authentication required.</strong> SecureNexus uses the Snyk
+        CLI on the server. Paste a Snyk API token below (recommended for servers), or use{' '}
+        <code className="font-mono">Authenticate in browser</code> when SecureNexus runs on the same
+        machine as your browser.
       </p>
 
       <div className="space-y-1.5">

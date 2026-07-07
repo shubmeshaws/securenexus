@@ -12,23 +12,21 @@ import { buildSnykReportHtml, type SnykFindingRow } from './snyk-report';
 const execFileAsync = promisify(execFile);
 const SNYK_SCAN_TIMEOUT_MS = 15 * 60 * 1000;
 
-const SNYK_CONFIG_ROOT = path.join(process.cwd(), '.securenexus', 'snyk-config');
 // Legacy token flow prints an app.snyk.io/login?token=... URL and polls for
 // completion (no localhost callback). OAuth flow uses a 127.0.0.1:8080 callback
 // which only works when the browser runs on the same host as the CLI.
 const LOGIN_URL_PATTERN = /https:\/\/[^\s]*snyk\.io\/login\?token=[^\s]+/;
 const OAUTH_URL_PATTERN = /https:\/\/app\.snyk\.io\/oauth2\/authorize[^\s]+/;
 
+// Use the Snyk CLI's default config location (same place `snyk auth` writes and
+// where an already-authenticated machine stores its token). Overriding
+// XDG_CONFIG_HOME here would hide an existing `snyk auth` session.
 export function snykEnv(): NodeJS.ProcessEnv {
-  return {
-    ...toolPathEnv(),
-    XDG_CONFIG_HOME: SNYK_CONFIG_ROOT,
-    SNYK_CFG_ORG: process.env.SNYK_CFG_ORG,
-  };
-}
-
-export async function ensureSnykConfigDir(): Promise<void> {
-  await fs.mkdir(SNYK_CONFIG_ROOT, { recursive: true });
+  const env = toolPathEnv();
+  if (process.env.SNYK_CFG_ORG) {
+    env.SNYK_CFG_ORG = process.env.SNYK_CFG_ORG;
+  }
+  return env;
 }
 
 export async function isSnykAvailable(): Promise<boolean> {
@@ -40,36 +38,27 @@ export async function isSnykAvailable(): Promise<boolean> {
   }
 }
 
-export async function hasSnykApiToken(): Promise<boolean> {
-  if (process.env.SNYK_TOKEN?.trim()) return true;
-  try {
-    const { stdout } = await execFileAsync('snyk', ['config', 'get', 'api'], {
-      timeout: 10000,
-      env: snykEnv(),
-    });
-    return Boolean(stdout.trim());
-  } catch {
-    return false;
-  }
-}
-
+// Snyk `whoami` is the source of truth: it succeeds for OAuth, PAT, and API
+// token sessions alike. `snyk config get api` is empty for OAuth logins, so it
+// must not be used as an auth gate.
 export async function isSnykAuthenticated(): Promise<boolean> {
   if (!(await isSnykAvailable())) return false;
-  if (!(await hasSnykApiToken())) return false;
-  try {
-    const { stdout } = await execFileAsync('snyk', ['whoami'], {
-      timeout: 20000,
-      env: snykEnv(),
-    });
-    return Boolean(stdout.trim());
-  } catch {
-    return false;
-  }
+  return Boolean(await readSnykWhoami());
 }
 
 export async function readSnykWhoami(): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('snyk', ['whoami'], {
+      timeout: 20000,
+      env: snykEnv(),
+    });
+    const value = stdout.trim();
+    if (value) return value;
+  } catch {
+    // Older/newer CLIs may require the experimental flag; try it next.
+  }
+  try {
+    const { stdout } = await execFileAsync('snyk', ['whoami', '--experimental'], {
       timeout: 20000,
       env: snykEnv(),
     });
@@ -95,16 +84,30 @@ export async function authenticateSnykWithToken(token: string): Promise<string> 
   const trimmed = token.trim();
   if (!trimmed) throw new Error('Snyk API token is required.');
 
-  await ensureSnykConfigDir();
-  await execFileAsync('snyk', ['auth', trimmed], {
-    timeout: 45000,
-    env: snykEnv(),
-    maxBuffer: 4 * 1024 * 1024,
-  });
+  try {
+    await execFileAsync('snyk', ['auth', trimmed], {
+      timeout: 45000,
+      env: snykEnv(),
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch (err) {
+    const execErr = err as { stderr?: string; stdout?: string; message?: string };
+    const detail = [execErr.stderr, execErr.stdout, execErr.message]
+      .filter(Boolean)
+      .join('\n');
+    if (/401|unauthor|not recognized|invalid/i.test(detail)) {
+      throw new Error(
+        'Snyk rejected this token. Copy the API token (not a personal access token expiry-limited value) from app.snyk.io/account and try again.'
+      );
+    }
+    throw new Error(detail.slice(0, 400) || 'Failed to save Snyk token.');
+  }
 
   const whoami = await readSnykWhoami();
   if (!whoami) {
-    throw new Error('Snyk rejected the token. Generate a new token from your Snyk account settings.');
+    throw new Error(
+      'Token saved but Snyk still reports unauthenticated. Generate a fresh API token from app.snyk.io/account and try again.'
+    );
   }
   return whoami;
 }
@@ -124,8 +127,6 @@ export type SnykAuthStartResult = {
 export async function startSnykBrowserAuth(
   onOutput?: (chunk: string) => void
 ): Promise<{ result: SnykAuthStartResult; child: import('child_process').ChildProcess }> {
-  await ensureSnykConfigDir();
-
   return new Promise((resolve, reject) => {
     const child = spawn('snyk', ['auth', '--auth-type=token'], {
       env: snykEnv(),
