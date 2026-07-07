@@ -236,6 +236,10 @@ export function SecurityAutomationPanel({
   const [draft, setDraft] = useState<AutomationDraft>(emptyDraft);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [previewStatus, setPreviewStatus] = useState<'Success' | 'Failed'>('Success');
+  const [s3BucketStatus, setS3BucketStatus] = useState<{
+    status: 'created' | 'already_exists';
+    message: string;
+  } | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['security-automation'],
@@ -379,6 +383,32 @@ export function SecurityAutomationPanel({
       queryClient.invalidateQueries({ queryKey: ['security-automation'] });
       setDraft(emptyDraft());
       setEditingId(null);
+      setS3BucketStatus(null);
+    },
+  });
+
+  const createS3Bucket = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        status: 'created' | 'already_exists';
+        bucket: string;
+        region: string;
+        message: string;
+      }>('/api/security/automation/s3-bucket', {
+        method: 'POST',
+        body: JSON.stringify({
+          awsCredentialId: draft.awsCredentialId,
+          bucket: draft.s3Bucket,
+          region: draft.s3Region || undefined,
+        }),
+      }),
+    onSuccess: (result) => {
+      setS3BucketStatus({ status: result.status, message: result.message });
+      setDraft((prev) => ({
+        ...prev,
+        s3Bucket: result.bucket,
+        s3Region: result.region,
+      }));
     },
   });
 
@@ -760,6 +790,7 @@ export function SecurityAutomationPanel({
                         value={draft.awsCredentialId || undefined}
                         onValueChange={(awsCredentialId) => {
                           const cred = awsCredentials.find((row) => row.id === awsCredentialId);
+                          setS3BucketStatus(null);
                           setDraft((prev) => ({
                             ...prev,
                             awsCredentialId,
@@ -783,11 +814,53 @@ export function SecurityAutomationPanel({
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-[10px]">Bucket</Label>
-                    <Input
-                      value={draft.s3Bucket}
-                      onChange={(e) => setDraft((prev) => ({ ...prev, s3Bucket: e.target.value }))}
-                      placeholder="my-security-reports"
-                    />
+                    <div className="flex gap-2">
+                      <Input
+                        value={draft.s3Bucket}
+                        onChange={(e) => {
+                          setS3BucketStatus(null);
+                          setDraft((prev) => ({ ...prev, s3Bucket: e.target.value }));
+                        }}
+                        placeholder="my-security-reports"
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-9 shrink-0 text-[11px]"
+                        disabled={
+                          !draft.awsCredentialId ||
+                          !draft.s3Bucket.trim() ||
+                          createS3Bucket.isPending
+                        }
+                        onClick={() => createS3Bucket.mutate()}
+                      >
+                        {createS3Bucket.isPending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : null}
+                        Create bucket
+                      </Button>
+                    </div>
+                    {s3BucketStatus ? (
+                      <p
+                        className={cn(
+                          'text-[10px]',
+                          s3BucketStatus.status === 'created'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-muted-foreground'
+                        )}
+                      >
+                        {s3BucketStatus.message}
+                      </p>
+                    ) : null}
+                    {createS3Bucket.isError ? (
+                      <p className="text-[10px] text-red-600">
+                        {createS3Bucket.error instanceof Error
+                          ? createS3Bucket.error.message
+                          : 'Failed to create bucket'}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-[10px]">Region</Label>
@@ -941,6 +1014,7 @@ export function SecurityAutomationPanel({
                     className="h-8 text-[11px]"
                     onClick={() => {
                       setEditingId(row.id);
+                      setS3BucketStatus(null);
                       setDraft(draftFromAutomation(row));
                     }}
                   >
