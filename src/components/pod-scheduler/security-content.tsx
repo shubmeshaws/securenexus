@@ -50,6 +50,7 @@ import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-but
 import { SecurityReportActions } from '@/components/pod-scheduler/security-report-actions';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GitleaksOptionsPanel } from '@/components/pod-scheduler/gitleaks-options-panel';
+import { SnykAuthPanel } from '@/components/pod-scheduler/snyk-auth-panel';
 import { DEFAULT_GITLEAKS_SCAN_OPTIONS } from '@/lib/security/gitleaks-options';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type {
@@ -1044,10 +1045,9 @@ export function SecurityContent() {
                       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
                         <strong className="font-medium">npm is required.</strong> Snyk installs via{' '}
                         <code className="font-mono">npm install snyk -g</code> or the Linux binary
-                        download. After installation, run{' '}
-                        <code className="font-mono">snyk auth</code> on the server (opens the Snyk
-                        login page), then enable Snyk Code for live{' '}
-                        <code className="font-mono">snyk code test</code> scans.
+                        download. After installation, paste a Snyk API token in the tool card (recommended),
+                        or use <code className="font-mono">Authenticate in browser</code> when SecureNexus
+                        runs on the same machine as your browser.
                       </div>
                     ) : null}
                     {installCommandsForSelection.length > 0 ? (
@@ -1297,45 +1297,11 @@ function ToolCard({
           />
         ) : null}
         {tool.id === 'snyk' && setting?.runtimeReady && setting.runtimeAvailable ? (
-          setting.runtimeAuthenticated ? (
-            <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-emerald-800 dark:text-emerald-200">
-              Snyk is authenticated. Enable this tool and run live scans with{' '}
-              <code className="font-mono">snyk code test</code>.
-            </div>
-          ) : (
-            <div className="mt-2 space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
-              <p>
-                <strong className="font-medium">Authentication required.</strong> On the SecureNexus
-                server, run <code className="font-mono">snyk auth</code> to open the Snyk login page.
-                After signing in, enable Snyk Code for live{' '}
-                <code className="font-mono">snyk code test</code> scans.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[10px]"
-                  onClick={() => window.open('https://snyk.io/login', '_blank', 'noopener,noreferrer')}
-                >
-                  Open Snyk login
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-[10px]"
-                  disabled={pending}
-                  onClick={async () => {
-                    await apiFetch<{ authenticated: boolean }>('/api/security/tools/snyk-auth');
-                    onRefreshTools();
-                  }}
-                >
-                  Check auth status
-                </Button>
-              </div>
-            </div>
-          )
+          <SnykAuthPanel
+            authenticated={setting.runtimeAuthenticated ?? false}
+            username={setting.runtimeUsername ?? null}
+            onRefreshTools={onRefreshTools}
+          />
         ) : null}
       </div>
     </div>

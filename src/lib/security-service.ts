@@ -31,7 +31,7 @@ import {
   isRuntimeSecurityTool,
   type ServerOsType,
 } from './security/tool-runtime';
-import { isSnykAuthenticated } from './security/snyk-runner';
+import { isSnykAuthenticated, readSnykWhoami } from './security/snyk-runner';
 import { getInstallCommandsByOs, getInstallCommandsForOs, isServerOsType } from './security/tool-install-specs';
 import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
@@ -155,6 +155,7 @@ export interface SecurityToolSettingView {
   installCommandsByOs: Record<ServerOsType, string[]> | null;
   scanOptions: GitleaksScanOptions | null;
   runtimeAuthenticated?: boolean | null;
+  runtimeUsername?: string | null;
 }
 
 export interface SecurityReportView {
@@ -631,6 +632,8 @@ export async function listSecurityToolSettings(options?: {
         tool.id === 'snyk' && runtime.runtimeAvailable
           ? await isSnykAuthenticated()
           : null;
+      const runtimeUsername =
+        tool.id === 'snyk' && runtimeAuthenticated ? await readSnykWhoami() : null;
       return {
         toolId: tool.id,
         enabled: row?.enabled ?? false,
@@ -645,6 +648,7 @@ export async function listSecurityToolSettings(options?: {
         scanOptions:
           tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
         runtimeAuthenticated,
+        runtimeUsername,
       };
     })
   );
