@@ -20,7 +20,7 @@ import { runSemgrepScan } from './security/semgrep-runner';
 import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
 import { runZapScan } from './security/zap-runner';
-import { runSnykScan } from './security/snyk-runner';
+import { runSnykScaScan, runSnykCodeScan, isSnykAuthenticated, readSnykWhoami } from './security/snyk-runner';
 import {
   DEFAULT_GITLEAKS_SCAN_OPTIONS,
   parseGitleaksScanOptions,
@@ -32,7 +32,7 @@ import {
   isRuntimeSecurityTool,
   type ServerOsType,
 } from './security/tool-runtime';
-import { isSnykAuthenticated, readSnykWhoami } from './security/snyk-runner';
+import { isSnykToolId, resolveSharedSnykInstall, SNYK_TOOL_IDS } from './security/snyk-shared';
 import { getInstallCommandsByOs, getInstallCommandsForOs, isServerOsType } from './security/tool-install-specs';
 import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
@@ -570,20 +570,30 @@ export async function listSecurityToolSettings(options?: {
 
   const rows = await prisma.securityToolSetting.findMany();
   const byId = new Map(rows.map((row) => [row.toolId, row]));
+  const sharedSnykInstall = resolveSharedSnykInstall(byId);
 
   if (!checkRuntime) {
     const tools = SECURITY_TOOLS.map((tool) => {
       const row = byId.get(tool.id);
       const runtimeRequired = isRuntimeSecurityTool(tool.id);
       const installedOs =
-        row?.installedOs && isServerOsType(row.installedOs) ? row.installedOs : null;
+        isSnykToolId(tool.id) && sharedSnykInstall.installedOs
+          ? isServerOsType(sharedSnykInstall.installedOs)
+            ? sharedSnykInstall.installedOs
+            : null
+          : row?.installedOs && isServerOsType(row.installedOs)
+            ? row.installedOs
+            : null;
+      const installedAt = isSnykToolId(tool.id)
+        ? sharedSnykInstall.installedAt
+        : row?.installedAt ?? null;
       return {
         toolId: tool.id,
         enabled: row?.enabled ?? false,
         runtimeRequired,
-        runtimeAvailable: !runtimeRequired || Boolean(row?.installedAt),
-        runtimeReady: Boolean(row?.installedAt),
-        installedAt: row?.installedAt?.toISOString() ?? null,
+        runtimeAvailable: !runtimeRequired || Boolean(installedAt),
+        runtimeReady: Boolean(installedAt),
+        installedAt: installedAt?.toISOString() ?? null,
         installedOs,
         runtimeVersion: null,
         installCommands: installedOs ? getInstallCommandsForOs(tool.id, installedOs) : [],
@@ -601,19 +611,26 @@ export async function listSecurityToolSettings(options?: {
     SECURITY_TOOLS.map(async (tool) => {
       const row = byId.get(tool.id);
       const runtimeRequired = isRuntimeSecurityTool(tool.id);
+      const snykInstalledAt = isSnykToolId(tool.id)
+        ? sharedSnykInstall.installedAt
+        : row?.installedAt ?? null;
+      const snykInstalledOs =
+        isSnykToolId(tool.id) && sharedSnykInstall.installedOs
+          ? sharedSnykInstall.installedOs
+          : row?.installedOs ?? null;
       const needsRuntimeProbe =
-        runtimeRequired && Boolean(row?.enabled || row?.installedAt);
+        runtimeRequired && Boolean(row?.enabled || snykInstalledAt);
 
       if (!needsRuntimeProbe) {
         const installedOs =
-          row?.installedOs && isServerOsType(row.installedOs) ? row.installedOs : null;
+          snykInstalledOs && isServerOsType(snykInstalledOs) ? snykInstalledOs : null;
         return {
           toolId: tool.id,
           enabled: row?.enabled ?? false,
           runtimeRequired,
-          runtimeAvailable: !runtimeRequired || Boolean(row?.installedAt),
-          runtimeReady: Boolean(row?.installedAt),
-          installedAt: row?.installedAt?.toISOString() ?? null,
+          runtimeAvailable: !runtimeRequired || Boolean(snykInstalledAt),
+          runtimeReady: Boolean(snykInstalledAt),
+          installedAt: snykInstalledAt?.toISOString() ?? null,
           installedOs,
           runtimeVersion: null,
           installCommands: installedOs ? getInstallCommandsForOs(tool.id, installedOs) : [],
@@ -626,15 +643,15 @@ export async function listSecurityToolSettings(options?: {
 
       const runtime = await getToolRuntimeStatus(
         tool.id,
-        row?.installedAt ?? null,
-        row?.installedOs ?? null
+        snykInstalledAt,
+        snykInstalledOs
       );
       const runtimeAuthenticated =
-        tool.id === 'snyk' && runtime.runtimeAvailable
+        isSnykToolId(tool.id) && runtime.runtimeAvailable
           ? await isSnykAuthenticated()
           : null;
       const runtimeUsername =
-        tool.id === 'snyk' && runtimeAuthenticated ? await readSnykWhoami() : null;
+        isSnykToolId(tool.id) && runtimeAuthenticated ? await readSnykWhoami() : null;
       return {
         toolId: tool.id,
         enabled: row?.enabled ?? false,
@@ -670,7 +687,17 @@ export async function setSecurityToolEnabled(toolId: string, enabled: boolean): 
 
   if (enabled && isRuntimeSecurityTool(toolId)) {
     const row = await prisma.securityToolSetting.findUnique({ where: { toolId } });
-    if (!row?.installedAt) {
+    if (isSnykToolId(toolId)) {
+      const rows = await prisma.securityToolSetting.findMany({
+        where: { toolId: { in: [...SNYK_TOOL_IDS] } },
+      });
+      const shared = resolveSharedSnykInstall(new Map(rows.map((r) => [r.toolId, r])));
+      if (!shared.installedAt && !row?.installedAt) {
+        throw new Error(
+          `${tool.name} must be installed on this server before it can be enabled. Install Snyk once from either SCA or SAST — both share the same CLI.`
+        );
+      }
+    } else if (!row?.installedAt) {
       throw new Error(`${tool.name} must be installed on this server before it can be enabled.`);
     }
   }
@@ -739,20 +766,30 @@ export async function installSecurityToolRuntime(
   const installResult = await installToolRuntime(toolId, options.osType, options.onProgress);
   const installedAt = new Date();
 
-  await prisma.securityToolSetting.upsert({
-    where: { toolId },
-    create: {
-      toolId,
-      enabled: options?.enableAfter ?? true,
-      installedAt,
-      installedOs: options.osType,
-    },
-    update: {
-      installedAt,
-      installedOs: options.osType,
-      ...(options?.enableAfter ?? true ? { enabled: true } : {}),
-    },
-  });
+  const upsertInstall = async (id: string, enableThis: boolean) => {
+    await prisma.securityToolSetting.upsert({
+      where: { toolId: id },
+      create: {
+        toolId: id,
+        enabled: enableThis,
+        installedAt,
+        installedOs: options.osType,
+      },
+      update: {
+        installedAt,
+        installedOs: options.osType,
+        ...(enableThis ? { enabled: true } : {}),
+      },
+    });
+  };
+
+  if (isSnykToolId(toolId)) {
+    for (const id of SNYK_TOOL_IDS) {
+      await upsertInstall(id, id === toolId && (options?.enableAfter ?? true));
+    }
+  } else {
+    await upsertInstall(toolId, options?.enableAfter ?? true);
+  }
 
   const tools = await listSecurityToolSettings();
   const updated = tools.find((row) => row.toolId === toolId);
@@ -951,8 +988,19 @@ async function executeSecurityScanPair(input: {
     mediumCount = zapResult.mediumCount;
     lowCount = zapResult.lowCount;
   } else if (tool.id === 'snyk') {
-    stageProgress(5, `Starting Snyk scan for ${resourceView.name}…`);
-    const snykResult = await runSnykScan({
+    stageProgress(5, `Starting Snyk SCA scan for ${resourceView.name}…`);
+    const snykResult = await runSnykScaScan({
+      resource: resourceView,
+      onProgress: runnerProgress,
+    });
+    summary = snykResult.summary;
+    htmlContent = snykResult.htmlContent;
+    highCount = snykResult.highCount;
+    mediumCount = snykResult.mediumCount;
+    lowCount = snykResult.lowCount;
+  } else if (tool.id === 'snyk-code') {
+    stageProgress(5, `Starting Snyk Code scan for ${resourceView.name}…`);
+    const snykResult = await runSnykCodeScan({
       resource: resourceView,
       onProgress: runnerProgress,
     });

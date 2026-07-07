@@ -51,6 +51,7 @@ import { SecurityReportActions } from '@/components/pod-scheduler/security-repor
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GitleaksOptionsPanel } from '@/components/pod-scheduler/gitleaks-options-panel';
 import { SnykAuthPanel } from '@/components/pod-scheduler/snyk-auth-panel';
+import { isSnykToolId } from '@/lib/security/snyk-shared';
 import { DEFAULT_GITLEAKS_SCAN_OPTIONS } from '@/lib/security/gitleaks-options';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type {
@@ -686,7 +687,7 @@ export function SecurityContent() {
         <div className="space-y-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
             <strong className="font-medium text-foreground">Live scan tools install automatically on first enable.</strong>{' '}
-            Semgrep, npm audit, Gitleaks, OWASP ZAP, and Snyk install on the SecureNexus server when you click Install
+            Semgrep, npm audit, Gitleaks, OWASP ZAP, Snyk (SCA), and Snyk Code (SAST) install on the SecureNexus server when you click Install
             &amp; enable — no manual terminal steps. Other tools use sample reports until integrated.
           </div>
           {toolsLoading && !toolSettings.length ? (
@@ -1041,11 +1042,12 @@ export function SecurityContent() {
                       <span className="font-medium text-foreground">Install &amp; enable</span>. The
                       commands below run on the server — shown for reference.
                     </p>
-                    {installDialog.tool.id === 'snyk' ? (
+                    {isSnykToolId(installDialog.tool.id) ? (
                       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
                         <strong className="font-medium">npm is required.</strong> Snyk installs via{' '}
-                        <code className="font-mono">npm install snyk -g</code> or the Linux binary
-                        download. After installation, paste a Snyk API token in the tool card (recommended),
+                        <code className="font-mono">npm install snyk snyk-to-html -g</code> or the Linux binary
+                        download. SCA and Snyk Code share one CLI install — installing from either tab covers both.
+                        After installation, paste a Snyk API token in the tool card (recommended),
                         or use <code className="font-mono">Authenticate in browser</code> when SecureNexus
                         runs on the same machine as your browser.
                       </div>
@@ -1268,7 +1270,7 @@ function ToolCard({
               </Badge>
             )
           ) : null}
-          {tool.id === 'snyk' && setting?.runtimeReady && setting.runtimeAvailable ? (
+          {isSnykToolId(tool.id) && setting?.runtimeReady && setting.runtimeAvailable ? (
             setting.runtimeAuthenticated ? (
               <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-600">
                 Authenticated
@@ -1296,7 +1298,7 @@ function ToolCard({
             onChange={onGitleaksOptionsChange}
           />
         ) : null}
-        {tool.id === 'snyk' && setting?.runtimeReady && setting.runtimeAvailable ? (
+        {isSnykToolId(tool.id) && setting?.runtimeReady && setting.runtimeAvailable ? (
           <SnykAuthPanel
             authenticated={setting.runtimeAuthenticated ?? false}
             username={setting.runtimeUsername ?? null}

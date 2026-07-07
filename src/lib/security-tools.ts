@@ -138,6 +138,16 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     color: '#9333ea',
     initials: 'HR',
   },
+  {
+    id: 'snyk-code',
+    name: 'Snyk Code',
+    category: 'sast',
+    description: 'Snyk static analysis (SAST) for security issues in application source code.',
+    website: 'https://snyk.io/product/snyk-code',
+    color: '#4c3772',
+    initials: 'SK',
+    iconUrl: '/icons/security/snyk.png',
+  },
   // SCA
   {
     id: 'trivy',
@@ -199,7 +209,7 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     id: 'snyk',
     name: 'Snyk',
     category: 'sca',
-    description: 'Developer security platform for dependency and Snyk Code static analysis.',
+    description: 'Dependency vulnerability scanning with snyk test and HTML reports via snyk-to-html.',
     website: 'https://snyk.io',
     color: '#4c3772',
     initials: 'SK',

@@ -16,7 +16,8 @@ import { resolveGitleaksDownloadUrl } from './gitleaks-install';
 import { isGitleaksAvailable } from './gitleaks-runner';
 import { isNpmAuditAvailable } from './npm-audit-runner';
 import { isSemgrepAvailable } from './semgrep-runner';
-import { isSnykAvailable } from './snyk-runner';
+import { isSnykAvailable, isSnykRuntimeReady, installSnykToHtml } from './snyk-runner';
+import { isSnykToolId, SNYK_TOOL_IDS } from './snyk-shared';
 import { toolPathEnv } from './tool-path-env';
 import {
   getInstallCommandsByOs,
@@ -87,13 +88,18 @@ const RUNTIME_SPECS: Record<RuntimeSecurityToolId, Omit<ToolRuntimeSpec, 'toolId
 };
 
 export function isRuntimeSecurityTool(toolId: string): toolId is RuntimeSecurityToolId {
+  if (isSnykToolId(toolId)) return true;
   return (RUNTIME_SECURITY_TOOL_IDS as readonly string[]).includes(toolId);
 }
 
 export function getToolRuntimeSpec(toolId: string): ToolRuntimeSpec | null {
+  if (toolId === 'snyk-code') {
+    const spec = RUNTIME_SPECS.snyk;
+    return { toolId: 'snyk', ...spec };
+  }
   if (!isRuntimeSecurityTool(toolId)) return null;
-  const spec = RUNTIME_SPECS[toolId];
-  return { toolId, ...spec };
+  const spec = RUNTIME_SPECS[toolId as RuntimeSecurityToolId];
+  return { toolId: toolId as RuntimeSecurityToolId, ...spec };
 }
 
 async function runCommand(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
@@ -290,7 +296,7 @@ async function readToolVersion(toolId: RuntimeSecurityToolId): Promise<string | 
       const line = out.split('\n').find((row) => /ZAP/i.test(row));
       return line?.trim() || `ZAP ${ZAP_VERSION}`;
     }
-    if (toolId === 'snyk') {
+    if (toolId === 'snyk' || toolId === 'snyk-code') {
       const out = await runCommand('snyk', ['--version'], env);
       return out.split('\n')[0]?.trim() || null;
     }
@@ -306,7 +312,7 @@ export async function checkToolRuntimeAvailable(toolId: string): Promise<boolean
   if (toolId === 'npm-audit') return isNpmAuditAvailable();
   if (toolId === 'gitleaks') return isGitleaksAvailable();
   if (toolId === 'zap') return isZapAvailable();
-  if (toolId === 'snyk') return isSnykAvailable();
+  if (toolId === 'snyk' || toolId === 'snyk-code') return isSnykRuntimeReady();
   return false;
 }
 
@@ -349,8 +355,11 @@ export function invalidateToolRuntimeCache(toolId?: string): void {
     runtimeStatusCache.clear();
     return;
   }
-  for (const key of Array.from(runtimeStatusCache.keys())) {
-    if (key.startsWith(`${toolId}:`)) runtimeStatusCache.delete(key);
+  const idsToInvalidate = isSnykToolId(toolId) ? [...SNYK_TOOL_IDS] : [toolId];
+  for (const id of idsToInvalidate) {
+    for (const key of Array.from(runtimeStatusCache.keys())) {
+      if (key.startsWith(`${id}:`)) runtimeStatusCache.delete(key);
+    }
   }
 }
 
@@ -416,37 +425,40 @@ async function installSnyk(
   osType: ServerOsType,
   onProgress?: (message: string) => void
 ): Promise<void> {
-  if (await isSnykAvailable()) return;
-
   if (!(await isNpmAuditAvailable())) {
     onProgress?.('Installing Node.js and npm (required for Snyk)…');
     await installNpmAuditRuntime(osType);
   }
 
-  onProgress?.('Installing Snyk via npm…');
-  try {
-    await runCommand('npm', ['install', 'snyk', '-g'], toolPathEnv());
-    if (await isSnykAvailable()) return;
-  } catch {
-    if (osType === 'macos') {
-      throw new Error('Snyk could not be installed via npm. Ensure npm is on PATH and try again.');
+  if (!(await isSnykAvailable())) {
+    onProgress?.('Installing Snyk CLI via npm…');
+    try {
+      await runCommand('npm', ['install', 'snyk', '-g'], toolPathEnv());
+    } catch {
+      if (osType === 'macos') {
+        throw new Error('Snyk could not be installed via npm. Ensure npm is on PATH and try again.');
+      }
+    }
+
+    if (!(await isSnykAvailable()) && osType !== 'macos') {
+      const binDir = await ensureLocalBin();
+      const snykPath = path.join(binDir, 'snyk');
+      onProgress?.('Downloading Snyk CLI binary…');
+      await runShell(
+        `curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o "${snykPath}"`
+      );
+      await fs.chmod(snykPath, 0o755);
+    }
+
+    if (!(await isSnykAvailable())) {
+      throw new Error('Snyk CLI installation finished but snyk is not available on PATH.');
     }
   }
 
-  if (osType === 'macos') {
-    throw new Error('Snyk installation finished but the CLI is not available on PATH.');
-  }
+  await installSnykToHtml(onProgress);
 
-  const binDir = await ensureLocalBin();
-  const snykPath = path.join(binDir, 'snyk');
-  onProgress?.('Downloading Snyk CLI binary…');
-  await runShell(
-    `curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o "${snykPath}"`
-  );
-  await fs.chmod(snykPath, 0o755);
-
-  if (!(await isSnykAvailable())) {
-    throw new Error('Snyk binary was downloaded but is not available on PATH.');
+  if (!(await isSnykRuntimeReady())) {
+    throw new Error('Snyk CLI and snyk-to-html must both be available on PATH after installation.');
   }
 }
 
@@ -578,8 +590,8 @@ export async function installToolRuntime(
   } else if (toolId === 'zap') {
     progress('Installing OWASP ZAP…');
     await installZap(osType, progress);
-  } else if (toolId === 'snyk') {
-    progress('Installing Snyk CLI…');
+  } else if (toolId === 'snyk' || toolId === 'snyk-code') {
+    progress('Installing Snyk CLI and snyk-to-html…');
     await installSnyk(osType, progress);
   }
 

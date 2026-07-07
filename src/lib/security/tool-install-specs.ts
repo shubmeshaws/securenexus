@@ -76,25 +76,24 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
   snyk: {
     macos: [
       'Ensure npm is installed (brew install node)',
-      'npm install snyk -g',
+      'npm install snyk snyk-to-html -g',
       'After install, run: snyk auth',
-      'Enable Snyk Code and run: snyk code test',
+      'SCA scans: snyk test --json | snyk-to-html',
+      'SAST scans: snyk code test --json | snyk-to-html',
     ],
     ubuntu: [
       'Ensure npm is installed (sudo apt install -y nodejs npm)',
-      'npm install snyk -g',
+      'npm install snyk snyk-to-html -g',
       'Or: curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o snyk',
       'chmod +x ./snyk && sudo mv ./snyk /usr/local/bin/',
       'After install, run: snyk auth',
-      'Enable Snyk Code and run: snyk code test',
     ],
     linux: [
       'Ensure npm is installed',
-      'npm install snyk -g',
+      'npm install snyk snyk-to-html -g',
       'Or: curl --compressed https://downloads.snyk.io/cli/stable/snyk-linux -o snyk',
       'chmod +x ./snyk && sudo mv ./snyk /usr/local/bin/',
       'After install, run: snyk auth',
-      'Enable Snyk Code and run: snyk code test',
     ],
   },
 };
@@ -104,7 +103,9 @@ export function isServerOsType(value: string): value is ServerOsType {
 }
 
 export function getInstallCommandsForOs(toolId: string, os: ServerOsType): string[] {
-  const commands = INSTALL_COMMANDS[toolId as RuntimeInstallToolId];
+  const resolvedId =
+    toolId === 'snyk-code' ? 'snyk' : (toolId as RuntimeInstallToolId);
+  const commands = INSTALL_COMMANDS[resolvedId as RuntimeInstallToolId];
   if (!commands) return [];
   return commands[os] ?? [];
 }
@@ -112,7 +113,9 @@ export function getInstallCommandsForOs(toolId: string, os: ServerOsType): strin
 export function getInstallCommandsByOs(
   toolId: string
 ): Record<ServerOsType, string[]> | null {
-  const commands = INSTALL_COMMANDS[toolId as RuntimeInstallToolId];
+  const resolvedId =
+    toolId === 'snyk-code' ? 'snyk' : (toolId as RuntimeInstallToolId);
+  const commands = INSTALL_COMMANDS[resolvedId as RuntimeInstallToolId];
   if (!commands) return null;
   return commands;
 }

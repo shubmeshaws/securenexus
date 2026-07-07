@@ -6,8 +6,7 @@ import { toolPathEnv } from '@/lib/security/tool-path-env';
 import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { getSecurityToolById } from '@/lib/security-tools';
 import type { SecurityResourceView } from '@/lib/security-service';
-import { prepareRepositoryPath } from './security-repo-prep';
-import { buildSnykReportHtml, type SnykFindingRow } from './snyk-report';
+import { prepareRepositoryPath, findNpmProjectRoot } from './security-repo-prep';
 
 const execFileAsync = promisify(execFile);
 const SNYK_SCAN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -29,6 +28,20 @@ export function snykEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+export async function isSnykToHtmlAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync('snyk-to-html', ['--version'], { timeout: 8000, env: snykEnv() });
+    return true;
+  } catch {
+    try {
+      await execFileAsync('snyk-to-html', ['--help'], { timeout: 8000, env: snykEnv() });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export async function isSnykAvailable(): Promise<boolean> {
   try {
     await execFileAsync('snyk', ['--version'], { timeout: 8000, env: snykEnv() });
@@ -38,9 +51,26 @@ export async function isSnykAvailable(): Promise<boolean> {
   }
 }
 
-// Snyk `whoami` is the source of truth: it succeeds for OAuth, PAT, and API
-// token sessions alike. `snyk config get api` is empty for OAuth logins, so it
-// must not be used as an auth gate.
+export async function installSnykToHtml(
+  onProgress?: (message: string) => void
+): Promise<void> {
+  if (await isSnykToHtmlAvailable()) return;
+  onProgress?.('Installing snyk-to-html via npm…');
+  await execFileAsync('npm', ['install', 'snyk-to-html', '-g'], {
+    timeout: 120_000,
+    env: snykEnv(),
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (!(await isSnykToHtmlAvailable())) {
+    throw new Error('snyk-to-html was installed but is not available on PATH.');
+  }
+}
+
+export async function isSnykRuntimeReady(): Promise<boolean> {
+  return (await isSnykAvailable()) && (await isSnykToHtmlAvailable());
+}
+
+// Snyk `whoami` is the source of truth
 export async function isSnykAuthenticated(): Promise<boolean> {
   if (!(await isSnykAvailable())) return false;
   return Boolean(await readSnykWhoami());
@@ -211,110 +241,60 @@ export interface SnykScanResult {
   snykVersion: string;
 }
 
-interface SarifRegion {
-  startLine?: number;
-}
-interface SarifLocation {
-  physicalLocation?: {
-    artifactLocation?: { uri?: string };
-    region?: SarifRegion;
-  };
-}
-interface SarifResult {
-  ruleId?: string;
-  level?: string;
-  message?: { text?: string };
-  locations?: SarifLocation[];
-}
-interface SarifRule {
-  id?: string;
-  name?: string;
-  shortDescription?: { text?: string };
-  properties?: { 'security-severity'?: string; cwe?: string[] };
-  defaultConfiguration?: { level?: string };
-}
-interface SarifReport {
-  runs?: Array<{
-    tool?: { driver?: { rules?: SarifRule[] } };
-    results?: SarifResult[];
-  }>;
-}
-
-function severityFromScore(score: string | undefined): SnykFindingRow['severity'] | null {
-  if (!score) return null;
-  const value = Number(score);
-  if (Number.isNaN(value)) return null;
-  if (value >= 9) return 'Critical';
-  if (value >= 7) return 'High';
-  if (value >= 4) return 'Medium';
-  return 'Low';
-}
-
-function severityFromLevel(level: string | undefined): SnykFindingRow['severity'] {
-  switch ((level ?? '').toLowerCase()) {
-    case 'error':
-      return 'High';
-    case 'warning':
-      return 'Medium';
-    default:
-      return 'Low';
-  }
-}
-
-export function parseSnykCodeSarif(raw: string): SnykFindingRow[] {
-  let report: SarifReport;
-  try {
-    report = JSON.parse(raw) as SarifReport;
-  } catch {
-    return [];
-  }
-
-  const findings: SnykFindingRow[] = [];
-  for (const run of report.runs ?? []) {
-    const rulesById = new Map<string, SarifRule>();
-    for (const rule of run.tool?.driver?.rules ?? []) {
-      if (rule.id) rulesById.set(rule.id, rule);
-    }
-
-    for (const result of run.results ?? []) {
-      const rule = result.ruleId ? rulesById.get(result.ruleId) : undefined;
-      const severity =
-        severityFromScore(rule?.properties?.['security-severity']) ??
-        severityFromLevel(result.level ?? rule?.defaultConfiguration?.level);
-      const loc = result.locations?.[0]?.physicalLocation;
-      const file = loc?.artifactLocation?.uri ?? 'unknown';
-      const line = loc?.region?.startLine;
-      const location = line ? `${file}:${line}` : file;
-      const title =
-        rule?.shortDescription?.text || rule?.name || result.ruleId || 'Snyk Code issue';
-      const message = result.message?.text?.trim() || title;
-
-      findings.push({
-        severity,
-        rule: result.ruleId ?? 'snyk-code',
-        title,
-        location,
-        message,
-      });
-    }
-  }
-  return findings;
-}
-
-function countSnykSeverities(findings: SnykFindingRow[]): {
-  high: number;
-  medium: number;
-  low: number;
-} {
+function countSnykJsonSeverities(
+  jsonRaw: string,
+  mode: 'sca' | 'code'
+): { high: number; medium: number; low: number; total: number } {
   let high = 0;
   let medium = 0;
   let low = 0;
-  for (const finding of findings) {
-    if (finding.severity === 'Critical' || finding.severity === 'High') high += 1;
-    else if (finding.severity === 'Medium') medium += 1;
-    else low += 1;
+  try {
+    const parsed = JSON.parse(jsonRaw) as Record<string, unknown>;
+    if (mode === 'sca') {
+      const vulns = Array.isArray(parsed.vulnerabilities) ? parsed.vulnerabilities : [];
+      for (const row of vulns) {
+        const sev = String((row as { severity?: string }).severity ?? '').toLowerCase();
+        if (sev === 'critical' || sev === 'high') high += 1;
+        else if (sev === 'medium' || sev === 'moderate') medium += 1;
+        else low += 1;
+      }
+      return { high, medium, low, total: vulns.length };
+    }
+
+    const runs = Array.isArray(parsed.runs) ? parsed.runs : [];
+    for (const run of runs) {
+      const results = Array.isArray((run as { results?: unknown[] }).results)
+        ? (run as { results: unknown[] }).results
+        : [];
+      for (const result of results) {
+        const level = String((result as { level?: string }).level ?? '').toLowerCase();
+        if (level === 'error') high += 1;
+        else if (level === 'warning') medium += 1;
+        else low += 1;
+      }
+    }
+    const issues = Array.isArray(parsed.issues) ? parsed.issues : [];
+    if (!runs.length && issues.length) {
+      for (const issue of issues) {
+        const sev = String(
+          (issue as { severity?: string; level?: string }).severity ??
+            (issue as { level?: string }).level ??
+            ''
+        ).toLowerCase();
+        if (sev === 'critical' || sev === 'high' || sev === 'error') high += 1;
+        else if (sev === 'medium' || sev === 'moderate' || sev === 'warning') medium += 1;
+        else low += 1;
+      }
+      return { high, medium, low, total: issues.length };
+    }
+    const total = runs.reduce((sum, run) => {
+      const results = (run as { results?: unknown[] }).results;
+      return sum + (Array.isArray(results) ? results.length : 0);
+    }, 0);
+    return { high, medium, low, total };
+  } catch {
+    return { high: 0, medium: 0, low: 0, total: 0 };
   }
-  return { high, medium, low };
 }
 
 function sanitizeSnykError(message: string): string {
@@ -323,8 +303,54 @@ function sanitizeSnykError(message: string): string {
     .slice(0, 600);
 }
 
-export async function runSnykScan(input: {
+async function runSnykJsonToHtml(input: {
+  snykArgs: string[];
+  cwd: string;
+  outputDir: string;
+  jsonFile: string;
+  htmlFile: string;
+  progressLabel: string;
+  onProgress?: (stagePercent: number, message: string) => void;
+}): Promise<{ htmlContent: string; jsonRaw: string }> {
+  let jsonRaw = '';
+  try {
+    const { stdout } = await execFileAsync('snyk', input.snykArgs, {
+      cwd: input.cwd,
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: SNYK_SCAN_TIMEOUT_MS,
+      env: snykEnv(),
+    });
+    jsonRaw = stdout;
+  } catch (err: unknown) {
+    const execErr = err as { code?: number | string; stdout?: string; stderr?: string };
+    if (typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
+      jsonRaw = execErr.stdout;
+    }
+    if (!jsonRaw || (execErr.code !== 1 && execErr.code !== '1')) {
+      const detail = [execErr.stderr, execErr.stdout].filter(Boolean).join('\n').trim();
+      throw new Error(detail || `${input.progressLabel} failed.`);
+    }
+  }
+
+  const jsonPath = path.join(input.outputDir, input.jsonFile);
+  const htmlPath = path.join(input.outputDir, input.htmlFile);
+  await fs.writeFile(jsonPath, jsonRaw, 'utf-8');
+
+  input.onProgress?.(75, 'Converting Snyk JSON to HTML…');
+  await execFileAsync('snyk-to-html', ['-i', jsonPath, '-o', htmlPath], {
+    timeout: 120_000,
+    env: snykEnv(),
+    maxBuffer: 20 * 1024 * 1024,
+  });
+
+  const htmlContent = await fs.readFile(htmlPath, 'utf-8');
+  return { htmlContent, jsonRaw };
+}
+
+async function runSnykScanInternal(input: {
   resource: SecurityResourceView;
+  mode: 'sca' | 'code';
+  toolId: 'snyk' | 'snyk-code';
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<SnykScanResult> {
   const progress = input.onProgress;
@@ -334,9 +360,9 @@ export async function runSnykScan(input: {
     throw new Error('Snyk scans require a repository resource.');
   }
 
-  if (!(await isSnykAvailable())) {
+  if (!(await isSnykRuntimeReady())) {
     throw new Error(
-      'Snyk CLI is not installed or not on PATH. Install Snyk from Security → Tools before running scans.'
+      'Snyk CLI and snyk-to-html must be installed on this server. Install Snyk from Security → Tools (SCA or SAST) before running scans.'
     );
   }
   if (!(await isSnykAuthenticated())) {
@@ -350,71 +376,57 @@ export async function runSnykScan(input: {
     const prepared = await prepareRepositoryPath(input.resource);
     cleanup = prepared.cleanup;
     const { repoPath, outputDir } = prepared;
-
     await fs.mkdir(outputDir, { recursive: true });
-    const sarifPath = path.join(outputDir, 'snyk-code.sarif');
+
     const snykVersion = (await readSnykVersion()) ?? 'unknown';
-
-    progress?.(30, 'Running Snyk Code test…');
-    try {
-      await execFileAsync(
-        'snyk',
-        ['code', 'test', repoPath, '--sarif', `--sarif-file-output=${sarifPath}`],
-        {
-          cwd: repoPath,
-          maxBuffer: 100 * 1024 * 1024,
-          timeout: SNYK_SCAN_TIMEOUT_MS,
-          env: snykEnv(),
-        }
-      );
-    } catch (err: unknown) {
-      const execErr = err as { code?: number | string; stderr?: string; stdout?: string };
-      // Exit code 1 = issues found (expected). Other codes are real errors,
-      // unless the SARIF file was still produced.
-      const sarifExists = await fs
-        .access(sarifPath)
-        .then(() => true)
-        .catch(() => false);
-      if (execErr.code !== 1 && !sarifExists) {
-        const detail = [execErr.stderr, execErr.stdout].filter(Boolean).join('\n').trim();
-        if (/not authorized|not enabled|snyk code is not supported/i.test(detail)) {
-          throw new Error(
-            'Snyk Code is not enabled for this Snyk account/organization. Enable Snyk Code in your Snyk org settings, then retry.'
-          );
-        }
-        throw new Error(detail || 'Snyk Code test failed.');
-      }
-    }
-
-    progress?.(78, 'Processing Snyk results…');
-    let sarifRaw = '';
-    try {
-      sarifRaw = await fs.readFile(sarifPath, 'utf-8');
-    } catch {
-      sarifRaw = '';
-    }
-
-    const findings = sarifRaw ? parseSnykCodeSarif(sarifRaw) : [];
-    const counts = countSnykSeverities(findings);
-    const tool = getSecurityToolById('snyk');
+    const tool = getSecurityToolById(input.toolId);
     const toolName = tool?.name ?? 'Snyk';
-    const title = `${toolName} scan — ${input.resource.name}`;
-    const findingCount = findings.length;
+
+    let scanCwd = repoPath;
+    if (input.mode === 'sca') {
+      const projectRoot = await findNpmProjectRoot(repoPath);
+      if (!projectRoot) {
+        throw new Error(
+          `No package.json found in ${input.resource.name}. Snyk SCA requires a Node.js project with dependencies.`
+        );
+      }
+      scanCwd = projectRoot;
+    }
+
+    const label = input.mode === 'sca' ? 'Snyk SCA (snyk test)' : 'Snyk Code (snyk code test)';
+    progress?.(28, `Running ${label}…`);
+
+    const snykArgs =
+      input.mode === 'sca'
+        ? ['test', '--json']
+        : ['code', 'test', scanCwd, '--json'];
+
+    const baseName = input.mode === 'sca' ? 'snyk-sca-report' : 'snyk-sast-report';
+    const { htmlContent, jsonRaw } = await runSnykJsonToHtml({
+      snykArgs,
+      cwd: scanCwd,
+      outputDir,
+      jsonFile: `${baseName}.json`,
+      htmlFile: `${baseName}.html`,
+      progressLabel: label,
+      onProgress: progress,
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/not authorized|not enabled|snyk code is not supported/i.test(message)) {
+        throw new Error(
+          'Snyk Code is not enabled for this Snyk account/organization. Enable Snyk Code in your Snyk org settings, then retry.'
+        );
+      }
+      throw err;
+    });
+
+    const counts = countSnykJsonSeverities(jsonRaw, input.mode);
+    const findingCount = counts.total;
+    const scanKind = input.mode === 'sca' ? 'dependency vulnerabilities' : 'Snyk Code static analysis';
     const summary =
       findingCount === 0
-        ? `Snyk Code scan completed for ${input.resource.name} — no issues detected.`
-        : `Snyk Code scan completed for ${input.resource.name} — ${findingCount} issue${findingCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
-
-    progress?.(92, 'Building Snyk report…');
-    const htmlContent = buildSnykReportHtml({
-      resource: input.resource,
-      toolName,
-      title,
-      summary,
-      scanKind: 'Snyk Code static analysis',
-      findings,
-      snykVersion,
-    });
+        ? `${toolName} scan completed for ${input.resource.name} — no ${scanKind} issues detected.`
+        : `${toolName} scan completed for ${input.resource.name} — ${findingCount} ${scanKind} issue${findingCount === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low).`;
 
     return {
       htmlContent,
@@ -426,19 +438,35 @@ export async function runSnykScan(input: {
       snykVersion,
     };
   } catch (err) {
-    if (err instanceof Error && err.message.startsWith('Snyk ')) {
-      throw err;
-    }
-    if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) {
-      throw err;
-    }
+    if (err instanceof Error && err.message.startsWith('Snyk ')) throw err;
+    if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) throw err;
     const message = err instanceof Error ? err.message : 'Snyk scan failed';
     const sanitized = formatRepositoryCloneError(err, input.resource.repoUrl ?? '');
-    if (/git clone|unable to access|403|401/i.test(message)) {
-      throw new Error(sanitized);
-    }
+    if (/git clone|unable to access|403|401/i.test(message)) throw new Error(sanitized);
     throw new Error(sanitizeSnykError(message));
   } finally {
     if (cleanup) await cleanup();
   }
+}
+
+export function runSnykScaScan(input: {
+  resource: SecurityResourceView;
+  onProgress?: (stagePercent: number, message: string) => void;
+}): Promise<SnykScanResult> {
+  return runSnykScanInternal({ ...input, mode: 'sca', toolId: 'snyk' });
+}
+
+export function runSnykCodeScan(input: {
+  resource: SecurityResourceView;
+  onProgress?: (stagePercent: number, message: string) => void;
+}): Promise<SnykScanResult> {
+  return runSnykScanInternal({ ...input, mode: 'code', toolId: 'snyk-code' });
+}
+
+/** @deprecated Use runSnykScaScan or runSnykCodeScan */
+export function runSnykScan(input: {
+  resource: SecurityResourceView;
+  onProgress?: (stagePercent: number, message: string) => void;
+}): Promise<SnykScanResult> {
+  return runSnykCodeScan(input);
 }
