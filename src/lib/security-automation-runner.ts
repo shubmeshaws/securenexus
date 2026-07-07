@@ -67,6 +67,7 @@ async function deliverAutomationResults(
   scanError: string | null
 ): Promise<string | null> {
   const errors: string[] = [];
+  let s3Keys: string[] = [];
 
   if (scanStatus === 'completed' && automation.s3Enabled) {
     try {
@@ -84,6 +85,8 @@ async function deliverAutomationResults(
         completedAt,
       });
 
+      s3Keys = result.keys;
+
       console.log(
         `[SecurityAutomation] Uploaded ${result.uploaded} file(s) to s3://${automation.s3Bucket}/${result.keys[0]?.split('/').slice(0, -1).join('/') ?? ''}`
       );
@@ -100,6 +103,7 @@ async function deliverAutomationResults(
       jobId,
       scanStatus,
       scanError,
+      s3Keys,
     });
     if (teamsError) {
       console.error(`[SecurityAutomation] Teams notification failed for ${automation.id}:`, teamsError);

@@ -147,82 +147,146 @@ function draftFromAutomation(row: SecurityAutomationView): AutomationDraft {
 function TeamsNotificationPreview({
   title,
   scanTypes,
-  repoUrls,
+  repositories,
+  urls,
   status,
-  reportUrls,
+  reportLinks,
   scheduleSummary,
+  s3Bucket,
 }: {
   title: string;
   scanTypes: string[];
-  repoUrls: string[];
+  repositories: string[];
+  urls: string[];
   status: 'Success' | 'Failed';
-  reportUrls: string[];
+  reportLinks: Array<{ title: string; htmlUrl: string }>;
   scheduleSummary: string;
+  s3Bucket?: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-[#e1dfdd] bg-[#f3f2f1] shadow-sm dark:border-border dark:bg-card">
-      <div className="border-b border-[#e1dfdd] bg-white px-4 py-3 dark:border-border dark:bg-background">
-        <p className="text-sm font-semibold text-[#252423] dark:text-foreground">{title}</p>
-        <p className="text-xs text-[#605e5c] dark:text-muted-foreground">By DevOps Team</p>
-      </div>
-      <div className="space-y-0 bg-white dark:bg-background">
-        {[
-          { label: 'Type of Reports', value: scanTypes.length ? scanTypes.join(', ') : 'SAST, SCA' },
-          {
-            label: 'Repository',
-            value: repoUrls.length ? repoUrls.join('\n') : 'https://bitbucket.org/org/repo',
-          },
-          {
-            label: 'Status',
-            value: status,
-            accent: status === 'Success' ? 'text-emerald-600' : 'text-red-600',
-          },
-          {
-            label: 'Findings',
-            value: status === 'Success' ? '2 High · 5 Medium · 3 Low' : 'Scan did not complete',
-          },
-          {
-            label: 'Scheduled',
-            value: scheduleSummary,
-          },
-        ].map((row) => (
-          <div
-            key={row.label}
-            className="grid grid-cols-[140px_1fr] gap-3 border-t border-[#edebe9] px-4 py-2.5 text-xs dark:border-border"
-          >
-            <span className="font-medium text-[#605e5c] dark:text-muted-foreground">{row.label}</span>
-            <span
-              className={cn(
-                'whitespace-pre-wrap break-all text-[#252423] dark:text-foreground',
-                row.accent
-              )}
-            >
-              {row.value}
-            </span>
+    <div className="overflow-hidden rounded-xl border border-violet-200/60 bg-gradient-to-b from-violet-50/80 to-white shadow-sm dark:border-violet-500/20 dark:from-violet-950/30 dark:to-card">
+      <div className="border-b border-violet-200/60 bg-gradient-to-r from-violet-600/10 via-sky-500/10 to-emerald-500/10 px-4 py-3 dark:border-violet-500/20">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">
+              🛡️ Security Scan Report
+            </p>
+            <p className="text-xs font-medium text-foreground">{title}</p>
           </div>
-        ))}
-        <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-[#edebe9] px-4 py-2.5 text-xs dark:border-border">
-          <span className="font-medium text-[#605e5c] dark:text-muted-foreground">Report URL</span>
-          <div className="space-y-1">
-            {(reportUrls.length ? reportUrls : ['https://securenexus.example/api/security/reports/abc/download?format=html']).map(
-              (url) => (
-                <a
-                  key={url}
-                  href={url}
-                  className="block break-all text-[#6264a7] underline-offset-2 hover:underline dark:text-sky-400"
-                  onClick={(event) => event.preventDefault()}
-                >
-                  {url}
-                </a>
-              )
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+              status === 'Success'
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
             )}
-          </div>
+          >
+            {status}
+          </span>
         </div>
       </div>
-      <div className="border-t border-[#e1dfdd] bg-[#faf9f8] px-4 py-2 text-[10px] text-[#8a8886] dark:border-border dark:bg-muted/20 dark:text-muted-foreground">
-        Preview — actual card is sent to Microsoft Teams when a scheduled scan completes.
+      <div className="space-y-0 bg-white/80 dark:bg-background/80">
+        <PreviewRow label="Scan coverage" value={scanTypes.length ? scanTypes.join(' · ') : 'SAST · SCA'} accent />
+        {repositories.length ? (
+          <PreviewRow label="Repositories" value={repositories.join('\n')} mono />
+        ) : null}
+        {urls.length ? <PreviewRow label="URL" value={urls.join('\n')} mono /> : null}
+        {status === 'Success' ? (
+          <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-violet-100 px-4 py-2.5 text-xs dark:border-border">
+            <span className="font-medium text-violet-600 dark:text-violet-300">Findings</span>
+            <div className="flex flex-wrap gap-2">
+              <FindingPill label="High" value={3} tone="red" />
+              <FindingPill label="Medium" value={6} tone="amber" />
+              <FindingPill label="Low" value={1} tone="slate" />
+            </div>
+          </div>
+        ) : (
+          <PreviewRow label="Status" value="Scan did not complete" accent="text-red-600" />
+        )}
+        <PreviewRow label="Scheduled" value={scheduleSummary} />
+        {reportLinks.length ? (
+          <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-violet-100 px-4 py-2.5 text-xs dark:border-border">
+            <span className="font-medium text-emerald-700 dark:text-emerald-300">Report URLs (S3)</span>
+            <div className="space-y-1">
+              {s3Bucket ? (
+                <p className="text-[10px] text-muted-foreground">Bucket: {s3Bucket}</p>
+              ) : null}
+              {reportLinks.map((link) => (
+                <a
+                  key={link.htmlUrl}
+                  href={link.htmlUrl}
+                  className="block break-all text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-300"
+                  onClick={(event) => event.preventDefault()}
+                >
+                  {link.title} · HTML
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="border-t border-violet-100 bg-violet-50/50 px-4 py-2 text-[10px] text-muted-foreground dark:border-border dark:bg-muted/20">
+        Preview — actual Adaptive Card is sent to Microsoft Teams when a scheduled scan completes.
       </div>
     </div>
+  );
+}
+
+function PreviewRow({
+  label,
+  value,
+  mono,
+  accent,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  accent?: boolean | string;
+}) {
+  return (
+    <div className="grid grid-cols-[140px_1fr] gap-3 border-t border-violet-100 px-4 py-2.5 text-xs dark:border-border">
+      <span
+        className={cn(
+          'font-medium',
+          accent === true
+            ? 'text-violet-600 dark:text-violet-300'
+            : 'text-muted-foreground'
+        )}
+      >
+        {label}
+      </span>
+      <span
+        className={cn(
+          'whitespace-pre-wrap break-all text-foreground',
+          mono && 'font-mono text-[11px]',
+          typeof accent === 'string' && accent
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function FindingPill({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'red' | 'amber' | 'slate';
+}) {
+  const styles = {
+    red: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+    amber: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
+    slate: 'bg-slate-100 text-slate-700 dark:bg-slate-500/20 dark:text-slate-300',
+  }[tone];
+
+  return (
+    <span className={cn('rounded-md px-2 py-1 text-[11px] font-semibold', styles)}>
+      {value} {label}
+    </span>
   );
 }
 
@@ -319,24 +383,37 @@ export function SecurityAutomationPanel({
     [draft.scanCategories]
   );
 
-  const previewRepoUrls = useMemo(
+  const previewRepositories = useMemo(
     () =>
       selectedResources
-        .map((row) => row.repoUrl ?? row.targetUrl)
+        .filter((row) => row.type === 'repository' || (row.repoUrl && row.type !== 'target_url'))
+        .map((row) => row.repoUrl ?? row.name)
         .filter((url): url is string => Boolean(url)),
     [selectedResources]
   );
 
-  const previewReportUrls = useMemo(() => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://securenexus.example';
-    if (draft.toolIds.length <= 1) {
-      return [`${origin}/api/security/reports/sample/download?format=html`];
-    }
-    return draft.toolIds.map(
-      (toolId, index) =>
-        `${origin}/api/security/reports/sample-${index + 1}/download?format=html (${SECURITY_TOOLS.find((t) => t.id === toolId)?.name ?? toolId})`
-    );
-  }, [draft.toolIds]);
+  const previewUrls = useMemo(
+    () =>
+      selectedResources
+        .filter((row) => row.type === 'target_url' || (!row.repoUrl && row.targetUrl))
+        .map((row) => row.targetUrl ?? row.name)
+        .filter((url): url is string => Boolean(url)),
+    [selectedResources]
+  );
+
+  const previewReportLinks = useMemo(() => {
+    const bucket = draft.s3Bucket.trim() || 'my-security-reports';
+    const region = draft.s3Region.trim() || 'us-east-1';
+    const folder = `security-reports/${draft.name || 'automation'}/2026-07-07-16-52`;
+    const reports =
+      draft.toolIds.length > 0
+        ? draft.toolIds.map((toolId) => SECURITY_TOOLS.find((t) => t.id === toolId)?.name ?? toolId)
+        : ['SAST Report'];
+    return reports.map((title) => ({
+      title,
+      htmlUrl: `https://${bucket}.s3.${region}.amazonaws.com/${folder}/${title.toLowerCase().replace(/\s+/g, '-')}.html`,
+    }));
+  }, [draft.s3Bucket, draft.s3Region, draft.name, draft.toolIds]);
 
   const draftScheduleSummary = useMemo(
     () =>
@@ -466,6 +543,8 @@ export function SecurityAutomationPanel({
           teamsWebhookUrl: draft.teamsWebhookUrl || undefined,
           scanCategories: draft.scanCategories,
           resourceIds: draft.resourceIds,
+          s3Bucket: draft.s3Bucket || undefined,
+          s3Region: draft.s3Region || undefined,
         }),
       }),
     onSuccess: (result) => setTeamsTestStatus(result),
@@ -978,20 +1057,21 @@ export function SecurityAutomationPanel({
               {draft.teamsEnabled ? (
                 <div className="space-y-1.5">
                   <Label className="text-[10px]">Incoming webhook URL</Label>
-                  <Input
-                    value={draft.teamsWebhookUrl}
-                    onChange={(e) => {
-                      setTeamsTestStatus(null);
-                      setDraft((prev) => ({ ...prev, teamsWebhookUrl: e.target.value }));
-                    }}
-                    placeholder="Leave empty to use global webhook from Alerts page"
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex gap-2">
+                    <Input
+                      value={draft.teamsWebhookUrl}
+                      onChange={(e) => {
+                        setTeamsTestStatus(null);
+                        setDraft((prev) => ({ ...prev, teamsWebhookUrl: e.target.value }));
+                      }}
+                      placeholder="Leave empty to use global webhook from Alerts page"
+                      className="min-w-0 flex-1"
+                    />
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-8 gap-1.5"
+                      className="h-9 shrink-0 gap-1.5 text-[11px]"
                       disabled={testTeamsNotification.isPending}
                       onClick={() => testTeamsNotification.mutate()}
                     >
@@ -1000,19 +1080,19 @@ export function SecurityAutomationPanel({
                       ) : (
                         <MessageSquare className="h-3.5 w-3.5" />
                       )}
-                      Send test notification
+                      Test
                     </Button>
-                    {teamsTestStatus ? (
-                      <p
-                        className={cn(
-                          'text-[10px]',
-                          teamsTestStatus.ok ? 'text-emerald-600' : 'text-red-600'
-                        )}
-                      >
-                        {teamsTestStatus.message}
-                      </p>
-                    ) : null}
                   </div>
+                  {teamsTestStatus ? (
+                    <p
+                      className={cn(
+                        'text-[10px]',
+                        teamsTestStatus.ok ? 'text-emerald-600' : 'text-red-600'
+                      )}
+                    >
+                      {teamsTestStatus.message}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -1070,10 +1150,12 @@ export function SecurityAutomationPanel({
             <TeamsNotificationPreview
               title={draft.name.trim() || 'Security Scan Report'}
               scanTypes={previewScanTypes}
-              repoUrls={previewRepoUrls}
+              repositories={previewRepositories}
+              urls={previewUrls}
               status={previewStatus}
-              reportUrls={previewReportUrls}
+              reportLinks={draft.s3Enabled ? previewReportLinks : []}
               scheduleSummary={draftScheduleSummary}
+              s3Bucket={draft.s3Enabled ? draft.s3Bucket || 'my-security-reports' : undefined}
             />
           </div>
         </div>

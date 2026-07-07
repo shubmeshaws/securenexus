@@ -79,3 +79,56 @@ export async function uploadAutomationReportsToS3(input: {
 
   return { uploaded: keys.length, keys };
 }
+
+export function buildS3ObjectUrl(
+  bucket: string,
+  region: string | null | undefined,
+  key: string
+): string {
+  const encodedKey = key
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const resolvedRegion = region?.trim() || 'us-east-1';
+  if (resolvedRegion === 'us-east-1') {
+    return `https://${bucket}.s3.amazonaws.com/${encodedKey}`;
+  }
+  return `https://${bucket}.s3.${resolvedRegion}.amazonaws.com/${encodedKey}`;
+}
+
+export function buildS3ConsoleFolderUrl(
+  bucket: string,
+  region: string | null | undefined,
+  prefix: string
+): string {
+  const resolvedRegion = region?.trim() || 'us-east-1';
+  const encodedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return `https://s3.console.aws.amazon.com/s3/buckets/${encodeURIComponent(bucket)}?region=${encodeURIComponent(resolvedRegion)}&prefix=${encodeURIComponent(encodedPrefix)}`;
+}
+
+export function groupS3ReportLinks(input: {
+  bucket: string;
+  region: string | null | undefined;
+  keys: string[];
+}): Array<{ title: string; htmlUrl: string; csvUrl: string; pdfUrl: string }> {
+  const byBase = new Map<string, { html?: string; csv?: string; pdf?: string }>();
+
+  for (const key of input.keys) {
+    const match = key.match(/\/([^/]+)\.(html|csv|pdf)$/i);
+    if (!match) continue;
+    const baseName = match[1];
+    const ext = match[2].toLowerCase() as 'html' | 'csv' | 'pdf';
+    const row = byBase.get(baseName) ?? {};
+    row[ext] = buildS3ObjectUrl(input.bucket, input.region, key);
+    byBase.set(baseName, row);
+  }
+
+  return Array.from(byBase.entries())
+    .filter(([, urls]) => urls.html)
+    .map(([baseName, urls]) => ({
+      title: baseName.replace(/-/g, ' '),
+      htmlUrl: urls.html!,
+      csvUrl: urls.csv ?? urls.html!,
+      pdfUrl: urls.pdf ?? urls.html!,
+    }));
+}

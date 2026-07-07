@@ -1,10 +1,13 @@
 import prisma from '@/lib/prisma';
 import { getTeamsWebhookUrl } from '@/lib/alert-settings';
-import { getAppUrl } from '@/lib/google-auth';
 import {
   automationScheduleRowFromRecord,
   formatAutomationScheduleSummary,
 } from '@/lib/security-automation-schedule';
+import {
+  buildS3ConsoleFolderUrl,
+  groupS3ReportLinks,
+} from '@/lib/security-automation-s3-upload';
 import { SECURITY_TOOL_CATEGORIES } from '@/lib/security-tools';
 import { sendTeamsWebhook } from '@/lib/teams-webhook';
 
@@ -13,20 +16,336 @@ function parseStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
-function buildFindingsLabel(
-  reports: Array<{ highCount: number; mediumCount: number; lowCount: number }>,
-  failed: boolean
-): string {
-  if (failed) return 'Scan did not complete';
-  if (!reports.length) return 'No findings recorded';
+export interface SecurityScanTeamsInput {
+  title: string;
+  scanTypes: string[];
+  repositories: string[];
+  urls: string[];
+  scheduleSummary: string;
+  status: 'success' | 'failed';
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  reportLinks: Array<{ title: string; htmlUrl: string; csvUrl: string; pdfUrl: string }>;
+  s3Bucket?: string | null;
+  s3FolderUrl?: string | null;
+  error?: string | null;
+}
 
-  const high = reports.reduce((sum, row) => sum + row.highCount, 0);
-  const medium = reports.reduce((sum, row) => sum + row.mediumCount, 0);
-  const low = reports.reduce((sum, row) => sum + row.lowCount, 0);
-  const total = high + medium + low;
+function sectionLabel(text: string): Record<string, unknown> {
+  return {
+    type: 'TextBlock',
+    text,
+    weight: 'Bolder',
+    size: 'Small',
+    color: 'Accent',
+    spacing: 'Medium',
+  };
+}
 
-  if (total === 0) return 'No vulnerabilities reported';
-  return `${high} High · ${medium} Medium · ${low} Low`;
+function sectionValue(text: string): Record<string, unknown> {
+  return {
+    type: 'TextBlock',
+    text: text || '—',
+    wrap: true,
+    spacing: 'Small',
+    fontType: 'Monospace',
+    size: 'Small',
+  };
+}
+
+function findingColumn(label: string, count: number, style: string, color: string): Record<string, unknown> {
+  return {
+    type: 'Column',
+    width: 'stretch',
+    items: [
+      {
+        type: 'Container',
+        style,
+        items: [
+          {
+            type: 'TextBlock',
+            text: String(count),
+            size: 'ExtraLarge',
+            weight: 'Bolder',
+            color,
+            horizontalAlignment: 'Center',
+          },
+          {
+            type: 'TextBlock',
+            text: label,
+            size: 'Small',
+            horizontalAlignment: 'Center',
+            spacing: 'None',
+            isSubtle: true,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function buildSecurityScanTeamsCard(input: SecurityScanTeamsInput) {
+  const failed = input.status === 'failed';
+  const statusLabel = failed ? 'Failed' : 'Success';
+  const statusEmoji = failed ? '❌' : '✅';
+  const scanTypeLine = input.scanTypes.length ? input.scanTypes.join(' · ') : '—';
+
+  const body: Record<string, unknown>[] = [
+    {
+      type: 'Container',
+      style: 'accent',
+      bleed: true,
+      items: [
+        {
+          type: 'ColumnSet',
+          columns: [
+            {
+              type: 'Column',
+              width: 'auto',
+              items: [
+                {
+                  type: 'TextBlock',
+                  text: '🛡️',
+                  size: 'ExtraLarge',
+                  horizontalAlignment: 'Center',
+                },
+              ],
+              verticalContentAlignment: 'Center',
+            },
+            {
+              type: 'Column',
+              width: 'stretch',
+              items: [
+                {
+                  type: 'TextBlock',
+                  text: 'Security Scan Report',
+                  weight: 'Bolder',
+                  size: 'Large',
+                  color: 'Accent',
+                  wrap: true,
+                },
+                {
+                  type: 'TextBlock',
+                  text: input.title,
+                  weight: 'Bolder',
+                  spacing: 'None',
+                  wrap: true,
+                },
+                {
+                  type: 'TextBlock',
+                  text: 'SecureNexus Security Automation',
+                  isSubtle: true,
+                  spacing: 'None',
+                  size: 'Small',
+                },
+              ],
+              verticalContentAlignment: 'Center',
+            },
+            {
+              type: 'Column',
+              width: 'auto',
+              items: [
+                {
+                  type: 'TextBlock',
+                  text: statusEmoji,
+                  size: 'ExtraLarge',
+                  horizontalAlignment: 'Right',
+                },
+              ],
+              verticalContentAlignment: 'Center',
+            },
+          ],
+        },
+      ],
+    },
+    {
+      type: 'Container',
+      style: 'emphasis',
+      spacing: 'Medium',
+      items: [
+        {
+          type: 'TextBlock',
+          text: 'Scan coverage',
+          weight: 'Bolder',
+          size: 'Small',
+          color: 'Accent',
+        },
+        {
+          type: 'TextBlock',
+          text: scanTypeLine,
+          wrap: true,
+          spacing: 'Small',
+          weight: 'Bolder',
+        },
+      ],
+    },
+  ];
+
+  if (input.repositories.length) {
+    body.push(
+      {
+        type: 'Container',
+        spacing: 'Medium',
+        items: [sectionLabel('Repositories'), sectionValue(input.repositories.join('\n'))],
+      }
+    );
+  }
+
+  if (input.urls.length) {
+    body.push(
+      {
+        type: 'Container',
+        spacing: 'Medium',
+        items: [sectionLabel('URL'), sectionValue(input.urls.join('\n'))],
+      }
+    );
+  }
+
+  if (!failed) {
+    body.push({
+      type: 'Container',
+      spacing: 'Medium',
+      items: [
+        sectionLabel('Findings'),
+        {
+          type: 'ColumnSet',
+          spacing: 'Small',
+          columns: [
+            findingColumn('High', input.highCount, 'attention', 'Attention'),
+            findingColumn('Medium', input.mediumCount, 'warning', 'Warning'),
+            findingColumn('Low', input.lowCount, 'default', 'Default'),
+          ],
+        },
+      ],
+    });
+  } else {
+    body.push({
+      type: 'Container',
+      style: 'attention',
+      spacing: 'Medium',
+      items: [
+        {
+          type: 'TextBlock',
+          text: 'Scan did not complete',
+          weight: 'Bolder',
+          color: 'Attention',
+        },
+        ...(input.error
+          ? [
+              {
+                type: 'TextBlock',
+                text: input.error,
+                wrap: true,
+                spacing: 'Small',
+              },
+            ]
+          : []),
+      ],
+    });
+  }
+
+  body.push({
+    type: 'FactSet',
+    spacing: 'Medium',
+    facts: [
+      { title: 'Status', value: statusLabel },
+      { title: 'Scheduled', value: input.scheduleSummary },
+      { title: 'Triggered by', value: 'Security Automation' },
+    ],
+  });
+
+  if (!failed && input.reportLinks.length > 0) {
+    const reportActions: Record<string, unknown>[] = [];
+
+    for (const report of input.reportLinks) {
+      reportActions.push({
+        type: 'ActionSet',
+        spacing: 'Small',
+        actions: [
+          {
+            type: 'Action.OpenUrl',
+            title: `${report.title} · HTML`,
+            url: report.htmlUrl,
+            style: 'positive',
+          },
+          {
+            type: 'Action.OpenUrl',
+            title: 'CSV',
+            url: report.csvUrl,
+          },
+          {
+            type: 'Action.OpenUrl',
+            title: 'PDF',
+            url: report.pdfUrl,
+          },
+        ],
+      });
+    }
+
+    body.push(
+      {
+        type: 'Container',
+        style: 'good',
+        spacing: 'Medium',
+        items: [
+          sectionLabel('Report URLs (S3)'),
+          ...(input.s3Bucket
+            ? [
+                {
+                  type: 'TextBlock',
+                  text: `Bucket: ${input.s3Bucket}`,
+                  isSubtle: true,
+                  spacing: 'Small',
+                  size: 'Small',
+                },
+              ]
+            : []),
+          ...reportActions,
+          ...(input.s3FolderUrl
+            ? [
+                {
+                  type: 'ActionSet',
+                  actions: [
+                    {
+                      type: 'Action.OpenUrl',
+                      title: 'Open S3 folder in AWS Console',
+                      url: input.s3FolderUrl,
+                    },
+                  ],
+                },
+              ]
+            : []),
+        ],
+      }
+    );
+  }
+
+  body.push({
+    type: 'TextBlock',
+    text: `${statusEmoji} ${statusLabel}`,
+    color: failed ? 'Attention' : 'Good',
+    weight: 'Bolder',
+    spacing: 'Medium',
+  });
+
+  return {
+    type: 'message' as const,
+    style: 'emphasis' as const,
+    summary: `Security Scan Report — ${input.title}`,
+    attachments: [
+      {
+        contentType: 'application/vnd.microsoft.card.adaptive',
+        contentUrl: null,
+        content: {
+          $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+          type: 'AdaptiveCard',
+          version: '1.5',
+          body,
+        },
+      },
+    ],
+  };
 }
 
 export async function resolveAutomationTeamsWebhookUrl(
@@ -51,10 +370,14 @@ export async function sendAutomationTeamsNotification(input: {
     scheduleStartDate?: string | null;
     timezone: string;
     resourceIds: unknown;
+    s3Enabled?: boolean;
+    s3Bucket?: string | null;
+    s3Region?: string | null;
   };
   jobId: string | null;
   scanStatus: 'completed' | 'failed';
   scanError: string | null;
+  s3Keys?: string[];
 }): Promise<string | null> {
   if (!input.automation.teamsEnabled) return null;
 
@@ -67,7 +390,7 @@ export async function sendAutomationTeamsNotification(input: {
   const resources = resourceIds.length
     ? await prisma.securityResource.findMany({
         where: { id: { in: resourceIds } },
-        select: { name: true, repoUrl: true, targetUrl: true },
+        select: { name: true, repoUrl: true, targetUrl: true, type: true },
       })
     : [];
 
@@ -90,8 +413,14 @@ export async function sendAutomationTeamsNotification(input: {
     (id) => SECURITY_TOOL_CATEGORIES.find((row) => row.id === id)?.label ?? id.toUpperCase()
   );
 
-  const repoUrls = resources
-    .map((row) => row.repoUrl ?? row.targetUrl ?? row.name)
+  const repositories = resources
+    .filter((row) => row.type === 'repository' || (row.repoUrl && row.type !== 'target_url'))
+    .map((row) => row.repoUrl ?? row.name)
+    .filter((url): url is string => Boolean(url));
+
+  const urls = resources
+    .filter((row) => row.type === 'target_url' || (!row.repoUrl && row.targetUrl))
+    .map((row) => row.targetUrl ?? row.name)
     .filter((url): url is string => Boolean(url));
 
   const schedule = automationScheduleRowFromRecord({
@@ -107,36 +436,43 @@ export async function sendAutomationTeamsNotification(input: {
 
   const scheduleSummary = formatAutomationScheduleSummary(schedule);
   const failed = input.scanStatus !== 'completed';
-  const findingsLabel = buildFindingsLabel(reports, failed);
-  const appUrl = getAppUrl().replace(/\/$/, '');
-  const reportUrls = reports.map(
-    (report) => `${appUrl}/api/security/reports/${report.id}/download?format=html`
-  );
 
-  const messageParts = [
-    `Type of reports: ${scanTypes.length ? scanTypes.join(', ') : '—'}`,
-    `Repositories:\n${repoUrls.length ? repoUrls.join('\n') : '—'}`,
-    `Findings: ${findingsLabel}`,
-    `Scheduled: ${scheduleSummary}`,
-  ];
+  const highCount = reports.reduce((sum, row) => sum + row.highCount, 0);
+  const mediumCount = reports.reduce((sum, row) => sum + row.mediumCount, 0);
+  const lowCount = reports.reduce((sum, row) => sum + row.lowCount, 0);
 
-  if (!failed && reportUrls.length > 0) {
-    messageParts.push(`Report URLs:\n${reportUrls.join('\n')}`);
-  }
-  if (failed && input.scanError) {
-    messageParts.push(`Error: ${input.scanError}`);
-  }
+  const s3Bucket = input.automation.s3Bucket?.trim() || null;
+  const s3Region = input.automation.s3Region;
+  const s3Keys = input.s3Keys ?? [];
+  const reportLinks =
+    s3Bucket && s3Keys.length
+      ? groupS3ReportLinks({ bucket: s3Bucket, region: s3Region, keys: s3Keys })
+      : [];
 
-  const result = await sendTeamsWebhook(webhookUrl, {
+  const s3FolderPrefix =
+    s3Keys[0]?.split('/').slice(0, -1).join('/') ?? null;
+  const s3FolderUrl =
+    s3Bucket && s3FolderPrefix
+      ? buildS3ConsoleFolderUrl(s3Bucket, s3Region, s3FolderPrefix)
+      : null;
+
+  const card = buildSecurityScanTeamsCard({
     title: input.automation.name,
-    message: messageParts.join('\n\n'),
-    action: 'security-scan',
-    cluster: 'Security Automation',
-    namespace: scanTypes.join(', ') || 'Security',
-    appName: repoUrls[0] ?? input.automation.name,
-    triggeredBy: 'Security Automation',
+    scanTypes,
+    repositories,
+    urls,
+    scheduleSummary,
     status: failed ? 'failed' : 'success',
+    highCount,
+    mediumCount,
+    lowCount,
+    reportLinks,
+    s3Bucket,
+    s3FolderUrl,
+    error: input.scanError,
   });
+
+  const result = await sendTeamsWebhook(webhookUrl, card);
 
   if (!result.ok) {
     console.error(
@@ -154,32 +490,64 @@ export async function sendAutomationTeamsTestNotification(input: {
   teamsWebhookUrl?: string | null;
   scanCategories?: string[];
   resourceIds?: string[];
+  s3Bucket?: string | null;
+  s3Region?: string | null;
 }): Promise<{ ok: boolean; message: string }> {
   const webhookUrl = await resolveAutomationTeamsWebhookUrl(input.teamsWebhookUrl ?? null);
   if (!webhookUrl) {
     return { ok: false, message: 'Teams webhook URL is not configured' };
   }
 
-  const error = await sendAutomationTeamsNotification({
-    automation: {
-      name: input.name || 'Security Scan Test',
-      teamsEnabled: true,
-      teamsWebhookUrl: webhookUrl,
-      scanCategories: input.scanCategories ?? ['sast', 'sca'],
-      scheduleFrequency: 'once',
-      scheduleTime: '12:00',
-      scheduleDays: [],
-      scheduleDayOfMonth: null,
-      scheduleMonth: null,
-      scheduleStartDate: new Date().toISOString().slice(0, 10),
-      timezone: 'UTC',
-      resourceIds: input.resourceIds ?? [],
+  const resourceIds = input.resourceIds ?? [];
+  const resources = resourceIds.length
+    ? await prisma.securityResource.findMany({
+        where: { id: { in: resourceIds } },
+        select: { name: true, repoUrl: true, targetUrl: true, type: true },
+      })
+    : [];
+
+  const repositories = resources
+    .filter((row) => row.type === 'repository' || (row.repoUrl && row.type !== 'target_url'))
+    .map((row) => row.repoUrl ?? row.name)
+    .filter((url): url is string => Boolean(url));
+
+  const urls = resources
+    .filter((row) => row.type === 'target_url' || (!row.repoUrl && row.targetUrl))
+    .map((row) => row.targetUrl ?? row.name)
+    .filter((url): url is string => Boolean(url));
+
+  const scanTypes = (input.scanCategories ?? ['sast', 'sca']).map(
+    (id) => SECURITY_TOOL_CATEGORIES.find((row) => row.id === id)?.label ?? id.toUpperCase()
+  );
+
+  const bucket = input.s3Bucket?.trim() || 'my-security-reports';
+  const region = input.s3Region?.trim() || 'us-east-1';
+  const folder = 'security-reports/sample-automation/2026-07-07-16-52';
+  const sampleLinks = [
+    {
+      title: 'SAST Report',
+      htmlUrl: `https://${bucket}.s3.${region}.amazonaws.com/${folder}/sast-report.html`,
+      csvUrl: `https://${bucket}.s3.${region}.amazonaws.com/${folder}/sast-report.csv`,
+      pdfUrl: `https://${bucket}.s3.${region}.amazonaws.com/${folder}/sast-report.pdf`,
     },
-    jobId: null,
-    scanStatus: 'completed',
-    scanError: null,
+  ];
+
+  const card = buildSecurityScanTeamsCard({
+    title: input.name || 'Security Scan Test',
+    scanTypes,
+    repositories: repositories.length ? repositories : ['https://bitbucket.org/org/sample-repo.git'],
+    urls,
+    scheduleSummary: 'Once on 2026-07-07 at 12:00 UTC',
+    status: 'success',
+    highCount: 2,
+    mediumCount: 5,
+    lowCount: 3,
+    reportLinks: sampleLinks,
+    s3Bucket: bucket,
+    s3FolderUrl: buildS3ConsoleFolderUrl(bucket, region, folder),
   });
 
-  if (error) return { ok: false, message: error };
+  const result = await sendTeamsWebhook(webhookUrl, card);
+  if (!result.ok) return { ok: false, message: result.message };
   return { ok: true, message: 'Test Teams notification sent' };
 }

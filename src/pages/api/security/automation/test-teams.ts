@@ -8,6 +8,8 @@ const bodySchema = z.object({
   teamsWebhookUrl: z.string().optional(),
   scanCategories: z.array(z.string()).optional(),
   resourceIds: z.array(z.string()).optional(),
+  s3Bucket: z.string().optional(),
+  s3Region: z.string().optional(),
 });
 
 async function postHandler(req: AuthenticatedRequest, res: NextApiResponse) {
