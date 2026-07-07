@@ -10,6 +10,9 @@ import { findPythonProjectRoot, prepareRepositoryPath } from './security-repo-pr
 const execFileAsync = promisify(execFile);
 const PIP_AUDIT_TIMEOUT_MS = 15 * 60 * 1000;
 const PYTHON_EXECUTABLE = 'python3';
+const OSV_QUERY_URL = 'https://api.osv.dev/v1/query';
+const OSV_REQUEST_TIMEOUT_MS = 20_000;
+const OSV_CONCURRENCY = 8;
 const PIP_AUDIT_SCA_SCRIPT_PATH = path.join(
   process.cwd(),
   'scripts',
@@ -118,27 +121,26 @@ const BASE_PIP_AUDIT_ARGS = ['--format=json', '--progress-spinner=off', '--desc=
 const PINNED_REQUIREMENT_RE =
   /^\s*([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]+\])?)\s*==\s*([^\s;#\\]+)/;
 
-interface PinnedRequirements {
-  filePath: string | null;
-  pinnedCount: number;
-  skippedCount: number;
+interface PinnedDep {
+  name: string;
+  version: string;
+}
+
+function normalizePackageName(name: string): string {
+  // Strip extras like requests[security] -> requests, PEP 503 normalize.
+  return name.replace(/\[[^\]]*\]/g, '').trim();
 }
 
 /**
- * Build a requirements file containing ONLY exactly-pinned entries
- * (`name==version`), stripping markers, hashes, URLs, and unpinned lines.
- *
- * This lets us run `pip-audit --no-deps` against a guaranteed-pinned file so
- * pip-audit never invokes pip's resolver/installer — which is what triggers
- * source builds (pandas/numpy) and Python-version mismatches like
- * `pandas==2.1.4` not existing for Python 3.14.
+ * Parse exactly-pinned (`name==version`) entries from requirement files.
+ * Unpinned / VCS / URL / range entries are counted as skipped (we can't audit
+ * a specific version we don't know) but never block the scan.
  */
-async function writePinnedRequirements(
+async function collectPinnedDependencies(
   projectRoot: string,
-  requirementFiles: string[],
-  outFile: string
-): Promise<PinnedRequirements> {
-  const pinned = new Map<string, string>();
+  requirementFiles: string[]
+): Promise<{ deps: PinnedDep[]; skipped: number }> {
+  const byName = new Map<string, PinnedDep>();
   let skipped = 0;
 
   for (const file of requirementFiles) {
@@ -155,22 +157,143 @@ async function writePinnedRequirements(
 
       const match = PINNED_REQUIREMENT_RE.exec(line);
       if (match) {
-        const name = match[1];
+        const name = normalizePackageName(match[1]);
         const version = match[2];
-        pinned.set(name.toLowerCase(), `${name}==${version}`);
+        if (name) byName.set(name.toLowerCase(), { name, version });
       } else {
         skipped += 1;
       }
     }
   }
 
-  if (pinned.size === 0) {
-    return { filePath: null, pinnedCount: 0, skippedCount: skipped };
+  return { deps: Array.from(byName.values()), skipped };
+}
+
+interface OsvVuln {
+  id?: string;
+  summary?: string;
+  details?: string;
+  aliases?: string[];
+  severity?: Array<{ type?: string; score?: string }>;
+  database_specific?: { severity?: string };
+  affected?: Array<{
+    package?: { ecosystem?: string; name?: string };
+    ranges?: Array<{ type?: string; events?: Array<{ introduced?: string; fixed?: string }> }>;
+  }>;
+}
+
+function deriveOsvSeverity(vuln: OsvVuln): string | undefined {
+  const dbSeverity = vuln.database_specific?.severity;
+  if (dbSeverity) {
+    const upper = dbSeverity.toUpperCase();
+    if (upper === 'CRITICAL') return 'Critical';
+    if (upper === 'HIGH') return 'High';
+    if (upper === 'MODERATE' || upper === 'MEDIUM') return 'Medium';
+    if (upper === 'LOW') return 'Low';
   }
 
-  const body = `${Array.from(pinned.values()).join('\n')}\n`;
-  await fs.writeFile(outFile, body, 'utf-8');
-  return { filePath: outFile, pinnedCount: pinned.size, skippedCount: skipped };
+  // Try to pull a numeric base score out of a CVSS vector/score string.
+  for (const entry of vuln.severity ?? []) {
+    const score = entry.score;
+    if (!score) continue;
+    const numeric = Number(score);
+    if (!Number.isNaN(numeric)) {
+      if (numeric >= 9) return 'Critical';
+      if (numeric >= 7) return 'High';
+      if (numeric >= 4) return 'Medium';
+      return 'Low';
+    }
+  }
+  return undefined;
+}
+
+function extractFixVersions(vuln: OsvVuln, depName: string): string[] {
+  const fixes: string[] = [];
+  const target = depName.toLowerCase();
+  for (const affected of vuln.affected ?? []) {
+    if (
+      affected.package?.name &&
+      normalizePackageName(affected.package.name).toLowerCase() !== target
+    ) {
+      continue;
+    }
+    for (const range of affected.ranges ?? []) {
+      for (const event of range.events ?? []) {
+        if (event.fixed) fixes.push(event.fixed);
+      }
+    }
+  }
+  return Array.from(new Set(fixes));
+}
+
+async function queryOsvForDep(dep: PinnedDep): Promise<OsvVuln[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OSV_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(OSV_QUERY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        package: { ecosystem: 'PyPI', name: dep.name },
+        version: dep.version,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`OSV query failed for ${dep.name}==${dep.version} (HTTP ${res.status})`);
+    }
+    const data = (await res.json()) as { vulns?: OsvVuln[] };
+    return data.vulns ?? [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return results;
+}
+
+/**
+ * Audit pinned dependencies by querying OSV.dev directly — the same data source
+ * pip-audit uses, but WITHOUT pip's resolver/installer. This avoids building
+ * source distributions, is CPU-free, and is immune to interpreter/wheel
+ * mismatches (e.g. pandas==2.1.4 having no wheel for Python 3.14).
+ *
+ * Output is shaped like pip-audit JSON so the existing report script can consume it.
+ */
+async function auditPinnedViaOsv(deps: PinnedDep[]): Promise<string> {
+  const vulnsByDep = await mapWithConcurrency(deps, OSV_CONCURRENCY, (dep) =>
+    queryOsvForDep(dep).catch(() => [] as OsvVuln[])
+  );
+
+  const dependencies = deps.map((dep, index) => ({
+    name: dep.name,
+    version: dep.version,
+    vulns: (vulnsByDep[index] ?? []).map((vuln) => ({
+      id: vuln.id ?? 'UNKNOWN',
+      fix_versions: extractFixVersions(vuln, dep.name),
+      aliases: vuln.aliases ?? [],
+      description: vuln.summary || vuln.details || '',
+      severity: deriveOsvSeverity(vuln),
+    })),
+  }));
+
+  return JSON.stringify({ dependencies });
 }
 
 async function runPipAudit(projectRoot: string, args: string[]): Promise<string> {
@@ -199,55 +322,28 @@ export interface PipAuditRunResult {
   raw: string;
   pinnedCount: number;
   skippedCount: number;
-  mode: 'pinned' | 'project';
+  mode: 'osv' | 'project';
 }
 
 /**
- * Audit strategy designed to avoid pip's resolver/installer entirely:
- *
- * 1. If requirement files exist, extract only exactly-pinned entries into a temp
- *    file and run `pip-audit -r <pinned> --no-deps`. No resolution, no downloads,
- *    no source builds, and immune to interpreter-version wheel mismatches.
+ * Audit strategy:
+ * 1. If requirement files have pinned (`==`) entries, query OSV.dev directly for
+ *    each pinned version. No pip, no venv, no builds, no interpreter mismatch.
  * 2. If nothing is pinned but a project definition exists (pyproject.toml,
- *    Pipfile, setup.py), fall back to a build-parallelism-capped project audit.
+ *    Pipfile, setup.py), fall back to a build-parallelism-capped pip-audit run.
  */
-async function runPipAuditJson(
-  projectRoot: string,
-  outputDir: string
-): Promise<PipAuditRunResult> {
+async function runPipAuditJson(projectRoot: string): Promise<PipAuditRunResult> {
   const requirementFiles = await collectRequirementFiles(projectRoot);
 
   if (requirementFiles.length) {
-    await fs.mkdir(outputDir, { recursive: true });
-    const pinnedFile = path.join(outputDir, 'pinned-requirements.txt');
-    const pinned = await writePinnedRequirements(projectRoot, requirementFiles, pinnedFile);
-
-    if (pinned.filePath) {
-      try {
-        const raw = await runPipAudit(projectRoot, ['-r', pinned.filePath, '--no-deps']);
-        return {
-          raw,
-          pinnedCount: pinned.pinnedCount,
-          skippedCount: pinned.skippedCount,
-          mode: 'pinned',
-        };
-      } catch (err) {
-        const salvaged = extractStdout(err);
-        if (salvaged) {
-          return {
-            raw: salvaged,
-            pinnedCount: pinned.pinnedCount,
-            skippedCount: pinned.skippedCount,
-            mode: 'pinned',
-          };
-        }
-        throw new Error(execErrorDetail(err) || 'pip-audit scan failed');
-      }
+    const { deps, skipped } = await collectPinnedDependencies(projectRoot, requirementFiles);
+    if (deps.length) {
+      const raw = await auditPinnedViaOsv(deps);
+      return { raw, pinnedCount: deps.length, skippedCount: skipped, mode: 'osv' };
     }
-
-    // No pinned entries found — fall through to a project audit if possible.
   }
 
+  // No pinned deps — best-effort project audit via pip-audit (build-capped).
   try {
     const raw = await runPipAudit(projectRoot, [projectRoot]);
     return { raw, pinnedCount: 0, skippedCount: 0, mode: 'project' };
@@ -284,9 +380,9 @@ export async function runPipAuditScan(input: {
       );
     }
 
-    progress?.(35, 'Running pip-audit (pinned, build-limited)…');
+    progress?.(35, 'Auditing pinned dependencies via OSV…');
     await fs.mkdir(outputDir, { recursive: true });
-    const auditRun = await runPipAuditJson(projectRoot, outputDir);
+    const auditRun = await runPipAuditJson(projectRoot);
     const auditRaw = auditRun.raw;
     const parsed = JSON.parse(auditRaw) as { dependencies?: unknown[] } | unknown[];
     const hasDeps = Array.isArray(parsed)
@@ -294,6 +390,10 @@ export async function runPipAuditScan(input: {
       : Array.isArray(parsed.dependencies) && parsed.dependencies.length > 0;
 
     const pipAuditVersion = await getPipAuditVersion();
+    const scannerVersion =
+      auditRun.mode === 'osv'
+        ? `OSV.dev (pinned deps${pipAuditVersion !== 'unknown' ? `, pip-audit ${pipAuditVersion}` : ''})`
+        : pipAuditVersion;
     const auditJsonPath = path.join(outputDir, 'pip-audit-report.json');
     await fs.writeFile(auditJsonPath, auditRaw, 'utf-8');
 
@@ -308,7 +408,7 @@ export async function runPipAuditScan(input: {
           input.resource.name,
           'pip-audit',
           input.resource.repoUrl ?? '',
-          pipAuditVersion,
+          scannerVersion,
         ],
         {
           cwd: path.dirname(PIP_AUDIT_SCA_SCRIPT_PATH),
@@ -337,7 +437,7 @@ export async function runPipAuditScan(input: {
     const counts = countSeverities(rows);
     const dependencyCount = rows.length;
     const skippedNote =
-      auditRun.mode === 'pinned' && auditRun.skippedCount > 0
+      auditRun.mode === 'osv' && auditRun.skippedCount > 0
         ? ` ${auditRun.skippedCount} unpinned entr${auditRun.skippedCount === 1 ? 'y was' : 'ies were'} skipped (pin them with == to include).`
         : '';
     const summary =
