@@ -191,6 +191,34 @@ function formatScanTime(value: string): string {
   }
 }
 
+function ScanPanelSkeleton() {
+  return (
+    <GlassPanel className="flex flex-col overflow-visible">
+      <PanelHeader title="Scan" icon={ScanSearch} accent="emerald" />
+      <p className="border-b border-border px-5 pb-3 text-[11px] text-muted-foreground">
+        Select targets and tools, then run a scan. Progress appears in Recent scans below.
+      </p>
+      <div className="space-y-4 px-5 py-4">
+        {[1, 2, 3].map((step) => (
+          <div
+            key={step}
+            className="rounded-xl border border-border/80 bg-card/50 p-4 shadow-sm animate-pulse"
+          >
+            <div className="mb-3 flex items-start gap-3">
+              <div className="h-8 w-8 shrink-0 rounded-full bg-muted" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="h-4 w-32 rounded bg-muted" />
+                <div className="h-3 w-full max-w-sm rounded bg-muted/70" />
+              </div>
+            </div>
+            <div className="h-10 rounded-md bg-muted/60" />
+          </div>
+        ))}
+      </div>
+    </GlassPanel>
+  );
+}
+
 export function SecurityScanPanel({
   resources,
   toolSettings,
@@ -259,6 +287,7 @@ export function SecurityScanPanel({
   const { data: scanJobs = [], isLoading: jobsLoading } = useQuery({
     queryKey: ['security-scan-jobs'],
     queryFn: fetchSecurityScanJobs,
+    staleTime: 15_000,
     refetchInterval: (query) => {
       const jobs = query.state.data;
       return jobs?.some(isScanJobActive) ? SCAN_JOB_POLL_MS : false;
@@ -269,6 +298,7 @@ export function SecurityScanPanel({
   const isScanning = Boolean(activeJob);
 
   useEffect(() => {
+    if (loading) return;
     if (resumeChecked.current) return;
     resumeChecked.current = true;
 
@@ -287,7 +317,7 @@ export function SecurityScanPanel({
         // Ignore resume errors on mount.
       }
     })();
-  }, [queryClient]);
+  }, [loading, queryClient]);
 
   useEffect(() => {
     if (!activeJob) return;
@@ -357,14 +387,7 @@ export function SecurityScanPanel({
   const canScan = canPickTools && selectedToolIds.length > 0 && scanPairCount > 0;
 
   if (loading) {
-    return (
-      <GlassPanel className="flex flex-col overflow-visible">
-        <PanelHeader title="Scan" icon={ScanSearch} accent="emerald" />
-        <div className="flex justify-center p-10">
-          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-        </div>
-      </GlassPanel>
-    );
+    return <ScanPanelSkeleton />;
   }
 
   return (

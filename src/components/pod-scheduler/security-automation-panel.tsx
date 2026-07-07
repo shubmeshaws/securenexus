@@ -309,6 +309,31 @@ function FindingPill({
   );
 }
 
+function AutomationPanelSkeleton() {
+  return (
+    <div className="space-y-4">
+      <GlassPanel className="flex flex-col overflow-visible">
+        <PanelHeader title="Automation" icon={Bot} accent="violet" />
+        <div className="space-y-4 px-5 py-4 animate-pulse">
+          <div className="h-10 rounded-md bg-muted/60" />
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="h-24 rounded-xl bg-muted/40" />
+            <div className="h-24 rounded-xl bg-muted/40" />
+          </div>
+          <div className="h-32 rounded-xl bg-muted/30" />
+        </div>
+      </GlassPanel>
+      <GlassPanel className="p-5 animate-pulse">
+        <div className="mb-4 h-4 w-40 rounded bg-muted" />
+        <div className="space-y-2">
+          <div className="h-10 rounded bg-muted/50" />
+          <div className="h-10 rounded bg-muted/50" />
+        </div>
+      </GlassPanel>
+    </div>
+  );
+}
+
 export function SecurityAutomationPanel({
   resources,
   toolSettings,
@@ -331,9 +356,10 @@ export function SecurityAutomationPanel({
     message: string;
   } | null>(null);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading: automationsLoading } = useQuery({
     queryKey: ['security-automation'],
     queryFn: () => apiFetch<{ automations: SecurityAutomationView[] }>('/api/security/automation'),
+    staleTime: 60_000,
     refetchInterval: (query) => {
       const rows = query.state.data?.automations ?? [];
       return rows.some((row) => row.runStatus === 'running') ? 3000 : false;
@@ -343,6 +369,8 @@ export function SecurityAutomationPanel({
   const { data: awsCredsData } = useQuery({
     queryKey: ['aws-credentials-picker'],
     queryFn: () => apiFetch<{ credentials: AwsCredentialView[] }>('/api/aws-credentials'),
+    enabled: draft.s3Enabled || Boolean(draft.awsCredentialId),
+    staleTime: 300_000,
   });
 
   const automations = data?.automations ?? [];
@@ -657,15 +685,8 @@ export function SecurityAutomationPanel({
     draft.scheduleFrequency === 'quarterly' ||
     draft.scheduleFrequency === 'semiannual';
 
-  if (loading || isLoading) {
-    return (
-      <GlassPanel className="flex flex-col">
-        <PanelHeader title="Automation" icon={Bot} accent="violet" />
-        <div className="flex justify-center p-10">
-          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-        </div>
-      </GlassPanel>
-    );
+  if (loading) {
+    return <AutomationPanelSkeleton />;
   }
 
   return (
@@ -1195,6 +1216,11 @@ export function SecurityAutomationPanel({
 
       <GlassPanel className="p-5">
         <h3 className="mb-3 text-sm font-semibold text-foreground">Saved automations</h3>
+        {automationsLoading ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
         <SecurityAutomationSavedList
           automations={automations}
           resources={resources}
@@ -1208,6 +1234,7 @@ export function SecurityAutomationPanel({
           }}
           onDelete={(id) => deleteAutomation.mutate(id)}
         />
+        )}
       </GlassPanel>
     </div>
   );

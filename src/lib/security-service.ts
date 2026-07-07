@@ -31,13 +31,14 @@ import {
   isRuntimeSecurityTool,
   type ServerOsType,
 } from './security/tool-runtime';
-import { getInstallCommandsByOs } from './security/tool-install-specs';
+import { getInstallCommandsByOs, getInstallCommandsForOs, isServerOsType } from './security/tool-install-specs';
 import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from './security/report-pdf-runtime';
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
 import {
   cloneSecurityResourceRepo,
   getSecurityResourceCloneStatus,
+  getSecurityResourceCloneStatuses,
   pullSecurityResourceRepo,
   removeSecurityResourceClone,
   type SecurityResourceCloneStatus,
@@ -46,6 +47,14 @@ import {
 const SECURITY_DASHBOARD_CACHE_TTL_MS = 60_000;
 let securityDashboardCache: { at: number; data: SecurityDashboardStats } | null = null;
 let toolSettingsSeeded = false;
+const TOOL_SETTINGS_CACHE_TTL_MS = 120_000;
+let toolSettingsFullCache: { at: number; data: SecurityToolSettingView[] } | null = null;
+let toolSettingsLiteCache: { at: number; data: SecurityToolSettingView[] } | null = null;
+let securityWorkbenchCache: {
+  at: number;
+  data: { resources: SecurityResourceView[]; tools: SecurityToolSettingView[] };
+} | null = null;
+const SECURITY_WORKBENCH_CACHE_TTL_MS = 60_000;
 
 const SECURITY_REPORT_LIST_SELECT = {
   id: true,
@@ -89,6 +98,12 @@ const SECURITY_DASHBOARD_REPORT_SELECT = {
 
 export function invalidateSecurityDashboardCache(): void {
   securityDashboardCache = null;
+}
+
+export function invalidateSecurityToolSettingsCache(): void {
+  toolSettingsFullCache = null;
+  toolSettingsLiteCache = null;
+  securityWorkbenchCache = null;
 }
 
 export type { ScanProgressCallback, ScanProgressUpdate } from './security-scan-progress';
@@ -238,12 +253,55 @@ async function enrichResourceView(row: Parameters<typeof toResourceView>[0]): Pr
   return view;
 }
 
-export async function listSecurityResources(): Promise<SecurityResourceView[]> {
+export async function listSecurityResources(options?: {
+  includeClone?: boolean;
+}): Promise<SecurityResourceView[]> {
   await assertSecurityModuleEnabled();
   const rows = await prisma.securityResource.findMany({
     orderBy: { createdAt: 'desc' },
   });
-  return Promise.all(rows.map((row) => enrichResourceView(row)));
+  if (options?.includeClone === false) {
+    return rows.map((row) => toResourceView(row));
+  }
+
+  const repoIds = rows
+    .filter((row) => row.type === 'repository')
+    .map((row) => row.id);
+  const cloneStatuses = await getSecurityResourceCloneStatuses(repoIds);
+  const emptyClone: SecurityResourceCloneStatus = {
+    cloned: false,
+    clonedAt: null,
+    lastPulledAt: null,
+  };
+
+  return rows.map((row) => {
+    const view = toResourceView(row);
+    if (view.type === 'repository') {
+      view.clone = cloneStatuses.get(view.id) ?? emptyClone;
+    }
+    return view;
+  });
+}
+
+export async function getSecurityWorkbenchData(): Promise<{
+  resources: SecurityResourceView[];
+  tools: SecurityToolSettingView[];
+}> {
+  if (
+    securityWorkbenchCache &&
+    Date.now() - securityWorkbenchCache.at < SECURITY_WORKBENCH_CACHE_TTL_MS
+  ) {
+    return securityWorkbenchCache.data;
+  }
+
+  const [resources, tools] = await Promise.all([
+    listSecurityResources({ includeClone: false }),
+    listSecurityToolSettings({ checkRuntime: false }),
+  ]);
+
+  const data = { resources, tools };
+  securityWorkbenchCache = { at: Date.now(), data };
+  return data;
 }
 
 export async function createSecurityResource(input: {
@@ -273,6 +331,7 @@ export async function createSecurityResource(input: {
         createdBy: input.createdBy ?? null,
       },
     });
+    invalidateSecurityToolSettingsCache();
     return enrichResourceView(row);
   }
 
@@ -294,6 +353,7 @@ export async function createSecurityResource(input: {
       createdBy: input.createdBy ?? null,
     },
   });
+  invalidateSecurityToolSettingsCache();
   return enrichResourceView(row);
 }
 
@@ -439,6 +499,7 @@ export async function deleteSecurityResource(id: string): Promise<void> {
   await assertSecurityModuleEnabled();
   await removeSecurityResourceClone(id);
   await prisma.securityResource.delete({ where: { id } });
+  invalidateSecurityToolSettingsCache();
 }
 
 export async function deleteSecurityReport(id: string): Promise<void> {
@@ -484,15 +545,79 @@ async function scheduleReportPdfRuntimeIfNeeded(): Promise<void> {
   }
 }
 
-export async function listSecurityToolSettings(): Promise<SecurityToolSettingView[]> {
+export async function listSecurityToolSettings(options?: {
+  checkRuntime?: boolean;
+}): Promise<SecurityToolSettingView[]> {
   await assertSecurityModuleEnabled();
   await ensureToolSettingsSeeded();
+
+  const checkRuntime = options?.checkRuntime !== false;
+
+  if (checkRuntime && toolSettingsFullCache) {
+    if (Date.now() - toolSettingsFullCache.at < TOOL_SETTINGS_CACHE_TTL_MS) {
+      return toolSettingsFullCache.data;
+    }
+  }
+  if (!checkRuntime && toolSettingsLiteCache) {
+    if (Date.now() - toolSettingsLiteCache.at < TOOL_SETTINGS_CACHE_TTL_MS) {
+      return toolSettingsLiteCache.data;
+    }
+  }
+
   const rows = await prisma.securityToolSetting.findMany();
   const byId = new Map(rows.map((row) => [row.toolId, row]));
+
+  if (!checkRuntime) {
+    const tools = SECURITY_TOOLS.map((tool) => {
+      const row = byId.get(tool.id);
+      const runtimeRequired = isRuntimeSecurityTool(tool.id);
+      const installedOs =
+        row?.installedOs && isServerOsType(row.installedOs) ? row.installedOs : null;
+      return {
+        toolId: tool.id,
+        enabled: row?.enabled ?? false,
+        runtimeRequired,
+        runtimeAvailable: !runtimeRequired || Boolean(row?.installedAt),
+        runtimeReady: Boolean(row?.installedAt),
+        installedAt: row?.installedAt?.toISOString() ?? null,
+        installedOs,
+        runtimeVersion: null,
+        installCommands: installedOs ? getInstallCommandsForOs(tool.id, installedOs) : [],
+        installCommandsByOs: runtimeRequired ? getInstallCommandsByOs(tool.id) : null,
+        scanOptions:
+          tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
+      };
+    });
+    toolSettingsLiteCache = { at: Date.now(), data: tools };
+    return tools;
+  }
 
   const tools = await Promise.all(
     SECURITY_TOOLS.map(async (tool) => {
       const row = byId.get(tool.id);
+      const runtimeRequired = isRuntimeSecurityTool(tool.id);
+      const needsRuntimeProbe =
+        runtimeRequired && Boolean(row?.enabled || row?.installedAt);
+
+      if (!needsRuntimeProbe) {
+        const installedOs =
+          row?.installedOs && isServerOsType(row.installedOs) ? row.installedOs : null;
+        return {
+          toolId: tool.id,
+          enabled: row?.enabled ?? false,
+          runtimeRequired,
+          runtimeAvailable: !runtimeRequired || Boolean(row?.installedAt),
+          runtimeReady: Boolean(row?.installedAt),
+          installedAt: row?.installedAt?.toISOString() ?? null,
+          installedOs,
+          runtimeVersion: null,
+          installCommands: installedOs ? getInstallCommandsForOs(tool.id, installedOs) : [],
+          installCommandsByOs: runtimeRequired ? getInstallCommandsByOs(tool.id) : null,
+          scanOptions:
+            tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
+        };
+      }
+
       const runtime = await getToolRuntimeStatus(
         tool.id,
         row?.installedAt ?? null,
@@ -519,6 +644,7 @@ export async function listSecurityToolSettings(): Promise<SecurityToolSettingVie
     scheduleReportPdfRuntimeInstall();
   }
 
+  toolSettingsFullCache = { at: Date.now(), data: tools };
   return tools;
 }
 
@@ -544,6 +670,7 @@ export async function setSecurityToolEnabled(toolId: string, enabled: boolean): 
   if (enabled) {
     await scheduleReportPdfRuntimeIfNeeded();
   }
+  invalidateSecurityToolSettingsCache();
 }
 
 export async function updateSecurityToolScanOptions(
@@ -568,6 +695,7 @@ export async function updateSecurityToolScanOptions(
     update: { scanOptions: scanOptions as object },
   });
 
+  invalidateSecurityToolSettingsCache();
   return listSecurityToolSettings();
 }
 
@@ -619,6 +747,7 @@ export async function installSecurityToolRuntime(
     await scheduleReportPdfRuntimeIfNeeded();
   }
 
+  invalidateSecurityToolSettingsCache();
   return {
     toolId,
     enabled: updated?.enabled ?? (options?.enableAfter ?? true),

@@ -31,6 +31,30 @@ export async function enforceSecurityTab(
   res: NextApiResponse,
   tab: SecurityTabPermission
 ): Promise<boolean> {
+  return enforceAnySecurityTab(req, res, [tab]);
+}
+
+export function requireAnySecurityTab(tabs: SecurityTabPermission[]) {
+  return (
+    handler: (req: AuthenticatedRequest, res: NextApiResponse) => Promise<HandlerReturn> | HandlerReturn
+  ) =>
+    requireAuth(async (req, res) => {
+      try {
+        await assertSecurityModuleEnabled();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Security module is disabled';
+        return res.status(403).json({ error: message });
+      }
+      if (!(await enforceAnySecurityTab(req, res, tabs))) return;
+      return handler(req, res);
+    });
+}
+
+export async function enforceAnySecurityTab(
+  req: AuthenticatedRequest,
+  res: NextApiResponse,
+  tabs: SecurityTabPermission[]
+): Promise<boolean> {
   if (!req.user) {
     res.status(401).json({ error: 'Not authenticated' });
     return false;
@@ -48,7 +72,10 @@ export async function enforceSecurityTab(
     return false;
   }
 
-  if (!hasSecurityTabAccess(req.user.role, user.permissions, tab)) {
+  const allowed = tabs.some((tab) =>
+    hasSecurityTabAccess(req.user!.role, user.permissions, tab)
+  );
+  if (!allowed) {
     res.status(403).json({ error: 'You do not have permission to access this security feature.' });
     return false;
   }

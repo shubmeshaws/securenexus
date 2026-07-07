@@ -79,25 +79,68 @@ async function writeCloneMeta(clonePath: string, patch: Partial<CloneMeta> = {})
   return meta;
 }
 
+const CLONE_STATUS_CACHE_TTL_MS = 60_000;
+const cloneStatusCache = new Map<
+  string,
+  { at: number; status: SecurityResourceCloneStatus }
+>();
+
+export function invalidateSecurityResourceCloneStatusCache(resourceId?: string): void {
+  if (resourceId) {
+    cloneStatusCache.delete(resourceId);
+    return;
+  }
+  cloneStatusCache.clear();
+}
+
 export async function getSecurityResourceCloneStatus(
   resourceId: string
 ): Promise<SecurityResourceCloneStatus> {
+  const cached = cloneStatusCache.get(resourceId);
+  if (cached && Date.now() - cached.at < CLONE_STATUS_CACHE_TTL_MS) {
+    return cached.status;
+  }
+
   const clonePath = securityResourceClonePath(resourceId);
   const cloned = await pathExists(path.join(clonePath, '.git'));
   if (!cloned) {
-    return { cloned: false, clonedAt: null, lastPulledAt: null };
+    const status: SecurityResourceCloneStatus = {
+      cloned: false,
+      clonedAt: null,
+      lastPulledAt: null,
+    };
+    cloneStatusCache.set(resourceId, { at: Date.now(), status });
+    return status;
   }
+
   const meta = await readCloneMeta(clonePath);
-  return {
+  const status: SecurityResourceCloneStatus = {
     cloned: true,
     clonedAt: meta?.clonedAt ?? null,
     lastPulledAt: meta?.lastPulledAt ?? null,
   };
+  cloneStatusCache.set(resourceId, { at: Date.now(), status });
+  return status;
+}
+
+export async function getSecurityResourceCloneStatuses(
+  resourceIds: string[]
+): Promise<Map<string, SecurityResourceCloneStatus>> {
+  const statuses = new Map<string, SecurityResourceCloneStatus>();
+  if (!resourceIds.length) return statuses;
+
+  await Promise.all(
+    resourceIds.map(async (resourceId) => {
+      statuses.set(resourceId, await getSecurityResourceCloneStatus(resourceId));
+    })
+  );
+  return statuses;
 }
 
 export async function removeSecurityResourceClone(resourceId: string): Promise<void> {
   const resourceDir = path.join(SECURITY_REPO_ROOT, resourceId);
   await fs.rm(resourceDir, { recursive: true, force: true });
+  invalidateSecurityResourceCloneStatusCache(resourceId);
 }
 
 async function runGit(args: string[], cwd?: string): Promise<string> {

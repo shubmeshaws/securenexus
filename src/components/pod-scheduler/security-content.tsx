@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import dynamic from 'next/dynamic';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FileUp,
   Globe2,
@@ -45,8 +46,6 @@ import {
   type SecurityToolDefinition,
 } from '@/lib/security-tools';
 import { SecurityDashboardPanel } from '@/components/pod-scheduler/security-dashboard';
-import { SecurityScanPanel } from '@/components/pod-scheduler/security-scan-panel';
-import { SecurityAutomationPanel } from '@/components/pod-scheduler/security-automation-panel';
 import { SecurityIconButton } from '@/components/pod-scheduler/security-icon-button';
 import { SecurityReportActions } from '@/components/pod-scheduler/security-report-actions';
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
@@ -65,6 +64,22 @@ import {
 } from '@/lib/security/tool-install-specs';
 import type { ToolInstallJobState } from '@/lib/security/tool-install-job';
 import type { SecurityResourceSyncJobState } from '@/lib/security-service';
+
+const SecurityScanPanel = dynamic(
+  () =>
+    import('@/components/pod-scheduler/security-scan-panel').then((module) => ({
+      default: module.SecurityScanPanel,
+    })),
+  { ssr: false }
+);
+
+const SecurityAutomationPanel = dynamic(
+  () =>
+    import('@/components/pod-scheduler/security-automation-panel').then((module) => ({
+      default: module.SecurityAutomationPanel,
+    })),
+  { ssr: false }
+);
 
 type SecuritySection = SecuritySectionId;
 
@@ -161,23 +176,79 @@ export function SecurityContent() {
     }
   }, [allowedSections, section]);
 
-  const needsResources =
-    section === 'resources' || section === 'scan' || section === 'automation';
-  const needsTools = section === 'tools' || section === 'scan' || section === 'automation';
+  const needsResourcesFull = section === 'resources';
+  const needsWorkbench = section === 'scan' || section === 'automation';
+  const needsToolsFull = section === 'tools';
   const needsReports = section === 'reports';
+
+  const canPrefetchWorkbench = useMemo(
+    () => allowedSections.some((tab) => tab.id === 'scan' || tab.id === 'automation'),
+    [allowedSections]
+  );
+  const canPrefetchTools = useMemo(
+    () => allowedSections.some((tab) => tab.id === 'tools'),
+    [allowedSections]
+  );
+  const canPrefetchResources = useMemo(
+    () => allowedSections.some((tab) => tab.id === 'resources'),
+    [allowedSections]
+  );
+
+  useEffect(() => {
+    if (!canPrefetchWorkbench) return;
+    void queryClient.prefetchQuery({
+      queryKey: ['security-workbench'],
+      queryFn: () =>
+        apiFetch<{ resources: SecurityResourceView[]; tools: SecurityToolSettingView[] }>(
+          '/api/security/workbench'
+        ),
+      staleTime: 120_000,
+    });
+  }, [canPrefetchWorkbench, queryClient]);
+
+  useEffect(() => {
+    if (!canPrefetchTools) return;
+    void queryClient.prefetchQuery({
+      queryKey: ['security-tools'],
+      queryFn: () => apiFetch<{ tools: SecurityToolSettingView[] }>('/api/security/tools'),
+      staleTime: 120_000,
+    });
+  }, [canPrefetchTools, queryClient]);
+
+  useEffect(() => {
+    if (!canPrefetchResources) return;
+    void queryClient.prefetchQuery({
+      queryKey: ['security-resources'],
+      queryFn: () => apiFetch<{ resources: SecurityResourceView[] }>('/api/security/resources'),
+      staleTime: 120_000,
+    });
+  }, [canPrefetchResources, queryClient]);
+
+  const { data: workbenchData, isLoading: workbenchLoading } = useQuery({
+    queryKey: ['security-workbench'],
+    queryFn: () =>
+      apiFetch<{ resources: SecurityResourceView[]; tools: SecurityToolSettingView[] }>(
+        '/api/security/workbench'
+      ),
+    enabled: needsWorkbench,
+    staleTime: 120_000,
+    placeholderData: keepPreviousData,
+  });
 
   const { data: resourcesData, isLoading: resourcesLoading } = useQuery({
     queryKey: ['security-resources'],
     queryFn: () => apiFetch<{ resources: SecurityResourceView[] }>('/api/security/resources'),
-    enabled: needsResources,
+    enabled: needsResourcesFull,
     staleTime: 120_000,
+    placeholderData: keepPreviousData,
   });
 
   const { data: toolsData, isLoading: toolsLoading } = useQuery({
     queryKey: ['security-tools'],
     queryFn: () => apiFetch<{ tools: SecurityToolSettingView[] }>('/api/security/tools'),
-    enabled: needsTools,
+    enabled: needsToolsFull,
     staleTime: 120_000,
+    placeholderData: keepPreviousData,
   });
 
   const { data: reportsData, isLoading: reportsLoading } = useQuery({
@@ -187,8 +258,12 @@ export function SecurityContent() {
     staleTime: 120_000,
   });
 
-  const resources = resourcesData?.resources ?? [];
-  const toolSettings = toolsData?.tools ?? [];
+  const resources = needsWorkbench
+    ? (workbenchData?.resources ?? [])
+    : (resourcesData?.resources ?? []);
+  const toolSettings = needsWorkbench
+    ? (workbenchData?.tools ?? [])
+    : (toolsData?.tools ?? []);
   const reports = reportsData?.reports ?? [];
 
   const enabledTools = useMemo(
@@ -308,6 +383,7 @@ export function SecurityContent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
       setAddOpen(false);
       setRepoUrl('');
       setDefaultBranch('');
@@ -320,7 +396,10 @@ export function SecurityContent() {
   const deleteResource = useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/api/security/resources/${id}`, { method: 'DELETE' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-resources'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
+    },
   });
 
   const cloneResource = useMutation({
@@ -331,6 +410,7 @@ export function SecurityContent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
       setRepoSyncPhase(null);
     },
     onError: (err) => {
@@ -347,6 +427,7 @@ export function SecurityContent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['security-resources'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
       setRepoSyncPhase(null);
     },
     onError: (err) => {
@@ -374,7 +455,10 @@ export function SecurityContent() {
         method: 'PUT',
         body: JSON.stringify({ toolId, enabled }),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-tools'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-tools'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
+    },
   });
 
   const updateToolScanOptions = useMutation({
@@ -383,7 +467,10 @@ export function SecurityContent() {
         method: 'PUT',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['security-tools'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['security-tools'] });
+      queryClient.invalidateQueries({ queryKey: ['security-workbench'] });
+    },
   });
 
   const generateReport = useMutation({
@@ -600,9 +687,24 @@ export function SecurityContent() {
             Semgrep, npm audit, Gitleaks, and OWASP ZAP install on the SecureNexus server when you click Install
             &amp; enable — no manual terminal steps. Other tools use sample reports until integrated.
           </div>
-          {toolsLoading ? (
-            <div className="flex justify-center p-10">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          {toolsLoading && !toolSettings.length ? (
+            <div className="space-y-4">
+              {SECURITY_TOOL_CATEGORIES.map((category) => (
+                <GlassPanel key={category.id} className="p-5">
+                  <div className="mb-4 space-y-2 animate-pulse">
+                    <div className="h-4 w-36 rounded bg-muted" />
+                    <div className="h-3 w-full max-w-md rounded bg-muted/70" />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {Array.from({ length: 3 }).map((_, index) => (
+                      <div
+                        key={`${category.id}-skeleton-${index}`}
+                        className="h-28 animate-pulse rounded-xl border border-border/60 bg-muted/30"
+                      />
+                    ))}
+                  </div>
+                </GlassPanel>
+              ))}
             </div>
           ) : (
             SECURITY_TOOL_CATEGORIES.map((category) => {
@@ -646,7 +748,7 @@ export function SecurityContent() {
         <SecurityScanPanel
           resources={resources}
           toolSettings={toolSettings}
-          loading={resourcesLoading || toolsLoading}
+          loading={workbenchLoading && !workbenchData}
         />
       )}
 
@@ -654,7 +756,7 @@ export function SecurityContent() {
         <SecurityAutomationPanel
           resources={resources}
           toolSettings={toolSettings}
-          loading={resourcesLoading || toolsLoading}
+          loading={workbenchLoading && !workbenchData}
         />
       )}
 
