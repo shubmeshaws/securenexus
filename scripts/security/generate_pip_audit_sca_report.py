@@ -45,6 +45,28 @@ def fix_version(vuln: dict) -> str:
     return "—"
 
 
+def dedupe_rows(rows: list[dict]) -> list[dict]:
+    """Collapse duplicate OSV advisories (e.g. GHSA + PYSEC) for the same CVE."""
+    severity_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4, "Unknown": 5}
+    merged: dict[tuple[str, str, str], dict] = {}
+
+    for row in rows:
+        key = (row["package"].lower(), row["current_ver"], row["cve"])
+        prev = merged.get(key)
+        if not prev:
+            merged[key] = dict(row)
+            continue
+
+        if severity_rank.get(row["severity"], 9) < severity_rank.get(prev["severity"], 9):
+            prev["severity"] = row["severity"]
+
+        if prev.get("fix_ver") in ("—", "", None) and row.get("fix_ver") not in ("—", "", None):
+            prev["fix_ver"] = row["fix_ver"]
+            prev["action"] = row["action"]
+
+    return list(merged.values())
+
+
 def parse_pip_audit(audit_data: dict | list, display_name: str) -> list[dict]:
     rows: list[dict] = []
 
@@ -84,6 +106,7 @@ def parse_pip_audit(audit_data: dict | list, display_name: str) -> list[dict]:
                 }
             )
 
+    rows = dedupe_rows(rows)
     severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4, "Unknown": 5}
     rows.sort(key=lambda r: (severity_order.get(r["severity"], 9), r["package"].lower()))
     for idx, row in enumerate(rows, start=1):

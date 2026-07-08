@@ -40,6 +40,7 @@ import { scheduleReportPdfRuntimeInstall, ensureReportPdfRuntimeInstalled } from
 
 import { emitScanProgress, type ScanProgressCallback } from './security-scan-progress';
 import { isScanJobCancelRequested, ScanCancelledError } from './security-scan-cancel';
+import { throwIfScanJobCancelled } from './security-scan-exec';
 import {
   cloneSecurityResourceRepo,
   getSecurityResourceCloneStatus,
@@ -911,6 +912,7 @@ async function executeSecurityScanPair(input: {
   toolId: string;
   pairIndex?: number;
   pairTotal?: number;
+  scanJobId?: string;
   onProgress?: ScanProgressCallback;
 }): Promise<SecurityScanPairResult> {
   const pairIndex = input.pairIndex ?? 0;
@@ -942,6 +944,7 @@ async function executeSecurityScanPair(input: {
   let lowCount: number;
 
   const runnerProgress = (stagePercent: number, message: string) => {
+    throwIfScanJobCancelled(input.scanJobId);
     stageProgress(stagePercent, message);
   };
 
@@ -949,6 +952,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting Semgrep scan for ${resourceView.name}…`);
     const semgrepResult = await runSemgrepScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = semgrepResult.summary;
@@ -960,6 +964,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting npm audit for ${resourceView.name}…`);
     const auditResult = await runNpmAuditScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = auditResult.summary;
@@ -971,6 +976,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting pip-audit for ${resourceView.name}…`);
     const auditResult = await runPipAuditScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = auditResult.summary;
@@ -982,6 +988,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting govulncheck for ${resourceView.name}…`);
     const auditResult = await runGovulncheckScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = auditResult.summary;
@@ -994,6 +1001,7 @@ async function executeSecurityScanPair(input: {
     const gitleaksResult = await runGitleaksScan({
       resource: resourceView,
       scanOptions: parseGitleaksScanOptions(toolSetting?.scanOptions),
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = gitleaksResult.summary;
@@ -1005,6 +1013,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting OWASP ZAP DAST scan for ${resourceView.name}…`);
     const zapResult = await runZapScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = zapResult.summary;
@@ -1016,6 +1025,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting Snyk SCA scan for ${resourceView.name}…`);
     const snykResult = await runSnykScaScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = snykResult.summary;
@@ -1027,6 +1037,7 @@ async function executeSecurityScanPair(input: {
     stageProgress(5, `Starting Snyk Code scan for ${resourceView.name}…`);
     const snykResult = await runSnykCodeScan({
       resource: resourceView,
+      scanJobId: input.scanJobId,
       onProgress: runnerProgress,
     });
     summary = snykResult.summary;
@@ -1263,6 +1274,7 @@ export async function runSecurityScans(
         ...pair,
         pairIndex: index,
         pairTotal: pairs.length,
+        scanJobId: options?.scanJobId,
         onProgress,
       })
     );
@@ -1274,6 +1286,20 @@ export async function runSecurityScans(
       `Completed ${index + 1} of ${pairs.length}: ${label}`,
       pair
     );
+  }
+
+  if (onProgress) {
+    onProgress({
+      type: 'progress',
+      progress: 99,
+      message: 'Finalizing reports…',
+      pairIndex: pairs.length,
+      pairTotal: pairs.length,
+    });
+  }
+
+  if (options?.scanJobId && isScanJobCancelRequested(options.scanJobId)) {
+    throw new ScanCancelledError();
   }
 
   let reports: SecurityReportView[];

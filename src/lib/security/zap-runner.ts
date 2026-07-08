@@ -12,6 +12,8 @@ import { resolveZapInstallDir, getZapVersion, isZapAvailable } from './zap-insta
 import { parseZapHtmlSeverityCounts, readZapReportFile } from './zap-report-parse';
 import { detectZapScanFailure, interpretReachabilityStatus } from './zap-scan-diagnostics';
 import { withZapScanLock } from './zap-scan-lock';
+import { execShellForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 import {
   cleanupStaleZapEnvironment,
   isZapHomeDirectoryInUseError,
@@ -34,19 +36,23 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-async function runShell(command: string, env?: NodeJS.ProcessEnv): Promise<string> {
-  const { stdout, stderr } = await execFileAsync('sh', ['-c', command], {
+async function runShell(
+  command: string,
+  scanJobId?: string,
+  env?: NodeJS.ProcessEnv
+): Promise<string> {
+  return execShellForScanJob(scanJobId, command, {
     timeout: ZAP_SCAN_TIMEOUT_MS,
     maxBuffer: 100 * 1024 * 1024,
     env: env ? { ...process.env, ...env } : process.env,
   });
-  return `${stdout}\n${stderr}`.trim();
 }
 
 async function runZapScanCommand(
   scanCommand: string,
   zapHomeDir: string,
-  isolatedHomeDir: string
+  isolatedHomeDir: string,
+  scanJobId?: string
 ): Promise<string> {
   const scanEnv: NodeJS.ProcessEnv = { ...process.env, HOME: isolatedHomeDir };
   delete scanEnv.ZAP_HOME;
@@ -55,8 +61,9 @@ async function runZapScanCommand(
     await cleanupStaleZapEnvironment([zapHomeDir, path.join(isolatedHomeDir, '.ZAP')]);
 
     try {
-      return await runShell(scanCommand, scanEnv);
+      return await runShell(scanCommand, scanJobId, scanEnv);
     } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       const combined = [
         err instanceof Error ? err.message : String(err),
         (err as { stdout?: string }).stdout ?? '',
@@ -80,10 +87,11 @@ function sanitizeZapError(message: string): string {
   return message.slice(0, 800);
 }
 
-async function preCheckTargetReachability(targetUrl: string): Promise<void> {
+async function preCheckTargetReachability(targetUrl: string, scanJobId?: string): Promise<void> {
   try {
     const statusRaw = await runShell(
-      `curl -sS -o /dev/null -w '%{http_code}' --max-time 30 ${shellQuote(targetUrl)} 2>/dev/null || echo '000'`
+      `curl -sS -o /dev/null -w '%{http_code}' --max-time 30 ${shellQuote(targetUrl)} 2>/dev/null || echo '000'`,
+      scanJobId
     );
     const statusCode = Number.parseInt(statusRaw.trim().split('\n').pop() ?? '', 10);
     if (!Number.isFinite(statusCode)) return;
@@ -103,6 +111,7 @@ async function preCheckTargetReachability(targetUrl: string): Promise<void> {
 
 export async function runZapScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<ZapScanResult> {
   const progress = input.onProgress;
@@ -135,7 +144,7 @@ export async function runZapScan(input: {
     const htmlReportPath = path.join(outputDir, 'zap-report.html');
 
     progress?.(12, 'Checking target reachability from this server…');
-    await preCheckTargetReachability(targetUrl);
+    await preCheckTargetReachability(targetUrl, input.scanJobId);
 
     progress?.(20, `Running OWASP ZAP scan on ${targetUrl}…`);
 
@@ -154,9 +163,10 @@ export async function runZapScan(input: {
     let scanError: Error | null = null;
     try {
       scanOutput = await withZapScanLock(() =>
-        runZapScanCommand(scanCommand, zapHomeDir, isolatedHomeDir)
+        runZapScanCommand(scanCommand, zapHomeDir, isolatedHomeDir, input.scanJobId)
       );
     } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       scanError = err instanceof Error ? err : new Error(String(err));
       const combined = `${scanError.message}\n${(err as { stdout?: string; stderr?: string }).stdout ?? ''}\n${(err as { stdout?: string; stderr?: string }).stderr ?? ''}`;
       scanOutput = combined.trim();
@@ -222,6 +232,7 @@ export async function runZapScan(input: {
       zapVersion: versionLabel,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     const message = err instanceof Error ? err.message : 'OWASP ZAP scan failed';
 
     if (/home directory is already in use/i.test(message)) {

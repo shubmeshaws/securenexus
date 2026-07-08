@@ -6,6 +6,8 @@ import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { findNpmProjectRoot, prepareRepositoryPath } from './security-repo-prep';
+import { execForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 
 const execFileAsync = promisify(execFile);
 const NPM_AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -70,14 +72,14 @@ async function getNpmVersion(): Promise<string> {
   }
 }
 
-async function ensureLockfile(projectRoot: string): Promise<void> {
+async function ensureLockfile(projectRoot: string, scanJobId?: string): Promise<void> {
   const hasLockfile =
     (await pathExists(path.join(projectRoot, 'package-lock.json'))) ||
     (await pathExists(path.join(projectRoot, 'npm-shrinkwrap.json')));
 
   if (hasLockfile) return;
 
-  await execFileAsync('npm', ['install', '--package-lock-only', '--ignore-scripts'], {
+  await execForScanJob(scanJobId, 'npm', ['install', '--package-lock-only', '--ignore-scripts'], {
     cwd: projectRoot,
     maxBuffer: 20 * 1024 * 1024,
     timeout: NPM_LOCKFILE_TIMEOUT_MS,
@@ -85,9 +87,9 @@ async function ensureLockfile(projectRoot: string): Promise<void> {
   });
 }
 
-async function runNpmAuditJson(projectRoot: string): Promise<string> {
+async function runNpmAuditJson(projectRoot: string, scanJobId?: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('npm', ['audit', '--json'], {
+    const { stdout } = await execForScanJob(scanJobId, 'npm', ['audit', '--json'], {
       cwd: projectRoot,
       maxBuffer: 50 * 1024 * 1024,
       timeout: NPM_AUDIT_TIMEOUT_MS,
@@ -95,6 +97,7 @@ async function runNpmAuditJson(projectRoot: string): Promise<string> {
     });
     return stdout;
   } catch (err: unknown) {
+    if (err instanceof ScanCancelledError) throw err;
     const execErr = err as { stdout?: string; code?: number | string };
     if (typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
       return execErr.stdout;
@@ -118,6 +121,7 @@ function sanitizeNpmAuditError(message: string): string {
 
 export async function runNpmAuditScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<NpmAuditScanResult> {
   const progress = input.onProgress;
@@ -143,10 +147,10 @@ export async function runNpmAuditScan(input: {
     }
 
     progress?.(22, 'Resolving dependency lockfile…');
-    await ensureLockfile(projectRoot);
+    await ensureLockfile(projectRoot, input.scanJobId);
 
     progress?.(38, 'Running npm audit…');
-    const auditRaw = await runNpmAuditJson(projectRoot);
+    const auditRaw = await runNpmAuditJson(projectRoot, input.scanJobId);
     const parsed = JSON.parse(auditRaw) as { error?: { summary?: string } };
 
     if (parsed.error?.summary) {
@@ -160,7 +164,8 @@ export async function runNpmAuditScan(input: {
 
     progress?.(72, 'Generating SCA summary report…');
     try {
-      await execFileAsync(
+      await execForScanJob(
+        input.scanJobId,
         PYTHON_EXECUTABLE,
         [
           NPM_SCA_SCRIPT_PATH,
@@ -212,6 +217,7 @@ export async function runNpmAuditScan(input: {
       npmVersion: reportJson.raw?.npmVersion ?? npmVersion,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) {
       throw err;
     }

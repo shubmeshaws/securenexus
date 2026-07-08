@@ -14,6 +14,8 @@ import { toolPathEnv } from '@/lib/security/tool-path-env';
 import { getSecurityToolById } from '@/lib/security-tools';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { prepareRepositoryPath } from './security-repo-prep';
+import { execForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 import {
   buildGitleaksCliArgs,
   gitleaksModeLabel,
@@ -127,6 +129,7 @@ function sanitizeGitleaksError(message: string): string {
 export async function runGitleaksScan(input: {
   resource: SecurityResourceView;
   scanOptions?: GitleaksScanOptions;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<GitleaksScanResult> {
   const progress = input.onProgress;
@@ -144,12 +147,13 @@ export async function runGitleaksScan(input: {
     const cliArgs = buildGitleaksCliArgs(scanOptions, prepared.repoPath, reportPath);
 
     try {
-      await execFileAsync('gitleaks', cliArgs, {
+      await execForScanJob(input.scanJobId, 'gitleaks', cliArgs, {
         maxBuffer: 50 * 1024 * 1024,
         timeout: GITLEAKS_TIMEOUT_MS,
         env: toolPathEnv(),
       });
     } catch (err: unknown) {
+      if (err instanceof ScanCancelledError) throw err;
       const execErr = err as { code?: number | string };
       if (execErr.code !== 1) {
         throw err;

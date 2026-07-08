@@ -12,6 +12,10 @@ import {
   requestScanJobCancel,
   ScanCancelledError,
 } from './security-scan-cancel';
+import {
+  clearScanJobProcesses,
+  killScanJobProcesses,
+} from './security-scan-process-registry';
 
 export type { SecurityScanJobStatus, SecurityScanJobView } from './security-scan-types';
 
@@ -221,7 +225,7 @@ export async function listSecurityScanJobs(limit = 20): Promise<SecurityScanJobV
 export async function getActiveSecurityScanJob(): Promise<SecurityScanJobView | null> {
   await assertSecurityModuleEnabled();
   const row = await scanJobs().findFirst({
-    where: { status: { in: ['queued', 'running'] } },
+    where: { status: { in: ['queued', 'running', 'cancelling'] } },
     orderBy: { createdAt: 'desc' },
   });
   if (!row) return null;
@@ -233,11 +237,17 @@ export async function cancelSecurityScanJob(id: string): Promise<SecurityScanJob
   await assertSecurityModuleEnabled();
   const row = await scanJobs().findUnique({ where: { id } });
   if (!row) throw new Error('Scan job not found');
+  if (row.status === 'cancelling') {
+    const existing = await getSecurityScanJob(id);
+    if (!existing) throw new Error('Scan job not found');
+    return existing;
+  }
   if (row.status !== 'running' && row.status !== 'queued') {
     throw new Error('Only active scans can be stopped');
   }
 
   requestScanJobCancel(id);
+  killScanJobProcesses(id);
 
   if (row.status === 'queued' && !runningJobIds.has(id)) {
     await scanJobs().update({
@@ -254,6 +264,7 @@ export async function cancelSecurityScanJob(id: string): Promise<SecurityScanJob
     await scanJobs().update({
       where: { id },
       data: {
+        status: 'cancelling',
         message: 'Stopping scan…',
       },
     });
@@ -268,7 +279,7 @@ export async function deleteSecurityScanJob(id: string): Promise<void> {
   await assertSecurityModuleEnabled();
   const row = await scanJobs().findUnique({ where: { id } });
   if (!row) throw new Error('Scan job not found');
-  if (row.status === 'running' || row.status === 'queued') {
+  if (row.status === 'running' || row.status === 'queued' || row.status === 'cancelling') {
     throw new Error('Cannot delete a scan that is still in progress. Stop it first.');
   }
   await scanJobs().delete({ where: { id } });
@@ -298,6 +309,27 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
   runningJobIds.add(jobId);
   lastProgressPersist.delete(jobId);
 
+  const cancelPoll = setInterval(() => {
+    void (async () => {
+      if (isScanJobCancelRequested(jobId)) {
+        killScanJobProcesses(jobId);
+        return;
+      }
+      try {
+        const row = await scanJobs().findUnique({
+          where: { id: jobId },
+          select: { status: true },
+        });
+        if (row?.status === 'cancelling') {
+          requestScanJobCancel(jobId);
+          killScanJobProcesses(jobId);
+        }
+      } catch {
+        // ignore poll errors
+      }
+    })();
+  }, 400);
+
   const resourceIds = parseIdList(job.resourceIds);
   const toolIds = parseIdList(job.toolIds);
 
@@ -322,6 +354,10 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
       onProgress,
       { scanJobId: jobId, reportMode: (job.reportMode === 'merged' ? 'merged' : 'separate') }
     );
+
+    if (isScanJobCancelRequested(jobId)) {
+      throw new ScanCancelledError();
+    }
 
     await scanJobs().update({
       where: { id: jobId },
@@ -358,9 +394,11 @@ export async function executeSecurityScanJob(jobId: string): Promise<void> {
       });
     }
   } finally {
+    clearInterval(cancelPoll);
     runningJobIds.delete(jobId);
     lastProgressPersist.delete(jobId);
     clearScanJobCancel(jobId);
+    clearScanJobProcesses(jobId);
   }
 }
 

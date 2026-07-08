@@ -66,6 +66,11 @@ async function killOrphanedZapProcesses(): Promise<void> {
   `);
 }
 
+/** Stop active ZAP processes (e.g. when a scan is cancelled mid-run). */
+export async function killActiveZapScanProcesses(): Promise<void> {
+  await killOrphanedZapProcesses();
+}
+
 export function isZapHomeDirectoryInUseError(message: string): boolean {
   return /home directory is already in use|\.homelock/i.test(message);
 }

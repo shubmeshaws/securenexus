@@ -6,6 +6,8 @@ import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { findPythonProjectRoot, prepareRepositoryPath } from './security-repo-prep';
+import { execForScanJob, throwIfScanJobCancelled } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 
 const execFileAsync = promisify(execFile);
 const PIP_AUDIT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -169,6 +171,8 @@ async function collectPinnedDependencies(
   return { deps: Array.from(byName.values()), skipped };
 }
 
+import { cvssBaseScoreFromVector, severityFromCvssScore } from './cvss-severity';
+
 interface OsvVuln {
   id?: string;
   summary?: string;
@@ -192,18 +196,22 @@ function deriveOsvSeverity(vuln: OsvVuln): string | undefined {
     if (upper === 'LOW') return 'Low';
   }
 
-  // Try to pull a numeric base score out of a CVSS vector/score string.
+  let bestScore = -1;
   for (const entry of vuln.severity ?? []) {
     const score = entry.score;
     if (!score) continue;
     const numeric = Number(score);
     if (!Number.isNaN(numeric)) {
-      if (numeric >= 9) return 'Critical';
-      if (numeric >= 7) return 'High';
-      if (numeric >= 4) return 'Medium';
-      return 'Low';
+      bestScore = Math.max(bestScore, numeric);
+      continue;
+    }
+    const fromVector = cvssBaseScoreFromVector(score);
+    if (fromVector !== undefined) {
+      bestScore = Math.max(bestScore, fromVector);
     }
   }
+
+  if (bestScore >= 0) return severityFromCvssScore(bestScore);
   return undefined;
 }
 
@@ -252,12 +260,14 @@ async function queryOsvForDep(dep: PinnedDep): Promise<OsvVuln[]> {
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
-  fn: (item: T) => Promise<R>
+  fn: (item: T) => Promise<R>,
+  scanJobId?: string
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
   async function worker(): Promise<void> {
     while (cursor < items.length) {
+      throwIfScanJobCancelled(scanJobId);
       const index = cursor++;
       results[index] = await fn(items[index]);
     }
@@ -276,9 +286,12 @@ async function mapWithConcurrency<T, R>(
  *
  * Output is shaped like pip-audit JSON so the existing report script can consume it.
  */
-async function auditPinnedViaOsv(deps: PinnedDep[]): Promise<string> {
-  const vulnsByDep = await mapWithConcurrency(deps, OSV_CONCURRENCY, (dep) =>
-    queryOsvForDep(dep).catch(() => [] as OsvVuln[])
+async function auditPinnedViaOsv(deps: PinnedDep[], scanJobId?: string): Promise<string> {
+  const vulnsByDep = await mapWithConcurrency(
+    deps,
+    OSV_CONCURRENCY,
+    (dep) => queryOsvForDep(dep).catch(() => [] as OsvVuln[]),
+    scanJobId
   );
 
   const dependencies = deps.map((dep, index) => ({
@@ -296,8 +309,8 @@ async function auditPinnedViaOsv(deps: PinnedDep[]): Promise<string> {
   return JSON.stringify({ dependencies });
 }
 
-async function runPipAudit(projectRoot: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('pip-audit', [...BASE_PIP_AUDIT_ARGS, ...args], {
+async function runPipAudit(projectRoot: string, args: string[], scanJobId?: string): Promise<string> {
+  const { stdout } = await execForScanJob(scanJobId, 'pip-audit', [...BASE_PIP_AUDIT_ARGS, ...args], {
     cwd: projectRoot,
     maxBuffer: 50 * 1024 * 1024,
     timeout: PIP_AUDIT_TIMEOUT_MS,
@@ -332,22 +345,26 @@ export interface PipAuditRunResult {
  * 2. If nothing is pinned but a project definition exists (pyproject.toml,
  *    Pipfile, setup.py), fall back to a build-parallelism-capped pip-audit run.
  */
-async function runPipAuditJson(projectRoot: string): Promise<PipAuditRunResult> {
+async function runPipAuditJson(
+  projectRoot: string,
+  scanJobId?: string
+): Promise<PipAuditRunResult> {
   const requirementFiles = await collectRequirementFiles(projectRoot);
 
   if (requirementFiles.length) {
     const { deps, skipped } = await collectPinnedDependencies(projectRoot, requirementFiles);
     if (deps.length) {
-      const raw = await auditPinnedViaOsv(deps);
+      const raw = await auditPinnedViaOsv(deps, scanJobId);
       return { raw, pinnedCount: deps.length, skippedCount: skipped, mode: 'osv' };
     }
   }
 
   // No pinned deps — best-effort project audit via pip-audit (build-capped).
   try {
-    const raw = await runPipAudit(projectRoot, [projectRoot]);
+    const raw = await runPipAudit(projectRoot, [projectRoot], scanJobId);
     return { raw, pinnedCount: 0, skippedCount: 0, mode: 'project' };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     const salvaged = extractStdout(err);
     if (salvaged) return { raw: salvaged, pinnedCount: 0, skippedCount: 0, mode: 'project' };
     throw new Error(execErrorDetail(err) || 'pip-audit scan failed');
@@ -356,6 +373,7 @@ async function runPipAuditJson(projectRoot: string): Promise<PipAuditRunResult> 
 
 export async function runPipAuditScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<PipAuditScanResult> {
   const progress = input.onProgress;
@@ -382,7 +400,7 @@ export async function runPipAuditScan(input: {
 
     progress?.(35, 'Auditing pinned dependencies via OSV…');
     await fs.mkdir(outputDir, { recursive: true });
-    const auditRun = await runPipAuditJson(projectRoot);
+    const auditRun = await runPipAuditJson(projectRoot, input.scanJobId);
     const auditRaw = auditRun.raw;
     const parsed = JSON.parse(auditRaw) as { dependencies?: unknown[] } | unknown[];
     const hasDeps = Array.isArray(parsed)
@@ -399,7 +417,8 @@ export async function runPipAuditScan(input: {
 
     progress?.(72, 'Generating SCA summary report…');
     try {
-      await execFileAsync(
+      await execForScanJob(
+        input.scanJobId,
         PYTHON_EXECUTABLE,
         [
           PIP_AUDIT_SCA_SCRIPT_PATH,
@@ -418,6 +437,7 @@ export async function runPipAuditScan(input: {
         }
       );
     } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       throw new Error(formatExecError(err));
     }
 
@@ -455,6 +475,7 @@ export async function runPipAuditScan(input: {
       pipAuditVersion: reportJson.raw?.pipAuditVersion ?? pipAuditVersion,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) {
       throw err;
     }

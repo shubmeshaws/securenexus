@@ -147,7 +147,7 @@ export async function rerunSecurityScanJobClient(jobId: string): Promise<Securit
 }
 
 export function isScanJobActive(job: SecurityScanJobView): boolean {
-  return job.status === 'queued' || job.status === 'running';
+  return job.status === 'queued' || job.status === 'running' || job.status === 'cancelling';
 }
 
 export async function waitForSecurityScanJob(

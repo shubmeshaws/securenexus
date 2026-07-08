@@ -7,6 +7,8 @@ import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { getSecurityToolById } from '@/lib/security-tools';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { prepareRepositoryPath, findNpmProjectRoot } from './security-repo-prep';
+import { execForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 
 const execFileAsync = promisify(execFile);
 const SNYK_SCAN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -345,6 +347,7 @@ function sanitizeSnykError(message: string): string {
 }
 
 async function runSnykJsonToHtml(input: {
+  scanJobId?: string;
   snykArgs: string[];
   cwd: string;
   outputDir: string;
@@ -355,7 +358,7 @@ async function runSnykJsonToHtml(input: {
 }): Promise<{ htmlContent: string; jsonRaw: string }> {
   let jsonRaw = '';
   try {
-    const { stdout } = await execFileAsync('snyk', input.snykArgs, {
+    const { stdout } = await execForScanJob(input.scanJobId, 'snyk', input.snykArgs, {
       cwd: input.cwd,
       maxBuffer: 100 * 1024 * 1024,
       timeout: SNYK_SCAN_TIMEOUT_MS,
@@ -363,6 +366,7 @@ async function runSnykJsonToHtml(input: {
     });
     jsonRaw = stdout;
   } catch (err: unknown) {
+    if (err instanceof ScanCancelledError) throw err;
     const execErr = err as { code?: number | string; stdout?: string; stderr?: string };
     if (typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
       jsonRaw = execErr.stdout;
@@ -378,7 +382,7 @@ async function runSnykJsonToHtml(input: {
   await fs.writeFile(jsonPath, jsonRaw, 'utf-8');
 
   input.onProgress?.(75, 'Converting Snyk JSON to HTML…');
-  await execFileAsync('snyk-to-html', ['-i', jsonPath, '-o', htmlPath], {
+  await execForScanJob(input.scanJobId, 'snyk-to-html', ['-i', jsonPath, '-o', htmlPath], {
     timeout: 120_000,
     env: snykEnv(),
     maxBuffer: 20 * 1024 * 1024,
@@ -392,6 +396,7 @@ async function runSnykScanInternal(input: {
   resource: SecurityResourceView;
   mode: 'sca' | 'code';
   toolId: 'snyk' | 'snyk-code';
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<SnykScanResult> {
   const progress = input.onProgress;
@@ -444,6 +449,7 @@ async function runSnykScanInternal(input: {
 
     const baseName = input.mode === 'sca' ? 'snyk-sca-report' : 'snyk-sast-report';
     const { htmlContent, jsonRaw } = await runSnykJsonToHtml({
+      scanJobId: input.scanJobId,
       snykArgs,
       cwd: scanCwd,
       outputDir,
@@ -479,6 +485,7 @@ async function runSnykScanInternal(input: {
       snykVersion,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     if (err instanceof Error && err.message.startsWith('Snyk ')) throw err;
     if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) throw err;
     const message = err instanceof Error ? err.message : 'Snyk scan failed';
@@ -492,6 +499,7 @@ async function runSnykScanInternal(input: {
 
 export function runSnykScaScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<SnykScanResult> {
   return runSnykScanInternal({ ...input, mode: 'sca', toolId: 'snyk' });
@@ -499,6 +507,7 @@ export function runSnykScaScan(input: {
 
 export function runSnykCodeScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<SnykScanResult> {
   return runSnykScanInternal({ ...input, mode: 'code', toolId: 'snyk-code' });

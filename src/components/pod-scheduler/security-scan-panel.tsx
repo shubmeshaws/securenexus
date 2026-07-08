@@ -85,6 +85,14 @@ function jobStatusBadge(status: SecurityScanJobView['status']) {
   if (status === 'cancelled') {
     return <Badge variant="outline" className="py-0 text-[9px] text-muted-foreground">Cancelled</Badge>;
   }
+  if (status === 'cancelling') {
+    return (
+      <Badge variant="progressing" className="gap-1 py-0 text-[9px] text-amber-700 dark:text-amber-400">
+        <Loader2 className="h-2 w-2 animate-spin" />
+        Stopping
+      </Badge>
+    );
+  }
   if (status === 'running') {
     return (
       <Badge variant="progressing" className="gap-1 py-0 text-[9px]">
@@ -99,6 +107,7 @@ function jobStatusBadge(status: SecurityScanJobView['status']) {
 const JOB_STATUS_ACCENT: Record<SecurityScanJobView['status'], string> = {
   queued: 'bg-muted-foreground/40',
   running: 'bg-sky-500',
+  cancelling: 'bg-amber-500',
   completed: 'bg-emerald-500',
   failed: 'bg-red-500',
   cancelled: 'bg-muted-foreground/50',
@@ -178,7 +187,7 @@ function RecentScanJobCard({
         ) : null}
 
         <div className="flex shrink-0 items-center gap-1">
-          {active ? (
+          {active && job.status !== 'cancelling' ? (
             <SecurityIconButton
               icon={CircleStop}
               label="Stop scan"

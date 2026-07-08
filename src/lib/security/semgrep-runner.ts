@@ -6,6 +6,8 @@ import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { resolveSemgrepBin, semgrepScanEnv, toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { prepareRepositoryPath } from './security-repo-prep';
+import { execForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 
 const execFileAsync = promisify(execFile);
 const SEMGREP_TIMEOUT_MS = 15 * 60 * 1000;
@@ -50,6 +52,7 @@ function countSeverities(rows: SemgrepFindingRow[]): {
 
 export async function runSemgrepScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<SemgrepScanResult> {
   const progress = input.onProgress;
@@ -73,7 +76,8 @@ export async function runSemgrepScan(input: {
     progress?.(22, 'Running Semgrep analysis…');
     const scanEnv = await semgrepScanEnv();
     try {
-      await execFileAsync(
+      await execForScanJob(
+        input.scanJobId,
         PYTHON_EXECUTABLE,
         [
           SEMGREP_SCRIPT_PATH,
@@ -90,6 +94,7 @@ export async function runSemgrepScan(input: {
         }
       );
     } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       throw new Error(formatExecError(err));
     }
 
@@ -127,6 +132,7 @@ export async function runSemgrepScan(input: {
       semgrepVersion,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     if (err instanceof Error && err.message.startsWith('Cannot access')) {
       throw err;
     }

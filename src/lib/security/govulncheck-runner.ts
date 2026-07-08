@@ -6,6 +6,8 @@ import { formatRepositoryCloneError } from '@/lib/git-error-utils';
 import { toolPathEnv } from '@/lib/security/tool-path-env';
 import type { SecurityResourceView } from '@/lib/security-service';
 import { findGoProjectRoot, prepareRepositoryPath } from './security-repo-prep';
+import { execForScanJob } from '@/lib/security-scan-exec';
+import { ScanCancelledError } from '@/lib/security-scan-cancel';
 
 const execFileAsync = promisify(execFile);
 const GOVULNCHECK_TIMEOUT_MS = 15 * 60 * 1000;
@@ -72,9 +74,9 @@ function sanitizeGovulncheckError(message: string): string {
     .slice(0, 800);
 }
 
-async function runGovulncheckJson(projectRoot: string): Promise<string> {
+async function runGovulncheckJson(projectRoot: string, scanJobId?: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('govulncheck', ['-json', './...'], {
+    const { stdout } = await execForScanJob(scanJobId, 'govulncheck', ['-json', './...'], {
       cwd: projectRoot,
       maxBuffer: 50 * 1024 * 1024,
       timeout: GOVULNCHECK_TIMEOUT_MS,
@@ -82,6 +84,7 @@ async function runGovulncheckJson(projectRoot: string): Promise<string> {
     });
     return stdout;
   } catch (err: unknown) {
+    if (err instanceof ScanCancelledError) throw err;
     const execErr = err as { stdout?: string; code?: number | string; stderr?: string };
     if (typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
       return execErr.stdout;
@@ -93,6 +96,7 @@ async function runGovulncheckJson(projectRoot: string): Promise<string> {
 
 export async function runGovulncheckScan(input: {
   resource: SecurityResourceView;
+  scanJobId?: string;
   onProgress?: (stagePercent: number, message: string) => void;
 }): Promise<GovulncheckScanResult> {
   const progress = input.onProgress;
@@ -119,18 +123,19 @@ export async function runGovulncheckScan(input: {
 
     progress?.(30, 'Downloading Go module metadata…');
     try {
-      await execFileAsync('go', ['mod', 'download'], {
+      await execForScanJob(input.scanJobId, 'go', ['mod', 'download'], {
         cwd: projectRoot,
         maxBuffer: 20 * 1024 * 1024,
         timeout: GOVULNCHECK_TIMEOUT_MS,
         env: toolPathEnv(),
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       // Non-fatal — govulncheck may still proceed with cached modules.
     }
 
     progress?.(45, 'Running govulncheck…');
-    const auditRaw = await runGovulncheckJson(projectRoot);
+    const auditRaw = await runGovulncheckJson(projectRoot, input.scanJobId);
 
     const govulncheckVersion = await getGovulncheckVersion();
     const auditJsonPath = path.join(outputDir, 'govulncheck-report.jsonl');
@@ -139,7 +144,8 @@ export async function runGovulncheckScan(input: {
 
     progress?.(72, 'Generating SCA summary report…');
     try {
-      await execFileAsync(
+      await execForScanJob(
+        input.scanJobId,
         PYTHON_EXECUTABLE,
         [
           GOVULNCHECK_SCA_SCRIPT_PATH,
@@ -158,6 +164,7 @@ export async function runGovulncheckScan(input: {
         }
       );
     } catch (err) {
+      if (err instanceof ScanCancelledError) throw err;
       throw new Error(formatExecError(err));
     }
 
@@ -191,6 +198,7 @@ export async function runGovulncheckScan(input: {
       govulncheckVersion: reportJson.raw?.govulncheckVersion ?? govulncheckVersion,
     };
   } catch (err) {
+    if (err instanceof ScanCancelledError) throw err;
     if (err instanceof Error && err.message.startsWith('Bitbucket is not connected')) {
       throw err;
     }
