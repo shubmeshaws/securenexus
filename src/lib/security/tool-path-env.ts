@@ -8,6 +8,8 @@ const execFileAsync = promisify(execFile);
 
 export function extendedToolPath(): string {
   return [
+    '/opt/sonar-scanner/bin',
+    path.join(process.cwd(), '.securenexus', 'sonar-scanner', 'bin'),
     path.join(process.cwd(), '.securenexus', 'bin'),
     path.join(process.cwd(), '.securenexus', 'venv-semgrep', 'bin'),
     path.join(os.homedir(), '.local', 'bin'),

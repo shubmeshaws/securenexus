@@ -21,6 +21,9 @@ import { runNpmAuditScan } from './security/npm-audit-runner';
 import { runPipAuditScan } from './security/pip-audit-runner';
 import { runGovulncheckScan } from './security/govulncheck-runner';
 import { runGitleaksScan } from './security/gitleaks-runner';
+import { runTrufflehogScan } from './security/trufflehog-runner';
+import { runSonarqubeScan, isSonarqubeAuthenticated, readSonarqubeUsername } from './security/sonarqube-runner';
+import { readSonarqubeConfig } from './security/sonarqube-config';
 import { runZapScan } from './security/zap-runner';
 import { runSnykScaScan, runSnykCodeScan, isSnykAuthenticated, readSnykWhoami } from './security/snyk-runner';
 import {
@@ -161,6 +164,7 @@ export interface SecurityToolSettingView {
   scanOptions: GitleaksScanOptions | null;
   runtimeAuthenticated?: boolean | null;
   runtimeUsername?: string | null;
+  runtimeServerUrl?: string | null;
 }
 
 export interface SecurityReportView {
@@ -653,9 +657,19 @@ export async function listSecurityToolSettings(options?: {
       const runtimeAuthenticated =
         isSnykToolId(tool.id) && runtime.runtimeAvailable
           ? await isSnykAuthenticated()
-          : null;
+          : tool.id === 'sonarqube' && runtime.runtimeAvailable
+            ? await isSonarqubeAuthenticated()
+            : null;
       const runtimeUsername =
-        isSnykToolId(tool.id) && runtimeAuthenticated ? await readSnykWhoami() : null;
+        isSnykToolId(tool.id) && runtimeAuthenticated
+          ? await readSnykWhoami()
+          : tool.id === 'sonarqube' && runtimeAuthenticated
+            ? await readSonarqubeUsername()
+            : null;
+      const runtimeServerUrl =
+        tool.id === 'sonarqube' && runtimeAuthenticated
+          ? (await readSonarqubeConfig())?.serverUrl ?? null
+          : null;
       return {
         toolId: tool.id,
         enabled: row?.enabled ?? false,
@@ -671,6 +685,7 @@ export async function listSecurityToolSettings(options?: {
           tool.id === 'gitleaks' ? parseGitleaksScanOptions(row?.scanOptions) : null,
         runtimeAuthenticated,
         runtimeUsername,
+        runtimeServerUrl,
       };
     })
   );
@@ -960,6 +975,18 @@ async function executeSecurityScanPair(input: {
     highCount = semgrepResult.highCount;
     mediumCount = semgrepResult.mediumCount;
     lowCount = semgrepResult.lowCount;
+  } else if (tool.id === 'sonarqube') {
+    stageProgress(5, `Starting SonarQube scan for ${resourceView.name}…`);
+    const sonarResult = await runSonarqubeScan({
+      resource: resourceView,
+      scanJobId: input.scanJobId,
+      onProgress: runnerProgress,
+    });
+    summary = sonarResult.summary;
+    htmlContent = sonarResult.htmlContent;
+    highCount = sonarResult.highCount;
+    mediumCount = sonarResult.mediumCount;
+    lowCount = sonarResult.lowCount;
   } else if (tool.id === 'npm-audit') {
     stageProgress(5, `Starting npm audit for ${resourceView.name}…`);
     const auditResult = await runNpmAuditScan({
@@ -1009,6 +1036,18 @@ async function executeSecurityScanPair(input: {
     highCount = gitleaksResult.highCount;
     mediumCount = gitleaksResult.mediumCount;
     lowCount = gitleaksResult.lowCount;
+  } else if (tool.id === 'trufflehog') {
+    stageProgress(5, `Starting TruffleHog scan for ${resourceView.name}…`);
+    const trufflehogResult = await runTrufflehogScan({
+      resource: resourceView,
+      scanJobId: input.scanJobId,
+      onProgress: runnerProgress,
+    });
+    summary = trufflehogResult.summary;
+    htmlContent = trufflehogResult.htmlContent;
+    highCount = trufflehogResult.highCount;
+    mediumCount = trufflehogResult.mediumCount;
+    lowCount = trufflehogResult.lowCount;
   } else if (tool.id === 'zap') {
     stageProgress(5, `Starting OWASP ZAP DAST scan for ${resourceView.name}…`);
     const zapResult = await runZapScan({

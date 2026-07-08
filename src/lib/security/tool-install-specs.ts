@@ -25,6 +25,8 @@ export type RuntimeInstallToolId =
   | 'pip-audit'
   | 'govulncheck'
   | 'gitleaks'
+  | 'trufflehog'
+  | 'sonarqube'
   | 'zap'
   | 'snyk';
 
@@ -87,6 +89,35 @@ const INSTALL_COMMANDS: Record<RuntimeInstallToolId, Record<ServerOsType, string
     linux: [
       'SecureNexus downloads the latest Gitleaks release from GitHub automatically',
       'Extracts gitleaks_<version>_linux_x64.tar.gz into .securenexus/bin/',
+    ],
+  },
+  trufflehog: {
+    macos: ['brew install trufflehog'],
+    ubuntu: [
+      'SecureNexus downloads the latest TruffleHog release from GitHub automatically',
+      'Extracts trufflehog_<version>_linux_amd64.tar.gz into .securenexus/bin/',
+    ],
+    linux: [
+      'SecureNexus downloads the latest TruffleHog release from GitHub automatically',
+      'Extracts trufflehog_<version>_linux_amd64.tar.gz into .securenexus/bin/',
+    ],
+  },
+  sonarqube: {
+    macos: [
+      'SecureNexus downloads sonar-scanner-cli into .securenexus/sonar-scanner',
+      'Authenticate with your SonarQube server URL and user token after install',
+    ],
+    ubuntu: [
+      'cd /opt',
+      'sudo wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.0.1.4817-linux-x64.zip',
+      'sudo unzip sonar-scanner-cli-7.0.1.4817-linux-x64.zip',
+      'sudo mv sonar-scanner-7.0.1.4817-linux-x64 sonar-scanner',
+      "echo 'export PATH=$PATH:/opt/sonar-scanner/bin' | sudo tee /etc/profile.d/sonar-scanner.sh",
+      'sonar-scanner -v',
+    ],
+    linux: [
+      'SecureNexus installs sonar-scanner-cli to /opt/sonar-scanner when sudo is available',
+      'Otherwise downloads into .securenexus/sonar-scanner',
     ],
   },
   zap: {

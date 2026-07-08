@@ -14,6 +14,17 @@ import {
 } from './zap-install';
 import { resolveGitleaksDownloadUrl } from './gitleaks-install';
 import { isGitleaksAvailable } from './gitleaks-runner';
+import { resolveTrufflehogDownloadUrl } from './trufflehog-install';
+import { isTrufflehogAvailable } from './trufflehog-runner';
+import {
+  extractedDirName,
+  isSonarScannerAvailable,
+  readSonarScannerVersion,
+  scannerZipName,
+  SONAR_SCANNER_LOCAL_DIR,
+  SONAR_SCANNER_SYSTEM_DIR,
+  sonarScannerDownloadUrl,
+} from './sonarqube-install';
 import { isNpmAuditAvailable } from './npm-audit-runner';
 import { isPipAuditAvailable } from './pip-audit-runner';
 import { isGoAvailable, isGovulncheckAvailable } from './govulncheck-runner';
@@ -40,6 +51,8 @@ export const RUNTIME_SECURITY_TOOL_IDS = [
   'pip-audit',
   'govulncheck',
   'gitleaks',
+  'trufflehog',
+  'sonarqube',
   'zap',
   'snyk',
 ] as const;
@@ -95,6 +108,15 @@ const RUNTIME_SPECS: Record<RuntimeSecurityToolId, Omit<ToolRuntimeSpec, 'toolId
   gitleaks: {
     name: 'Gitleaks',
     summary: 'Gitleaks CLI is required for live secrets scanning on this server.',
+  },
+  trufflehog: {
+    name: 'TruffleHog',
+    summary: 'TruffleHog CLI is required for live secrets scanning on this server.',
+  },
+  sonarqube: {
+    name: 'SonarQube Community',
+    summary:
+      'SonarScanner CLI and a SonarQube server token are required for live SAST scans on this server.',
   },
   zap: {
     name: 'OWASP ZAP',
@@ -316,6 +338,13 @@ async function readToolVersion(toolId: RuntimeSecurityToolId): Promise<string | 
       const out = await runCommand('gitleaks', ['version'], env);
       return out.trim() || null;
     }
+    if (toolId === 'trufflehog') {
+      const out = await runCommand('trufflehog', ['--version'], env);
+      return out.trim() || null;
+    }
+    if (toolId === 'sonarqube') {
+      return readSonarScannerVersion();
+    }
     if (toolId === 'zap') {
       const zapSh = await resolveZapSh();
       const installDir = path.dirname(zapSh);
@@ -340,6 +369,8 @@ export async function checkToolRuntimeAvailable(toolId: string): Promise<boolean
   if (toolId === 'pip-audit') return isPipAuditAvailable();
   if (toolId === 'govulncheck') return isGovulncheckAvailable();
   if (toolId === 'gitleaks') return isGitleaksAvailable();
+  if (toolId === 'trufflehog') return isTrufflehogAvailable();
+  if (toolId === 'sonarqube') return isSonarScannerAvailable();
   if (toolId === 'zap') return isZapAvailable();
   if (toolId === 'snyk' || toolId === 'snyk-code') return isSnykRuntimeReady();
   return false;
@@ -611,6 +642,91 @@ async function installGitleaks(osType: ServerOsType): Promise<void> {
   }
 }
 
+async function installTrufflehog(osType: ServerOsType): Promise<void> {
+  if (await isTrufflehogAvailable()) return;
+
+  if (osType === 'macos') {
+    await installWithBrew('trufflehog');
+    return;
+  }
+
+  const binDir = await ensureLocalBin();
+  const tarPath = path.join(os.tmpdir(), `trufflehog-${Date.now()}.tar.gz`);
+  const downloadUrl = await resolveTrufflehogDownloadUrl();
+
+  try {
+    await runShell(`wget -qO "${tarPath}" "${downloadUrl}" || curl -fsSL -o "${tarPath}" "${downloadUrl}"`);
+    await runShell(`tar -xzf "${tarPath}" -C "${binDir}" trufflehog`);
+    await fs.chmod(path.join(binDir, 'trufflehog'), 0o755);
+  } finally {
+    await fs.rm(tarPath, { force: true }).catch(() => undefined);
+  }
+
+  if (!(await isTrufflehogAvailable())) {
+    throw new Error('TruffleHog binary was downloaded but is not available on PATH.');
+  }
+}
+
+async function installSonarScannerLocal(): Promise<void> {
+  const zipPath = path.join(os.tmpdir(), `sonar-scanner-${Date.now()}.zip`);
+  const extractRoot = path.join(os.tmpdir(), `sonar-scanner-extract-${Date.now()}`);
+  const downloadUrl = sonarScannerDownloadUrl();
+  const dirName = extractedDirName();
+
+  try {
+    await runShell(
+      `wget -qO "${zipPath}" "${downloadUrl}" || curl -fsSL -o "${zipPath}" "${downloadUrl}"`
+    );
+    await fs.mkdir(extractRoot, { recursive: true });
+    await runShell(`unzip -q -o "${zipPath}" -d "${extractRoot}"`);
+    await fs.rm(SONAR_SCANNER_LOCAL_DIR, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rename(path.join(extractRoot, dirName), SONAR_SCANNER_LOCAL_DIR);
+  } finally {
+    await fs.rm(zipPath, { force: true }).catch(() => undefined);
+    await fs.rm(extractRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function installSonarScannerSystem(): Promise<void> {
+  const zipName = scannerZipName();
+  const dirName = extractedDirName();
+  const downloadUrl = sonarScannerDownloadUrl();
+
+  await runShell(
+    'sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget unzip'
+  ).catch(() => undefined);
+
+  await runShell(
+    `cd /opt && sudo wget -q "${downloadUrl}" -O "${zipName}" || cd /opt && sudo curl -fsSL -o "${zipName}" "${downloadUrl}"`
+  );
+  await runShell(`cd /opt && sudo unzip -o -q "${zipName}"`);
+  await runShell(`cd /opt && sudo rm -rf sonar-scanner && sudo mv "${dirName}" sonar-scanner`);
+  await runShell(
+    `echo 'export PATH=$PATH:/opt/sonar-scanner/bin' | sudo tee /etc/profile.d/sonar-scanner.sh`
+  );
+}
+
+async function installSonarScanner(osType: ServerOsType, onProgress?: (message: string) => void): Promise<void> {
+  if (await isSonarScannerAvailable()) return;
+
+  if (osType === 'ubuntu' && (await hasCommand('apt-get'))) {
+    onProgress?.('Installing SonarScanner to /opt/sonar-scanner…');
+    try {
+      await installSonarScannerSystem();
+      if (await isSonarScannerAvailable()) return;
+    } catch {
+      onProgress?.('System install failed — falling back to local SonarScanner install…');
+    }
+  }
+
+  onProgress?.('Downloading SonarScanner CLI…');
+  await installSonarScannerLocal();
+
+  if (!(await isSonarScannerAvailable())) {
+    throw new Error('SonarScanner was downloaded but is not available on PATH.');
+  }
+}
+
 async function installZapUbuntu(onProgress?: (message: string) => void): Promise<void> {
   onProgress?.('Installing Java (default-jdk)…');
   await runShell('sudo DEBIAN_FRONTEND=noninteractive apt-get update');
@@ -717,6 +833,12 @@ export async function installToolRuntime(
   } else if (toolId === 'gitleaks') {
     progress('Installing Gitleaks…');
     await installGitleaks(osType);
+  } else if (toolId === 'trufflehog') {
+    progress('Installing TruffleHog…');
+    await installTrufflehog(osType);
+  } else if (toolId === 'sonarqube') {
+    progress('Installing SonarScanner CLI…');
+    await installSonarScanner(osType, progress);
   } else if (toolId === 'zap') {
     progress('Installing OWASP ZAP…');
     await installZap(osType, progress);

@@ -52,6 +52,7 @@ import { SecurityReportActions } from '@/components/pod-scheduler/security-repor
 import { ConfirmDialog } from '@/components/pod-scheduler/confirm-dialog';
 import { GitleaksOptionsPanel } from '@/components/pod-scheduler/gitleaks-options-panel';
 import { SnykAuthPanel } from '@/components/pod-scheduler/snyk-auth-panel';
+import { SonarqubeAuthPanel } from '@/components/pod-scheduler/sonarqube-auth-panel';
 import { isSnykToolId } from '@/lib/security/snyk-shared';
 import { DEFAULT_GITLEAKS_SCAN_OPTIONS } from '@/lib/security/gitleaks-options';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -1128,6 +1129,13 @@ export function SecurityContent() {
                         runs on the same machine as your browser.
                       </div>
                     ) : null}
+                    {installDialog.tool.id === 'sonarqube' ? (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[10px] leading-relaxed text-amber-950 dark:text-amber-100">
+                        <strong className="font-medium">SonarQube server required.</strong> Install sonar-scanner
+                        on this host, then paste your SonarQube server URL and user token in the tool card.
+                        Scans upload analysis to your SonarQube instance and pull live issues from its API.
+                      </div>
+                    ) : null}
                     {installCommandsForSelection.length > 0 ? (
                       <InstallCommandsBlock
                         commands={installCommandsForSelection}
@@ -1357,6 +1365,17 @@ function ToolCard({
               </Badge>
             )
           ) : null}
+          {tool.id === 'sonarqube' && setting?.runtimeReady && setting.runtimeAvailable ? (
+            setting.runtimeAuthenticated ? (
+              <Badge variant="outline" className="border-emerald-500/40 text-[9px] text-emerald-600">
+                Authenticated
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-amber-500/40 text-[9px] text-amber-600">
+                Auth required
+              </Badge>
+            )
+          ) : null}
           <a
             href={tool.website}
             target="_blank"
@@ -1378,6 +1397,14 @@ function ToolCard({
           <SnykAuthPanel
             authenticated={setting.runtimeAuthenticated ?? false}
             username={setting.runtimeUsername ?? null}
+            onRefreshTools={onRefreshTools}
+          />
+        ) : null}
+        {tool.id === 'sonarqube' && setting?.runtimeReady && setting.runtimeAvailable ? (
+          <SonarqubeAuthPanel
+            authenticated={setting.runtimeAuthenticated ?? false}
+            username={setting.runtimeUsername ?? null}
+            serverUrl={setting.runtimeServerUrl ?? null}
             onRefreshTools={onRefreshTools}
           />
         ) : null}

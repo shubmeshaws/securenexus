@@ -302,6 +302,16 @@ export const SECURITY_TOOLS: SecurityToolDefinition[] = [
     iconUrl: '/icons/security/gitleaks.png',
   },
   {
+    id: 'trufflehog',
+    name: 'TruffleHog',
+    category: 'secrets',
+    description: 'Find, verify, and analyze leaked credentials in git repositories.',
+    website: 'https://github.com/trufflesecurity/trufflehog',
+    color: '#8b5a42',
+    initials: 'TH',
+    iconUrl: '/icons/security/trufflehog.png',
+  },
+  {
     id: 'detect-secrets',
     name: 'detect-secrets',
     category: 'secrets',
